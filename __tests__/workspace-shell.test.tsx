@@ -143,9 +143,13 @@ test('opens the assistant router without creation; explicit assistant selection 
   await act(async () => root.unmount());
 });
 
-test('maps a closed remote client bootstrap error to a recoverable notice', async () => {
+test.each([
+  ['remote_client_closed', '连接被重置，正在恢复。'],
+  ['remote_response_too_large', 'Desktop 返回的数据过大，当前请求未完成；连接仍保留。'],
+  ['remote_response_invalid', 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。'],
+])('maps bootstrap error %s to an understandable notice', async (code, notice) => {
   const failingRequest = jest.fn(async () => {
-    throw new Error('remote_client_closed');
+    throw new Error(code);
   });
   let noticeRoot!: TestRenderer.ReactTestRenderer;
   await act(async () => {
@@ -163,7 +167,7 @@ test('maps a closed remote client bootstrap error to a recoverable notice', asyn
   const renderedText = noticeRoot.root.findAllByType(Text).flatMap(node =>
     typeof node.props.children === 'string' ? [node.props.children] : [],
   );
-  expect(renderedText).toContain('连接被重置，正在恢复。');
-  expect(renderedText).not.toContain('remote_client_closed');
+  expect(renderedText).toContain(notice);
+  expect(renderedText).not.toContain(code);
   await act(async () => noticeRoot.unmount());
 });

@@ -980,6 +980,9 @@ function errorMessage(value: unknown): string {
     remote_client_closed: '连接被重置，正在恢复。',
     remote_transport_closed: '连接已关闭，正在恢复。',
     remote_transport_error: '安全连接暂时不可用，正在重连。',
+
+    remote_response_too_large: 'Desktop 返回的数据过大，当前请求未完成；连接仍保留。',
+    remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
     remote_all_paired_endpoints_unreachable: '已配对的连接地址暂不可用，请确认 Desktop 远程服务仍在运行。',
     remote_request_timeout: 'Desktop 响应超时，请稍后重试。',
   };

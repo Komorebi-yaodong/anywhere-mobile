@@ -11,6 +11,8 @@ let mockServerSession: RemoteCryptoSession | undefined;
 const mockSentTexts: string[] = [];
 let mockHoldBusinessSend: Promise<void> | undefined;
 
+let mockRpcErrorCode: string | undefined;
+
 jest.mock('../src/native/PinnedGateway', () => ({
   PinnedGateway: {
     connectSocket: jest.fn(async ({connectionId}) => {
@@ -59,8 +61,8 @@ jest.mock('../src/native/PinnedGateway', () => ({
         const response = mockServerSession?.encrypt({
           kind: 'response',
           requestId: request?.requestId,
-          ok: true,
-          result: {method: request?.method, e2ee: true},
+          ok: !mockRpcErrorCode,
+          ...(mockRpcErrorCode ? {error: {code: mockRpcErrorCode}} : {result: {method: request?.method, e2ee: true}}),
         });
         mockListener?.({connectionId, type: 'message', message: JSON.stringify(response)});
       }
@@ -105,8 +107,8 @@ describe('RemoteClient encrypted transport boundary', () => {
     mockListener = undefined;
     mockServerSession = undefined;
     mockSentTexts.length = 0;
-
     mockHoldBusinessSend = undefined;
+    mockRpcErrorCode = undefined;
   });
 
   it('authenticates before online and carries RPC only in encrypted frames', async () => {
@@ -160,6 +162,22 @@ describe('RemoteClient encrypted transport boundary', () => {
     expect(sequences).toEqual([1, 2]);
     await client.close();
   });
+
+
+  it.each(['remote_response_too_large', 'remote_response_invalid'])(
+    'rejects only the RPC for %s and keeps the same encrypted session usable', async code => {
+      const onStatus = jest.fn();
+      const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity,
+        credential: {rootSecret: mockRootSecret}, onStatus});
+      await client.connect();
+      mockRpcErrorCode = code;
+      await expect(client.request('workspace.bootstrap.get')).rejects.toMatchObject({code});
+      expect(onStatus).not.toHaveBeenCalledWith('closed', expect.anything());
+      mockRpcErrorCode = undefined;
+      await expect(client.request('remote.ping')).resolves.toMatchObject({method: 'remote.ping'});
+      await client.close();
+    },
+  );
 
 
   it('preserves a whitelisted Desktop close reason without raw native text', async () => {
