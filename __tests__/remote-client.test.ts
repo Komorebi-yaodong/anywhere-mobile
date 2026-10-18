@@ -11,6 +11,7 @@ let mockListener: ((event: {
 }) => void) | undefined;
 let mockServerSession: RemoteCryptoSession | undefined;
 const mockSentTexts: string[] = [];
+let mockHoldBusinessSend: Promise<void> | undefined;
 
 jest.mock('../src/native/PinnedGateway', () => ({
   PinnedGateway: {
@@ -20,6 +21,11 @@ jest.mock('../src/native/PinnedGateway', () => ({
     sendText: jest.fn(async (connectionId: string, text: string) => {
       mockSentTexts.push(text);
       const message = JSON.parse(text) as {type?: string};
+      if (message.type === 'remote.encrypted' && mockHoldBusinessSend) {
+        const wait = mockHoldBusinessSend;
+        mockHoldBusinessSend = undefined;
+        await wait;
+      }
       if (message.type === 'remote.session.hello') {
         const hello = message as SessionHello;
         const {createSessionAcceptForFixture} = require('../src/remote/session') as typeof import('../src/remote/session');
@@ -127,6 +133,34 @@ describe('RemoteClient encrypted transport boundary', () => {
     expect(mockSentTexts[1]).not.toContain('remote.status.get');
     await client.close();
   });
+
+  it('serializes concurrent encrypted sends so Desktop receives strict sequences', async () => {
+    const client = new RemoteClient({
+      desktop: mockDesktop,
+      identity: mockIdentity,
+      credential: {rootSecret: mockRootSecret},
+    });
+    await client.connect();
+    let releaseFirst!: () => void;
+    mockHoldBusinessSend = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const first = client.request('workspace.bootstrap.get');
+    const second = client.request('conversation.assistants.list');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockSentTexts.filter(text => JSON.parse(text).type === 'remote.encrypted')).toHaveLength(1);
+    releaseFirst();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      {method: 'workspace.bootstrap.get', e2ee: true},
+      {method: 'conversation.assistants.list', e2ee: true},
+    ]);
+    const sequences = mockSentTexts
+      .map(text => JSON.parse(text) as {type?: string; sequence?: number})
+      .filter(frame => frame.type === 'remote.encrypted')
+      .map(frame => frame.sequence);
+    expect(sequences).toEqual([1, 2]);
+    await client.close();
+  });
+
 
   it('does not accept a request before the authenticated welcome event', async () => {
     const client = new RemoteClient({

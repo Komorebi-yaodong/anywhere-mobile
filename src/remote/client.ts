@@ -74,6 +74,10 @@ export class RemoteClient {
   private connectReject?: (error: Error) => void;
   private connectTimer?: ReturnType<typeof setTimeout>;
   private pending = new Map<string, PendingRpc>();
+  // Encryption advances a strict per-session sequence. Native bridge promises
+  // may settle out of order, so frame construction and transport submission
+  // must share one queue for the lifetime of this client connection.
+  private sendQueue: Promise<void> = Promise.resolve();
 
   constructor(options: ClientOptions) {
     this.desktop = options.desktop;
@@ -140,26 +144,30 @@ export class RemoteClient {
         timer,
       });
     });
-    try {
-      const frame = this.cryptoSession.encrypt({
-        kind: 'request',
-        requestId,
-        method,
-        params,
-      });
-      Promise.resolve()
-        .then(() =>
-          PinnedGateway.sendText(this.connectionId, JSON.stringify(frame)),
-        )
-        .catch(() => {
-          // Encryption consumed a sequence. Never continue on a transport whose
-          // delivery is uncertain: reconnect with fresh ephemeral material.
-          this.rejectPending(requestId, new RemoteRpcError('remote_transport_error'));
-          this.failConnection(new RemoteRpcError('remote_transport_error'));
+    const submit = this.sendQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.status !== 'online' || !this.cryptoSession) {
+          throw new RemoteRpcError('remote_client_offline');
+        }
+        const frame = this.cryptoSession.encrypt({
+          kind: 'request',
+          requestId,
+          method,
+          params,
         });
-    } catch (error) {
-      this.rejectPending(requestId, asError(error));
-    }
+        await PinnedGateway.sendText(this.connectionId, JSON.stringify(frame));
+      });
+    this.sendQueue = submit.catch(() => undefined);
+    submit.catch(error => {
+      const transportError = error instanceof RemoteRpcError && error.code === 'remote_client_offline'
+        ? error
+        : new RemoteRpcError('remote_transport_error');
+      this.rejectPending(requestId, transportError);
+      // Encryption consumed a sequence only after this serialized submission
+      // began. Never continue on a transport whose delivery is uncertain.
+      if (transportError.code === 'remote_transport_error') this.failConnection(transportError);
+    });
     return {requestId, response};
   }
 
@@ -347,6 +355,7 @@ export class RemoteClient {
       pending.reject(new RemoteRpcError('remote_client_closed'));
     }
     this.pending.clear();
+    this.sendQueue = Promise.resolve();
     if (closeStatus) {
       this.setStatus('closed');
     }
