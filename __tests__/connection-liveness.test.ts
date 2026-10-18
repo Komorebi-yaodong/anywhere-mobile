@@ -30,6 +30,17 @@ describe('Remote connection liveness boundaries', () => {
     expect(ios).toContain('context.pingTimer.cancel()');
   });
 
+  it('preserves structured native close diagnostics with exact reason allowlists', () => {
+    expect(android).toContain('closeCode = code, closeReason = reason');
+    expect(android).toContain('if (it in safeCloseReasons) it else "other"');
+    expect(android).toContain('is java.net.SocketTimeoutException -> "timeout"');
+    expect(android).not.toContain('emit(connectionId, "error", safeError(throwable))');
+    expect(ios).toContain('closeCode: closeCode.rawValue');
+    expect(ios).toContain('Self.safeCloseReasons.contains(closeReason) ? closeReason : "other"');
+    expect(ios).toContain('socket.closeCode != .invalid');
+  });
+
+
   it('does not replace an online socket from a single application ping failure', () => {
     const heartbeat = desktops.slice(
       desktops.indexOf('const timer = setInterval'),

@@ -267,7 +267,8 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
     context.pingTimer.cancel()
     context.session.finishTasksAndInvalidate()
     removePolicy(for: context.session)
-    emit(context.connectionId, type: "disconnected", message: "连接已关闭。")
+    emit(context.connectionId, type: "disconnected", closeCode: closeCode.rawValue,
+      closeReason: String(data: reason ?? Data(), encoding: .utf8))
   }
 
   private func receiveNext(_ socket: URLSessionWebSocketTask, connectionId: String) {
@@ -281,17 +282,22 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
           self.receiveNext(socket, connectionId: connectionId)
         case .data:
           socket.cancel(with: .unsupportedData, reason: nil)
-          self.emit(connectionId, type: "error", message: "桌面发送了不受支持的二进制帧。")
+          self.emit(connectionId, type: "error", failureKind: "binary_frame")
         @unknown default:
           socket.cancel(with: .unsupportedData, reason: nil)
-          self.emit(connectionId, type: "error", message: "桌面发送了未知帧类型。")
+          self.emit(connectionId, type: "error", failureKind: "protocol")
         }
       case .failure(let error):
         if let context = self.removeSocket(socket) {
           context.pingTimer.cancel()
           context.session.invalidateAndCancel()
           self.removePolicy(for: context.session)
-          self.emit(connectionId, type: "error", message: self.safeError(error))
+          if socket.closeCode != .invalid {
+            self.emit(connectionId, type: "disconnected", closeCode: socket.closeCode.rawValue,
+              closeReason: socket.closeReason.flatMap { String(data: $0, encoding: .utf8) })
+          } else {
+            self.emit(connectionId, type: "error", failureKind: self.socketFailureKind(error))
+          }
         }
       }
     }
@@ -470,9 +476,46 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
     String(error.localizedDescription.prefix(300))
   }
 
-  private func emit(_ connectionId: String, type: String, message: String? = nil) {
+  private func socketFailureKind(_ error: Error) -> String {
+    let native = error as NSError
+    guard native.domain == NSURLErrorDomain else { return "transport" }
+    switch native.code {
+    case NSURLErrorTimedOut: return "timeout"
+    case NSURLErrorCancelled: return "cancelled"
+    case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
+      NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasUnknownRoot,
+      NSURLErrorServerCertificateNotYetValid, NSURLErrorClientCertificateRejected,
+      NSURLErrorClientCertificateRequired: return "tls"
+    default: return "network_io"
+    }
+  }
+
+  private static let safeCloseReasons: Set<String> = [
+    "response_send_failed", "error_response_send_failed", "encrypted_event_send_failed",
+    "device_session_replaced", "device_repaired", "device_revoked", "gateway_stopped",
+    "session_handshake_timeout", "too_many_pending_connections", "too_many_connections",
+    "binary_frames_not_supported", "remote_frame_invalid", "remote_frame_replayed",
+    "remote_frame_out_of_order", "remote_frame_auth_failed", "remote_frame_payload_invalid",
+    "remote_session_mismatch", "remote_session_state_invalid", "remote_session_proof_invalid",
+    "remote_session_accept_invalid", "remote_device_mismatch", "remote_desktop_mismatch",
+    "remote_device_not_found", "remote_session_hello_replayed", "remote_socket_message_invalid",
+    "remote_socket_error", "remote_request_invalid", "remote_identifier_invalid",
+    "remote_sequence_invalid", "remote_payload_size_invalid", "remote_invalid_base64url"
+  ]
+
+
+  private func emit(
+    _ connectionId: String, type: String, message: String? = nil,
+    closeCode: Int? = nil, closeReason: String? = nil, failureKind: String? = nil
+  ) {
     var body: [String: Any] = ["connectionId": connectionId, "type": type]
     if let message { body["message"] = message }
+
+    if let closeCode, (1000...4999).contains(closeCode) { body["closeCode"] = closeCode }
+    if let closeReason {
+      body["closeReason"] = Self.safeCloseReasons.contains(closeReason) ? closeReason : "other"
+    }
+    if let failureKind { body["failureKind"] = failureKind }
     sendEvent(withName: Self.eventName, body: body)
   }
 

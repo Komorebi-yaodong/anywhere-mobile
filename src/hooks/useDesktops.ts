@@ -9,6 +9,7 @@ import {
   type PairingPayload,
 } from '../domain/pairing';
 import {RemoteClient, RemoteEventMessage} from '../remote/client';
+import {describeConnectionFailure, reconnectDelayMs, stableConnectionMs} from '../remote/connectionDiagnostics';
 import {pairDesktop} from '../remote/pairingClient';
 import {
   isAvatarCacheValid,
@@ -28,9 +29,6 @@ export type DesktopRuntime = PairedDesktop & {
 };
 
 const pingEveryMs = 20_000;
-const reconnectBaseMs = 1_000;
-const reconnectMaxMs = 30_000;
-
 
 function deviceModel(): string {
   const constants = Platform.constants as {Brand?: unknown; Model?: unknown};
@@ -52,6 +50,8 @@ export function useDesktops() {
   const connectGenerations = useRef(new Map<string, number>());
   const connecting = useRef(new Map<string, Promise<void>>());
   const retryCount = useRef(new Map<string, number>());
+
+  const lastFailures = useRef(new Map<string, string>());
   const reconnectTimers = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
@@ -98,11 +98,11 @@ export function useDesktops() {
       if (!desktopsRef.current.some(item => item.id === desktop.id)) return;
       if (reconnectTimers.current.has(desktop.id)) return;
       const attempt = retryCount.current.get(desktop.id) ?? 0;
-      const delay = Math.min(reconnectBaseMs * 2 ** attempt, reconnectMaxMs);
+      const delay = reconnectDelayMs(attempt);
       retryCount.current.set(desktop.id, attempt + 1);
       update(desktop.id, {
         status: '离线',
-        detail: `${Math.ceil(delay / 1000)} 秒后重连`,
+        detail: [lastFailures.current.get(desktop.id), `${Math.ceil(delay / 1000)} 秒后重连`].filter(Boolean).join('\n'),
       });
       const timer = setTimeout(() => {
         reconnectTimers.current.delete(desktop.id);
@@ -143,28 +143,31 @@ export function useDesktops() {
           if (connectGenerations.current.get(desktop.id) !== generation) return;
           const candidate = withDesktopEndpoint(desktop, endpoint);
           let becameOnline = false;
+          let onlineSince: number | undefined;
           const client = new RemoteClient({
             desktop: candidate,
             credential,
             identity,
-            onStatus: (status, _detail) => {
+            onStatus: (status, detail) => {
               const current = clients.current.get(desktop.id);
               if (connectGenerations.current.get(desktop.id) !== generation || current !== client) return;
               if (status === 'online') {
                 becameOnline = true;
-                retryCount.current.set(desktop.id, 0);
+                onlineSince = Date.now();
                 update(desktop.id, {status: '在线', detail: undefined});
               } else if (status === 'connecting' || status === 'handshaking') {
                 update(desktop.id, {
                   status: '连接中',
-                  detail: status === 'handshaking' ? '正在验证 E2EE 会话…' : undefined,
+                  detail: [lastFailures.current.get(desktop.id), status === 'handshaking' ? '正在验证 E2EE 会话…' : '正在连接…'].filter(Boolean).join('\n'),
                 });
-              } else if (status === 'closed' && becameOnline) {
-                update(desktop.id, {
-                  status: '离线',
-                  detail: '连接被重置，正在恢复。',
-                });
-                scheduleReconnect(candidate);
+              } else if (status === 'closed') {
+                // A welcome alone is not a stable connection. Repeated short
+                // sessions retain the retry count instead of looping at 1s.
+                if (onlineSince !== undefined && Date.now() - onlineSince >= stableConnectionMs) {
+                  retryCount.current.set(desktop.id, 0);
+                }
+                lastFailures.current.set(desktop.id, describeConnectionFailure(detail));
+                if (becameOnline) scheduleReconnect(candidate);
               }
             },
             onEvent: event => {
@@ -377,6 +380,8 @@ export function useDesktops() {
     async (desktop: PairedDesktop) => {
       clearReconnect(desktop.id);
       retryCount.current.delete(desktop.id);
+
+      lastFailures.current.delete(desktop.id);
       connectGenerations.current.set(desktop.id, (connectGenerations.current.get(desktop.id) || 0) + 1);
       connecting.current.delete(desktop.id);
       const client = clients.current.get(desktop.id);

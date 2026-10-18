@@ -4,11 +4,9 @@ import type {
   SessionHello,
 } from '../src/remote/session';
 
-let mockListener: ((event: {
-  connectionId: string;
-  type: 'connected' | 'disconnected' | 'error' | 'message';
-  message?: string;
-}) => void) | undefined;
+import type {GatewayEvent} from '../src/native/PinnedGateway';
+
+let mockListener: ((event: GatewayEvent) => void) | undefined;
 let mockServerSession: RemoteCryptoSession | undefined;
 const mockSentTexts: string[] = [];
 let mockHoldBusinessSend: Promise<void> | undefined;
@@ -107,6 +105,8 @@ describe('RemoteClient encrypted transport boundary', () => {
     mockListener = undefined;
     mockServerSession = undefined;
     mockSentTexts.length = 0;
+
+    mockHoldBusinessSend = undefined;
   });
 
   it('authenticates before online and carries RPC only in encrypted frames', async () => {
@@ -159,6 +159,50 @@ describe('RemoteClient encrypted transport boundary', () => {
       .map(frame => frame.sequence);
     expect(sequences).toEqual([1, 2]);
     await client.close();
+  });
+
+
+  it('preserves a whitelisted Desktop close reason without raw native text', async () => {
+    const onStatus = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity,
+      credential: {rootSecret: mockRootSecret}, onStatus});
+    await client.connect();
+    mockListener?.({connectionId: client.connectionId, type: 'disconnected',
+      closeCode: 1011, closeReason: 'response_send_failed', message: 'private native text'});
+    expect(onStatus).toHaveBeenLastCalledWith('closed', 'server_close:1011:response_send_failed');
+    await expect(client.request('remote.ping')).rejects.toMatchObject({code: 'remote_client_offline'});
+  });
+
+  it('distinguishes a local encrypted receive sequence rejection', async () => {
+    const onStatus = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity,
+      credential: {rootSecret: mockRootSecret}, onStatus});
+    await client.connect();
+    mockServerSession!.encrypt({kind: 'event', event: 'fixture.skipped'});
+    const skippedSequence = mockServerSession!.encrypt({kind: 'event', event: 'fixture.next'});
+    mockListener?.({connectionId: client.connectionId, type: 'message', message: JSON.stringify(skippedSequence)});
+    expect(onStatus).toHaveBeenLastCalledWith('closed', 'mobile:remote_frame_out_of_order');
+  });
+
+  it('preserves an authenticated Desktop protocol rejection', async () => {
+    const onStatus = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity,
+      credential: {rootSecret: mockRootSecret}, onStatus});
+    await client.connect();
+    const rejection = mockServerSession!.encrypt({kind: 'event', event: 'remote.error',
+      payload: {code: 'remote_frame_auth_failed'}});
+    mockListener?.({connectionId: client.connectionId, type: 'message', message: JSON.stringify(rejection)});
+    expect(onStatus).toHaveBeenLastCalledWith('closed', 'server_error:remote_frame_auth_failed');
+  });
+
+  it('classifies transport errors without exposing native exception text', async () => {
+    const onStatus = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity,
+      credential: {rootSecret: mockRootSecret}, onStatus});
+    await client.connect();
+    mockListener?.({connectionId: client.connectionId, type: 'error',
+      failureKind: 'timeout', message: 'https://private.invalid/fixture'});
+    expect(onStatus).toHaveBeenLastCalledWith('closed', 'transport:timeout');
   });
 
 

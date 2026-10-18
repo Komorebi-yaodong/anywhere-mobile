@@ -7,6 +7,7 @@ import {
 } from '../native/PinnedGateway';
 import type {DeviceIdentitySecret} from '../services/secureStore';
 import {randomBase64Url} from './crypto';
+import {gatewayFailureDetail, localFailureDetail, safeRemoteFailureCode} from './connectionDiagnostics';
 import {
   completeSessionHello,
   createSessionHello,
@@ -216,7 +217,7 @@ export class RemoteClient {
               ? 'remote_transport_error'
               : 'remote_transport_closed',
           ),
-          event.message,
+          gatewayFailureDetail(event),
         );
       }
     } catch (error) {
@@ -271,6 +272,14 @@ export class RemoteClient {
           ? (payload.payload as Record<string, unknown>)
           : {},
     };
+    if (event.event === 'remote.error') {
+      this.failConnection(
+        new RemoteRpcError('remote_transport_closed'),
+        `server_error:${safeRemoteFailureCode(event.payload.code)}`,
+      );
+      return;
+    }
+
     if (event.event === 'remote.welcome') {
       const protocolVersion = Number(event.payload.protocolVersion);
       if (
@@ -334,7 +343,7 @@ export class RemoteClient {
     if (this.status === 'closed') return;
     this.connectReject?.(error);
     this.cleanup(false);
-    this.setStatus('closed', detail ?? error.message);
+    this.setStatus('closed', detail ?? localFailureDetail(error));
     PinnedGateway.disconnect(this.connectionId).catch(() => undefined);
   }
 

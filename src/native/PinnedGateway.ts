@@ -27,6 +27,9 @@ export type GatewayEvent = {
   connectionId: string;
   type: 'connected' | 'disconnected' | 'error' | 'message';
   message?: string;
+  closeCode?: number;
+  closeReason?: string;
+  failureKind?: string;
 };
 
 type PinnedGatewayModule = {

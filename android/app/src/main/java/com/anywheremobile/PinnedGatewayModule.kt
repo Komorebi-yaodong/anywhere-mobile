@@ -183,7 +183,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
         if (sockets[connectionId]?.socket !== webSocket) return
         if (text.toByteArray(Charsets.UTF_8).size > MAX_SOCKET_BYTES) {
           webSocket.cancel()
-          emit(connectionId, "error", "桌面帧超过大小限制。")
+          emit(connectionId, "error", failureKind = "frame_too_large")
         } else {
           emit(connectionId, "message", text)
         }
@@ -192,23 +192,33 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
       webSocket.close(1003, "Text frames required")
-      emit(connectionId, "error", "桌面发送了不受支持的二进制帧。")
+      emit(connectionId, "error", failureKind = "binary_frame")
     }
 
     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+
+      if (removeSocketIfCurrent(connectionId, webSocket)) {
+        emit(connectionId, "disconnected", closeCode = code, closeReason = reason)
+      }
       webSocket.close(code, null)
     }
 
 
     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
       if (removeSocketIfCurrent(connectionId, webSocket)) {
-        emit(connectionId, "disconnected", "连接已关闭。")
+        emit(connectionId, "disconnected", closeCode = code, closeReason = reason)
       }
     }
 
     override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) {
       if (removeSocketIfCurrent(connectionId, webSocket)) {
-        emit(connectionId, "error", safeError(throwable))
+        emit(connectionId, "error", failureKind = when (throwable) {
+          is javax.net.ssl.SSLException -> "tls"
+          is java.net.SocketTimeoutException -> "timeout"
+          is java.net.ProtocolException -> "protocol"
+          is java.io.IOException -> "network_io"
+          else -> "transport"
+        })
       }
     }
   }
@@ -229,12 +239,33 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   }
 
 
-  private fun emit(connectionId: String, type: String, message: String? = null) {
+  private val safeCloseReasons = setOf(
+    "response_send_failed", "error_response_send_failed", "encrypted_event_send_failed",
+    "device_session_replaced", "device_repaired", "device_revoked", "gateway_stopped",
+    "session_handshake_timeout", "too_many_pending_connections", "too_many_connections",
+    "binary_frames_not_supported", "remote_frame_invalid", "remote_frame_replayed",
+    "remote_frame_out_of_order", "remote_frame_auth_failed", "remote_frame_payload_invalid",
+    "remote_session_mismatch", "remote_session_state_invalid", "remote_session_proof_invalid",
+    "remote_session_accept_invalid", "remote_device_mismatch", "remote_desktop_mismatch",
+    "remote_device_not_found", "remote_session_hello_replayed", "remote_socket_message_invalid",
+    "remote_socket_error", "remote_request_invalid", "remote_identifier_invalid",
+    "remote_sequence_invalid", "remote_payload_size_invalid", "remote_invalid_base64url"
+  )
+
+
+  private fun emit(
+    connectionId: String, type: String, message: String? = null,
+    closeCode: Int? = null, closeReason: String? = null, failureKind: String? = null
+  ) {
     if (invalidated) return
     val event = Arguments.createMap().apply {
       putString("connectionId", connectionId)
       putString("type", type)
       message?.let { putString("message", it) }
+
+      closeCode?.takeIf { it in 1000..4999 }?.let { putInt("closeCode", it) }
+      closeReason?.let { putString("closeReason", if (it in safeCloseReasons) it else "other") }
+      failureKind?.let { putString("failureKind", it) }
     }
     context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
       .emit(EVENT_NAME, event)
