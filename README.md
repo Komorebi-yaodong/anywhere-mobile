@@ -1,67 +1,114 @@
-# Anywhere Mobile — Remote v2 原生伴侣
+# Anywhere Mobile
 
-React Native 0.86.2 / React 19 / TypeScript。仅支持 Anywhere Desktop Remote v2，不保留 v1 Bearer token 或明文 RPC 兼容路径。
+> Anywhere Desktop 的移动端伴侣。把你已配对的 Anywhere 工作空间带到 Android 或 iPhone / iPad：查看和继续会话、使用 Agent、管理常用配置，并在需要时明确接管或交还 Desktop 会话。
 
-## 当前能力
+<p align="center">
+  <a href="https://github.com/Komorebi-yaodong/anywhere-mobile">
+    <img src="https://img.shields.io/badge/GitHub-anywhere--mobile-black?style=flat-square&logo=github" alt="Anywhere Mobile repository">
+  </a>
+  <a href="https://github.com/Komorebi-yaodong/anywheredesktop">
+    <img src="https://img.shields.io/badge/Desktop-Anywhere%20Desktop-2F7D63?style=flat-square" alt="Anywhere Desktop repository">
+  </a>
+  <a href="https://github.com/Komorebi-yaodong/anywhere_doc">
+    <img src="https://img.shields.io/badge/Docs-anywhere__doc-blue?style=flat-square&logo=readme" alt="Anywhere documentation">
+  </a>
+</p>
 
-- Remote 默认由 Desktop 用户主动开启；扫码/粘贴短期 QR 后单独输入六位验证码。
-- P-256 ECDH + HKDF-SHA-256 + AES-256-GCM；pair-start 已加密，每次 WSS 使用临时 ECDH 与方向隔离的严格序号帧。
-- LAN 固定 Desktop TLS 叶证书并验证 hostname；Tunnel 使用系统 TLS/CA，始终额外验证二维码 Desktop identity 与 E2EE ownership proof。
-- 设备长期私钥及每桌面 root secret 仅保存于系统 Keychain/Keystore；没有 AsyncStorage、明文 token、业务正文日志或 Trust-All。
-- 桌面列表、历史会话分页、消息历史分页、文本/思考流、取消生成、在 Desktop 显示、断线原 requestId 状态恢复。
-- 纯文本消息编辑、消息删除、最后一条 assistant 重答、会话重命名/删除；破坏性操作须本地确认。
-- 每会话模型、思考、voice、MCP、Skill、system prompt 与压缩配置；命令等 Desktop Writer 终态而非仅 ACK。
-- 系统文档选择器上传附件：最多 25 MiB/文件，逐片 SHA-256 与最多 128 KiB E2EE 分片，进度/取消/移除；RPC 不含本地 URI/path。
-- general/providers/prompts/mcpServers/tasks 业务分区完整 JSON 读写；默认隐藏业务秘密，保存本地确认 + expectedRevision，冲突不自动覆盖。
+## 概览
 
-## 当前限制（不是正式发布验收）
+Anywhere Mobile 不是独立的云端聊天服务。它与用户主动开启并明确配对的 Anywhere Desktop 协作：Desktop 保持本地会话、工具与数据的权威控制，Mobile 通过经过验证的加密连接进行查看、操作和继续工作。
 
-- 已通过 TypeScript、ESLint、7 suites / 26 tests 合成 Jest、Android/iOS Metro JS 发布模式打包与四个安全/附件原生包的双平台自动链接检查。**Android arm64 Debug 原生编译已通过；独立 QA 安装包正在构建，iOS 原生编译及手机联调尚未通过**。
-- Android SDK/adb 37.0.0、Java 17/21 已可用；本轮已补齐 API 36、NDK `27.1.12297006`、CMake `3.22.1`，并在线解决 Gradle foojay 缓存缺失，已成功生成 `android/app/build/outputs/apk/debug/app-debug.apk`（需 Metro），签名验证通过；正在构建包名 `com.anywheremobile.qa` 的独立内置 JS 测试包（不覆盖正式应用）。用户选择 USB 安卓手机联调，当前等待设备连接/授权。iOS 构建需 macOS + Xcode。Metro/Node 集成通过不等于 APK/IPA 或 TLS 实机验证成功。
-- 已新增 `pnpm test:desktop-interop`：将相邻 `Anywhere_desktop` 的完整合成 HTTPS/WSS 网关测试切换为 Mobile TS 密码学实现；配对、RPC、业务配置、附件、流式恢复和撤销测试通过，不读取用户真实数据。
-- 单个工作区目前只跟踪一个活动生成回合；仍有待完成/待恢复请求时不允许覆盖跟踪 ID。关闭/离开工作区后不持久化正文和活动回合；请重新打开历史确认 Desktop 执行结果，勿盲目重发。
-- Renderer 命令未确认时显示原 requestId，并提供原请求查询；关闭面板可能让 Desktop 继续执行。
-- 历史附件只显示脱敏元数据，尚未实现 Desktop 附件下载、图片/音频原生预览或完整 Markdown 排版。voice 控件控制 Desktop 会话配置，不是 Mobile 录音/播放能力。
-- 老 JSON 会话需先在 Desktop 迁移。Mobile 不创建/管理 SQLite lease，不浏览 Desktop 本地文件系统。
-- 业务配置当前是高级 JSON 编辑器，整分区替换；请保留完整字段。配对设备完全受信任，能读取业务秘密，请只配对自己的设备。
-- v1 安全存储 namespace 不自动迁移，旧设备需重新扫描 v2 QR。Desktop 设备撤销仍在 Desktop 设置内操作。
+适合以下场景：
 
-## 工程结构
+- 在外出时查看 Desktop 已保存或已打开的会话；
+- 继续已授权接管的对话，或把控制权交还给 Desktop；
+- 使用 Agent、新建聊天、管理项目与常用业务配置；
+- 在手机上发送文本、图片、文件或语音附件，并追踪生成、工具交互和任务状态。
 
-- `src/remote/`: strict protocol、密码学、配对事务、WSS/RPC、DTO、命令终态、附件分片。
-- `src/native/PinnedGateway.ts`: opaque native transport bridge，禁止 JS 网络降级。
-- `android/.../PinnedGatewayModule.kt`、`ios/AnywhereMobile/PinnedGateway.swift`: pinned/system TLS HTTPS/WSS；禁止自动 HTTP redirect。
-- `src/services/secureStore.ts`: Keychain/Keystore identity、paired roots 和桌面索引。
-- `src/hooks/`: 桌面连接/重连、会话状态机、附件队列。
-- `src/components/`: QR、工作区、设置及本地危险操作确认。
-- `__tests__/`: Desktop Node crypto 固定向量、拒绝路径、无 TextEncoder 运行时、流事件/恢复、附件、命令与管理 UI。
+## 核心体验
 
-## 安装、检查与运行
+### 会话与工作区
 
-仅使用 pnpm。Node >= 22.11。
+- 项目分组、会话搜索、历史分页与已打开会话入口；
+- 点击“已打开会话”中的会话标题可直接在 Mobile 查看对应聊天；**查看不会自动接管**；
+- 接管和交还是明确的独立操作：接管后 Desktop 进入只读观察状态，交还后恢复 Desktop 控制；
+- 支持流式回复、思考内容、工具调用卡、交互式选择、任务面板、会话配置、重答、编辑和删除；
+- Desktop Renderer 仍是唯一 SQLite 写入者，Mobile 不直接读写 Desktop 数据库或本地文件系统。
 
-```powershell
+### Agent 与配置
+
+- Agent 路由、搜索、标签、启停和受限编辑；
+- 服务商、MCP、Skill、定时任务、通用设置与关于页的移动端界面；
+- Provider、MCP、Skill 等配置采用受限 DTO 和字段级更新：Mobile 不会收到本地路径、进程命令、Remote 根密钥或 TLS 私钥；
+- 破坏性操作保留本地确认与版本冲突保护。
+
+### 附件与媒体
+
+- 可选择并加密上传图片、文档和语音附件；
+- 附件分片具备大小、顺序和 SHA-256 校验；
+- 已渲染媒体通过会话绑定的受限引用访问，避免将 Desktop 本地路径暴露给 Mobile。
+
+## 安全设计
+
+- 配对由 Desktop 主动发起：扫描二维码后仍需人工核对六位验证码；
+- 每个连接使用临时密钥协商，业务请求、响应、事件和附件内容均受应用层端到端加密保护；
+- 局域网连接固定 Desktop TLS 叶证书，同时保留主机名验证；Tunnel 连接使用系统 TLS 信任链；
+- 不使用 Trust-All、明文 Bearer token 或 JavaScript 网络降级；
+- Mobile 的设备身份与每台 Desktop 的配对秘密仅保存在系统 Keychain / Keystore，不写入普通 AsyncStorage；
+- 已配对设备代表完全信任。请只配对自己控制的设备；测试结束后可在 Desktop 中撤销设备。
+
+> 不要分享二维码、验证码、配对页面、会话内容、附件、API Key、设备秘密或私钥。
+
+## 快速开始
+
+1. 在 Anywhere Desktop 中启用移动端连接功能，并确认 Desktop 正在运行。
+2. 在 Android 或 iOS 上安装 Anywhere Mobile。
+3. 在 Mobile 中扫描 Desktop 显示的二维码，或粘贴二维码内容。
+4. 在两端核对六位验证码后确认配对。
+5. 从首页进入已配对的 Desktop；首次使用请从侧边栏检查会话、已打开会话和 Agent 路由。
+
+如果 Mobile 显示连接错误，请先确认 Desktop 仍在运行、网络可达且未撤销该设备。不要通过关闭证书验证或重新使用旧二维码来绕过安全检查。
+
+## 平台支持与构建
+
+### 开发环境
+
+- Node.js `>= 22.11`
+- 包管理器：`pnpm`
+- Android：Android SDK、JDK 17、NDK / CMake（依赖 React Native 配置）
+- iOS：macOS、Xcode、Ruby / CocoaPods
+
+安装依赖并运行质量检查：
+
+```bash
 pnpm install --frozen-lockfile
 pnpm exec tsc --noEmit
 pnpm lint
-pnpm exec jest --runInBand
+pnpm test --runInBand
 ```
 
-在独立终端/后台启动 Metro：
+### Android
 
-```powershell
-pnpm start
-```
+连接 Android 设备后可运行开发构建：
 
-Android：安装匹配 React Native 工程要求的 JDK/Android SDK，设置 `ANDROID_HOME`，确认 `adb devices`，随后：
-
-```powershell
+```bash
 pnpm android
 ```
 
-iOS（仅 macOS，新增原生依赖后需重装 Pods）：
+构建封闭测试 APK：
 
-```sh
+```powershell
+Set-Location android
+.\gradlew.bat :app:assembleQa --no-daemon -PreactNativeArchitectures=arm64-v8a
+```
+
+`qa` 变体使用独立包名和调试签名，适用于受控测试，不是公开商店或正式发布签名。对外分发前，请在 GitHub Releases 中提供 APK、版本说明和 SHA-256 校验值。
+
+### iOS
+
+iOS 原生构建必须在 macOS 上完成：
+
+```bash
 cd ios
 bundle install
 bundle exec pod install
@@ -69,46 +116,57 @@ cd ..
 pnpm ios
 ```
 
-只检查发布模式 JS 打包（不生成 APK/IPA）：
+将应用安装到自己的设备可使用 Xcode 的开发签名。若要通过 TestFlight 或 App Store 向测试成员分发，需要 Apple Developer Program、有效签名与相应审核流程。
 
-```powershell
-New-Item -ItemType Directory -Force build/remote-v2-check | Out-Null
-pnpm exec react-native bundle --platform android --dev false --entry-file index.js --bundle-output build/remote-v2-check/android.jsbundle --max-workers 2
-pnpm exec react-native bundle --platform ios --dev false --entry-file index.js --bundle-output build/remote-v2-check/ios.jsbundle --max-workers 2
+## 测试
+
+项目使用 Jest 覆盖加密会话、连接恢复、配对、会话状态、管理界面和 Android 品牌资源等关键边界：
+
+```bash
+pnpm test --runInBand
 ```
 
-## USB 隔离联调
+在进行真实设备测试前，请使用专用测试会话、测试服务商与无敏感内容附件。不要将真实聊天、凭据或个人文件用于自动化测试。
 
-QA 包变体使用 `com.anywheremobile.qa`，调试签名但内置发布模式 JS/Hermes；仅供本地测试，不是正式发布签名。
+## 当前限制
 
-```powershell
-cd android
-.\gradlew.bat :app:assembleQa --no-daemon -PreactNativeArchitectures=arm64-v8a --max-workers=2
-cd ..
-pnpm test:desktop-interop
-# 手机 USB 调试授权后，安装前先确认目标设备/包名：
-adb reverse tcp:17861 tcp:17861
-pnpm test:phone-fixture
+- Mobile 依赖已开启并运行的 Anywhere Desktop，不能作为独立 AI 后端使用；
+- iOS 原生构建与面向测试组的签名分发需要 macOS / Xcode；
+- 单个加密响应帧受大小上限保护。若提示 Desktop 返回数据过大，连接会保持，但该请求的数据暂未完整加载；分页与受限分块传输正在完善；
+- 请在公开发布前确认项目许可证、隐私政策和适用的分发条款。
+
+## 项目结构
+
+```text
+Anywhere_mobile/
+├── android/                 # Android 原生工程与安全传输模块
+├── ios/                     # iOS 原生工程与安全传输模块
+├── src/
+│   ├── components/          # 页面、会话与设置界面
+│   ├── domain/              # 配对与数据模型
+│   ├── hooks/               # 连接、会话和附件状态机
+│   ├── native/              # Native bridge 类型边界
+│   ├── remote/              # 加密、配对、RPC 与协议
+│   └── services/            # Keychain / Keystore 与本地缓存
+├── __tests__/               # 合成回归测试
+├── App.tsx                  # 应用入口
+└── package.json
 ```
 
-`phone-fixture` 只在 `127.0.0.1:17861` 启动真实 Desktop 网关，使用内存身份/业务配置及合成 Writer，不访问 Electron 用户目录、SQLite 或真实 AI。它生成两分钟有效的配对 HTML（只含公开 QR/验证码）；控制命令 `pair` 刷新、`devices` 只显示数量、`revoke` 撤销测试设备、`stop` 关闭。联调完成后执行 `stop` 与 `adb reverse --remove tcp:17861`。fixture 只能证明原生连接与协议/UI链路，不能替代真实 Electron Writer 验收。
+## 贡献
 
+欢迎提交 Issue 和 Pull Request。请在提交前：
 
-## 真机验收清单
+1. 不要提交密钥、二维码、验证码、设备秘密、真实会话、附件或本地配置；
+2. 使用 `pnpm`，不要混用 npm / yarn；
+3. 运行 TypeScript、lint 和 Jest；
+4. 对安全边界、传输协议或配对逻辑的修改，请同时补充回归测试与说明。
 
-使用**专用合成测试会话、测试服务商配置和无敏感内容附件**，不要用真实用户历史或业务秘密做自动测试。
+## 相关项目
 
-1. 同 LAN 开启 Desktop Remote，扫码 v2 QR；错误验证码/过期 QR/篡改 Desktop identity 必须拒绝。
-2. LAN pin 模式：正确证书/hostname 可连，错误 pin、过期证书、hostname 不匹配必须拒绝；不能降级 Trust-All。
-3. Tunnel system 模式：正常系统证书链可连，无效系统证书必须拒绝；代理只能看到 E2EE envelope，不得看到验证码、RPC、配置/附件正文。
-4. App 重启后从 Keychain/Keystore 恢复；两桌面同时连接不得覆盖设备 identity；移除本机配对后 root secret 不再可用。
-5. 历史分页/切换会话，打开窗口复用、隐藏 Writer 发送、文本/思考流、停止与桌面显示；断网后恢复原请求，不重复写入。
-6. 消息编辑/删除/最后回复重答、会话重命名/删除：取消确认不发 RPC，保存等待 Writer 终态，Desktop 繁忙/冲突有明确错误。
-7. 配置模型/工具/提示词/压缩，确认只影响目标会话；五业务分区 revision 冲突拒绝覆盖，不暴露 Remote 私钥/监听设置/本地路径。
-8. 附件选择/取消/分片进度/错误 hash/超限/断网/撤销；原始文件不删除，临时缓存副本清理，Desktop 临时上传在 abort/撤销/停服后清理。
-9. Desktop 撤销设备立即断连，重连拒绝；关闭 Remote 断开全部客户端并清理隐藏 Writer/上传。
-10. Android/iOS 小屏布局、软键盘、系统返回键、后台切换、隐私编辑框、权限弹窗和内存压力测试。
+- [Anywhere Desktop](https://github.com/Komorebi-yaodong/anywheredesktop)
+- [Anywhere 文档](https://github.com/Komorebi-yaodong/anywhere_doc)
 
-## 安全约束
+---
 
-不得记录 RPC、聊天、附件、API Key、root secret 或私钥；不得把 Native 错误中的本地附件路径显示到 UI。加密 JS 字符串受 GC 管理，无法承诺内存物理抹除；byte buffers 尽可能及时清零。系统键盘/截图/已解锁设备不属于 E2EE 的保护范围。
+**Anywhere Mobile** 让你的 Anywhere Desktop 工作空间在移动设备上保持可访问、可控且可追溯。
