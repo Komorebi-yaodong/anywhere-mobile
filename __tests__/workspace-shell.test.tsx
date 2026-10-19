@@ -1,9 +1,12 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 import {Image, Text} from 'react-native';
-import { WorkspaceShell } from '../src/components/WorkspaceShell';
-
-import {hasMessageBubble, shouldRenderMessage} from '../src/components/WorkspaceShell';
+import {
+  filterSessionMcpServers,
+  hasMessageBubble,
+  shouldRenderMessage,
+  WorkspaceShell,
+} from '../src/components/WorkspaceShell';
 import type { DesktopRuntime } from '../src/hooks/useDesktops';
 import type { RemoteRequest, RemoteTrackedRequest } from '../src/remote/api';
 
@@ -119,6 +122,34 @@ function workspaceProps() {
     onHome: jest.fn(),
   };
 }
+
+test('filters session MCP options by quick filter, tag, and keyword as an intersection', () => {
+  const servers = [
+    {id: 'mcp-research-preset', name: '研究 MCP', tags: ['Research', '知识库'], preset: true},
+    {id: 'mcp-files-selected', name: '文件 MCP', tags: ['文件'], preset: false},
+    {id: 'mcp-research-other', name: '其他研究 MCP', tags: ['Research'], preset: false},
+  ];
+
+  expect(filterSessionMcpServers(servers, ['mcp-files-selected'], {
+    quickFilter: 'all',
+    tagFilter: 'Research',
+    query: '研究',
+  }).map(item => item.id)).toEqual(['mcp-research-preset', 'mcp-research-other']);
+  expect(filterSessionMcpServers(servers, ['mcp-files-selected'], {
+    quickFilter: 'selected',
+    tagFilter: '__all__',
+  }).map(item => item.id)).toEqual(['mcp-files-selected']);
+  expect(filterSessionMcpServers(servers, ['mcp-files-selected'], {
+    quickFilter: 'preset',
+    tagFilter: 'Research',
+    query: '知识库',
+  }).map(item => item.id)).toEqual(['mcp-research-preset']);
+  expect(filterSessionMcpServers(servers, ['mcp-files-selected'], {
+    quickFilter: 'preset',
+    tagFilter: '文件',
+  })).toEqual([]);
+});
+
 
 test('opens an opened Desktop session without automatically taking it over', async () => {
   mockOpenedSessions = [{

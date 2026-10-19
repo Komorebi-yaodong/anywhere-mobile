@@ -134,6 +134,37 @@ function workspaceNotice(error: unknown, fallback: string): string {
   return messages[code] || (error instanceof Error ? error.message : fallback);
 }
 
+export type SessionMcpQuickFilter = 'all' | 'selected' | 'preset';
+
+export function filterSessionMcpServers(
+  servers: ConversationConfigResult['options']['mcpServers'],
+  selectedIds: string[],
+  {
+    query = '',
+    quickFilter = 'all',
+    tagFilter = '__all__',
+  }: {
+    query?: string;
+    quickFilter?: SessionMcpQuickFilter;
+    tagFilter?: string;
+  } = {},
+) {
+  const selected = new Set(selectedIds);
+  const keyword = query.trim().toLocaleLowerCase('zh-CN');
+  return servers.filter(item => {
+    const tags = Array.isArray(item.tags) ? item.tags : [];
+    if (quickFilter === 'selected' && !selected.has(item.id)) return false;
+    if (quickFilter === 'preset' && !item.preset) return false;
+    if (tagFilter !== '__all__' && !tags.includes(tagFilter)) return false;
+    if (!keyword) return true;
+    return [item.name, item.id, ...tags]
+      .join(' ')
+      .toLocaleLowerCase('zh-CN')
+      .includes(keyword);
+  });
+}
+
+
 export function WorkspaceShell({
   desktop,
   request,
@@ -248,6 +279,9 @@ export function WorkspaceShell({
     'prompt' | 'mcp' | 'skill' | 'compact'
   >('prompt');
   const [sessionBusy, setSessionBusy] = useState(false);
+  const [mcpQuery, setMcpQuery] = useState('');
+  const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
+  const [mcpTagFilter, setMcpTagFilter] = useState('__all__');
   const listRef = useRef<FlatList<RemoteMessage>>(null);
 
   const refreshWorkspace = useCallback(async () => {
@@ -516,6 +550,9 @@ export function WorkspaceShell({
     sessionScope.current = workspace.selectedConversationId;
     setSessionConfig(null);
     setSessionOptions(null);
+    setMcpQuery('');
+    setMcpQuickFilter('all');
+    setMcpTagFilter('__all__');
     if (target === 'session') setSessionTab('prompt');
     setSheet(target);
     setSessionBusy(true);
@@ -783,6 +820,26 @@ export function WorkspaceShell({
     desktop.id,
     request,
   ]);
+
+
+  const sessionMcpTags = useMemo(
+    () => [...new Set((sessionOptions?.mcpServers || []).flatMap(item => item.tags || []))]
+      .sort((left, right) => left.localeCompare(right, 'zh-CN')),
+    [sessionOptions?.mcpServers],
+  );
+  useEffect(() => {
+    if (mcpTagFilter !== '__all__' && !sessionMcpTags.includes(mcpTagFilter)) {
+      setMcpTagFilter('__all__');
+    }
+  }, [mcpTagFilter, sessionMcpTags]);
+  const visibleSessionMcpServers = useMemo(
+    () => filterSessionMcpServers(
+      sessionOptions?.mcpServers || [],
+      sessionConfig?.mcpServerIds || [],
+      {query: mcpQuery, quickFilter: mcpQuickFilter, tagFilter: mcpTagFilter},
+    ),
+    [mcpQuery, mcpQuickFilter, mcpTagFilter, sessionConfig?.mcpServerIds, sessionOptions?.mcpServers],
+  );
 
 
   const conversationTasks = Array.isArray(workspace.tasks) ? workspace.tasks : [];
@@ -1156,10 +1213,22 @@ export function WorkspaceShell({
               <TextInput value={sessionConfig.systemPrompt || ''} editable={controlledByMobile} onChangeText={systemPrompt => setSessionConfig({...sessionConfig, systemPrompt})} multiline style={[styles.input, styles.systemPromptInput]} placeholder="输入本次会话的系统提示词" placeholderTextColor={C.muted} textAlignVertical="top" />
             </View> : null}
             {sessionTab === 'mcp' ? <View style={styles.sessionSection}>
-              <View style={styles.toolSelectList}>{(sessionOptions?.mcpServers || []).map(item => {
+              <View style={styles.sessionMcpSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput accessibilityLabel="搜索会话 MCP" value={mcpQuery} onChangeText={setMcpQuery} placeholder="搜索名称、ID 或标签" placeholderTextColor={C.muted} style={styles.sessionMcpSearchInput} /></View>
+              <View style={styles.sessionMcpFilters}>
+                <Text style={styles.sessionMcpFilterLabel}>快速筛选</Text>
+                <View style={styles.sessionMcpFilterRow}>
+                  <Tag label="全部" active={mcpQuickFilter === 'all'} onPress={() => setMcpQuickFilter('all')} />
+                  <Tag label="已选择" active={mcpQuickFilter === 'selected'} onPress={() => setMcpQuickFilter('selected')} />
+                  <Tag label="预设" active={mcpQuickFilter === 'preset'} onPress={() => setMcpQuickFilter('preset')} />
+                </View>
+                {sessionMcpTags.length ? <><Text style={styles.sessionMcpFilterLabel}>标签</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sessionMcpFilterScroll}><Tag label="全部标签" active={mcpTagFilter === '__all__'} onPress={() => setMcpTagFilter('__all__')} />{sessionMcpTags.map(tag => <Tag key={tag} label={tag} active={mcpTagFilter === tag} onPress={() => setMcpTagFilter(tag)} />)}</ScrollView></> : null}
+              </View>
+              <View style={styles.toolSelectList}>{visibleSessionMcpServers.map(item => {
                 const active = (sessionConfig.mcpServerIds || []).includes(item.id);
-                return <Pressable key={item.id} disabled={!controlledByMobile} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, mcpServerIds: toggleId(sessionConfig.mcpServerIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="mcp" size={17} color={active ? C.primary : C.muted} /></View><Text style={styles.toolSelectName}>{item.name}</Text><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
+                const tags = Array.isArray(item.tags) ? item.tags : [];
+                return <Pressable key={item.id} accessibilityLabel={`选择会话 MCP ${item.name || item.id}`} disabled={!controlledByMobile} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, mcpServerIds: toggleId(sessionConfig.mcpServerIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="mcp" size={17} color={active ? C.primary : C.muted} /></View><View style={styles.toolSelectCopy}><Text numberOfLines={1} style={styles.toolSelectName}>{item.name || item.id}</Text>{(item.preset || tags.length) ? <View style={styles.toolSelectTagRow}>{item.preset ? <Chip label="预设" /> : null}{tags.map(tag => <Chip key={tag} label={tag} />)}</View> : null}</View><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
               })}</View>
+              {!visibleSessionMcpServers.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 MCP 服务。</Text></View> : null}
             </View> : null}
             {sessionTab === 'skill' ? <View style={styles.sessionSection}>
               <View style={styles.toolSelectList}>{(sessionOptions?.skills || []).map(item => {
@@ -2548,11 +2617,20 @@ const baseStyles = StyleSheet.create({
   reasoningLabel: {fontSize: 9, color: C.muted, textAlign: 'center'},
   reasoningLabelActive: {color: C.primary, fontWeight: '800'},
   toolTabs: {flexDirection: 'row', gap: 7},
+  sessionMcpSearch: {minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 13, borderRadius: 16, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
+  sessionMcpSearchInput: {flex: 1, minWidth: 0, paddingVertical: 8, color: C.text, fontSize: 14},
+  sessionMcpFilters: {gap: 6},
+  sessionMcpFilterLabel: {color: C.muted, fontSize: 12, fontWeight: '700'},
+  sessionMcpFilterRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 7},
+  sessionMcpFilterScroll: {gap: 7, paddingVertical: 2},
+  sessionMcpEmpty: {padding: 13, borderRadius: 14, backgroundColor: C.surfaceMuted},
   toolSelectList: {gap: 7},
   toolSelectRow: {minHeight: 53, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 11, borderRadius: 15, backgroundColor: C.surfaceMuted, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line},
   toolSelectRowActive: {backgroundColor: C.primarySoft, borderColor: C.primary},
   toolSelectIcon: {width: 29, height: 29, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surface},
-  toolSelectName: {flex: 1, color: C.text, fontSize: 14, fontWeight: '700'},
+  toolSelectCopy: {flex: 1, minWidth: 0, gap: 4},
+  toolSelectName: {minWidth: 0, color: C.text, fontSize: 14, fontWeight: '700'},
+  toolSelectTagRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 4},
   toolSelectCheck: {width: 18, color: C.primary, fontSize: 17, fontWeight: '900', textAlign: 'right'},
   compactAction: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10},
 
