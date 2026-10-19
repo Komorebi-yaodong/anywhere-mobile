@@ -56,7 +56,7 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { uploadAudioCapture } from '../services/mediaAttachment';
-import {ConversationMarkdown} from './ConversationMarkdown';
+import {ConversationMarkdown, hasRenderableConversationContent} from './ConversationMarkdown';
 import {ConversationTaskSheet} from './ConversationTaskSheet';
 import {cacheRemoteImage} from '../services/remoteImageCache';
 import {
@@ -1654,21 +1654,18 @@ function ToggleRow({
   );
 }
 
-function shouldRenderMessage(message: RemoteMessage): boolean {
+export function shouldRenderMessage(message: RemoteMessage): boolean {
   if (message.role !== 'assistant') return true;
-  const content = renderText(message.payload.content).trim();
+  const content = renderText(message.payload.content);
   const reasoning = String(message.payload.reasoningContent || '').trim();
   const toolCalls = Array.isArray(message.payload.toolCalls) ? message.payload.toolCalls : [];
-  // Keep tool cards, but omit a message only when it has neither user-visible
-  // content nor a tool call to render.
-  return Boolean(content || reasoning || toolCalls.length);
+  // Keep thought and tool-only cards, but never reserve a blank content bubble
+  // for stripped or unsupported markup.
+  return Boolean(hasRenderableConversationContent(content) || reasoning || toolCalls.length);
 }
 
-function hasMessageBubble(message: RemoteMessage): boolean {
-  return Boolean(
-    renderText(message.payload.content).trim() ||
-    String(message.payload.reasoningContent || '').trim(),
-  );
+export function hasMessageBubble(message: RemoteMessage): boolean {
+  return hasRenderableConversationContent(renderText(message.payload.content));
 }
 
 
@@ -1766,7 +1763,7 @@ function MessageCard({
   const content = renderText(message.payload.content);
   const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
   const timestamp = message.payload.completedTimestamp || message.payload.timestamp;
-  const toolOnly = !isUser && !hasMessageBubble(message) && Boolean(message.payload.toolCalls?.length);
+  const toolOnly = !isUser && !hasMessageBubble(message) && !String(message.payload.reasoningContent || '').trim() && Boolean(message.payload.toolCalls?.length);
   const copyText = content || (message.payload.toolCalls || []).map(tool => `调用 ${tool.name || '工具'}`).join('\n');
   return (
     <View style={[styles.messageWrap, isUser ? styles.messageRight : styles.messageLeft, toolOnly && styles.toolOnlyWrap]}>
@@ -2223,7 +2220,7 @@ const baseStyles = StyleSheet.create({
   messageWrap: {maxWidth: '94%', gap: 7},
   messageLeft: {alignSelf: 'flex-start'},
 
-  toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 0, marginTop: 2},
+  toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 7},
 
   toolListFullWidth: {alignSelf: 'stretch', width: '100%'},
 

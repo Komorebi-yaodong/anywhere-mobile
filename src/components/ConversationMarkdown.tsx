@@ -5,33 +5,18 @@ import {MathText} from 'react-native-latex-text';
 
 import type {RemoteRequest} from '../remote/api';
 import {getConversationMediaCache} from '../services/conversationMediaCache';
+import {
+  hasRenderableConversationContent,
+  parseConversationContent,
+  type ConversationMedia,
+} from './conversationMediaMarkup';
+
+export {hasRenderableConversationContent};
 
 const C = {text: '#292724', muted: '#79746C', mutedSurface: '#F2F0E9', primary: '#C96849', danger: '#B84E52'};
 
-type Media = {mediaId: string; kind: 'image' | 'video' | 'audio'};
 type Inline = {kind: 'text' | 'bold' | 'code' | 'link'; value: string; href?: string};
-
-function parseMedia(markdown: string): Media[] {
-  const result: Media[] = [];
-  const seen = new Set<string>();
-  for (const match of markdown.matchAll(/anywhere-media:\/\/([A-Za-z0-9_-]{16,160})(?:\?type=(image|video|audio))?/g)) {
-    const mediaId = match[1];
-    if (seen.has(mediaId)) continue;
-    seen.add(mediaId);
-    result.push({mediaId, kind: (match[2] as Media['kind'] | undefined) || 'image'});
-  }
-  return result;
-}
-
-function stripMedia(markdown: string): string {
-  return markdown
-    .replace(/!\[[^\]]*\]\(\s*anywhere-media:\/\/[A-Za-z0-9_-]{16,160}(?:\?type=(?:image|video|audio))?\s*\)/g, '')
-    .replace(/<(?:img|source|video|audio)\b[^>]*>/gi, '')
-    .replace(/<\/(?:video|audio)>/gi, '')
-    .replace(/anywhere-media:\/\/[A-Za-z0-9_-]{16,160}(?:\?type=(?:image|video|audio))?/g, '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
-}
+type MediaState = {uri: string; mimeType: string};
 
 function inlineMarkdown(text: string): Inline[] {
   const output: Inline[] = [];
@@ -88,28 +73,36 @@ function MarkdownText({value, color = C.text}: {value: string; color?: string}) 
   })}</View>;
 }
 
-function MediaPreview({media, desktopId, conversationId, request}: {media: Media; desktopId: string; conversationId: string; request: RemoteRequest}) {
-  const [state, setState] = useState<{uri: string; mimeType: string} | null>(null);
+function MediaPreview({media, desktopId, conversationId, request}: {media: ConversationMedia; desktopId: string; conversationId: string; request: RemoteRequest}) {
+  const [state, setState] = useState<MediaState | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let active = true;
-    getConversationMediaCache({desktopId, conversationId, mediaId: media.mediaId, request})
+    setError('');
+    setState(null);
+    if (!media.opaque) {
+      setState({uri: media.uri, mimeType: ''});
+      return () => { active = false; };
+    }
+    getConversationMediaCache({desktopId, conversationId, mediaId: media.uri.match(/^anywhere-media:\/\/([A-Za-z0-9_-]{16,160})/)?.[1] || '', request})
       .then(value => { if (active) setState(value); })
       .catch(() => { if (active) setError('媒体暂不可用'); });
     return () => { active = false; };
-  }, [conversationId, desktopId, media.mediaId, request]);
+  }, [conversationId, desktopId, media.opaque, media.uri, request]);
   if (error) return <View style={styles.mediaPlaceholder}><Text style={styles.mediaError}>{error}</Text></View>;
   if (!state) return <View style={styles.mediaPlaceholder}><ActivityIndicator color={C.primary} /><Text style={styles.mediaHint}>正在获取加密媒体…</Text></View>;
-  if (media.kind === 'image') return <Image source={{uri: state.uri}} resizeMode="contain" style={styles.image} />;
-  if (media.kind === 'video') return <Video source={{uri: state.uri}} controls resizeMode="contain" style={styles.video} />;
-  return <View style={styles.audio}><Text style={styles.audioTitle}>音频附件</Text><Video source={{uri: state.uri}} controls style={styles.audioPlayer} /></View>;
+  if (media.kind === 'image') return <Image accessibilityLabel="聊天图片" source={{uri: state.uri}} resizeMode="contain" style={styles.image} onError={() => setError('图片加载失败')} />;
+  if (media.kind === 'video') return <Video source={{uri: state.uri}} controls resizeMode="contain" style={styles.video} onError={() => setError('视频播放失败')} />;
+  return <View style={styles.audio}><Text style={styles.audioTitle}>音频</Text><Video source={{uri: state.uri}} controls style={styles.audioPlayer} onError={() => setError('音频播放失败')} /></View>;
 }
 
-/** Render only a constrained Markdown subset; no chat HTML reaches the formula WebView. */
+/** Render constrained Markdown/HTML media. Direct media is HTTPS-only; local Desktop media must use opaque IDs. */
 export function ConversationMarkdown({value, desktopId, conversationId, request, color}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string}) {
-  const media = useMemo(() => parseMedia(value), [value]);
-  const text = useMemo(() => stripMedia(value), [value]);
-  return <View style={styles.root}>{text ? <MarkdownText value={text} color={color} /> : null}{media.map(item => <MediaPreview key={item.mediaId} media={item} desktopId={desktopId} conversationId={conversationId} request={request} />)}</View>;
+  const blocks = useMemo(() => parseConversationContent(value), [value]);
+  return <View style={styles.root}>{blocks.map(block => block.kind === 'text'
+    ? <MarkdownText key={`text-${block.value.slice(0, 32)}-${blocks.indexOf(block)}`} value={block.value} color={color} />
+    : <MediaPreview key={block.media.key} media={block.media} desktopId={desktopId} conversationId={conversationId} request={request} />,
+  )}</View>;
 }
 
 const styles = StyleSheet.create({

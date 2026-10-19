@@ -2,6 +2,8 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 import { Text } from 'react-native';
 import { WorkspaceShell } from '../src/components/WorkspaceShell';
+
+import {hasMessageBubble, shouldRenderMessage} from '../src/components/WorkspaceShell';
 import type { DesktopRuntime } from '../src/hooks/useDesktops';
 import type { RemoteRequest, RemoteTrackedRequest } from '../src/remote/api';
 
@@ -136,6 +138,22 @@ test('opens an opened Desktop session without automatically taking it over', asy
 });
 
 
+
+
+test('does not reserve a content bubble for reasoning or tool-only assistant messages', () => {
+  const toolOnly = {
+    role: 'assistant',
+    payload: {content: '<audio src="file:///C:/fixture.mp3"></audio>', reasoningContent: '', toolCalls: [{id: 'tool-fixture', name: 'read_file'}]},
+  } as any;
+  const reasoningAndTool = {
+    role: 'assistant',
+    payload: {content: '', reasoningContent: 'synthetic reasoning', toolCalls: [{id: 'tool-fixture', name: 'read_file'}]},
+  } as any;
+  expect(shouldRenderMessage(toolOnly)).toBe(true);
+  expect(hasMessageBubble(toolOnly)).toBe(false);
+  expect(shouldRenderMessage(reasoningAndTool)).toBe(true);
+  expect(hasMessageBubble(reasoningAndTool)).toBe(false);
+});
 
 test('shows the resolved Agent identity separately from the conversation model', async () => {
   mockOpenedSessions = [{

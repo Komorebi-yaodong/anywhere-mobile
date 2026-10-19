@@ -22,6 +22,12 @@ describe('public project links and compact Agent cards', () => {
     expect(about).not.toContain('移动端仓库将在准备完成后发布');
   });
 
+  it('keeps tool-only cards separated from their assistant identity', () => {
+    expect(workspace).toContain("toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 7}");
+    expect(workspace).toContain("!String(message.payload.reasoningContent || '').trim()");
+  });
+
+
   it('lets two-column Agent cards contract to their actual content height', () => {
     const start = workspace.indexOf('assistantCard: {');
     const end = workspace.indexOf('  avatar:', start);
