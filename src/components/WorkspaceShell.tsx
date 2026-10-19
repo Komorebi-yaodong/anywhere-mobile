@@ -2059,7 +2059,6 @@ const baseStyles = StyleSheet.create({
   assistantGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   assistantCard: {
     width: '47%',
-    minHeight: 162,
     borderRadius: 22,
     padding: 14,
     backgroundColor: C.surface,

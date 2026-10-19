@@ -13,6 +13,9 @@ const mockTakeoverConversation = jest.fn(async () => undefined);
 const mockHandoffConversation = jest.fn(async () => undefined);
 const mockRefreshOpenedSessions = jest.fn(async () => undefined);
 let mockOpenedSessions: Array<Record<string, unknown>> = [];
+let mockWorkspaceMessages: Array<Record<string, any>> = [];
+let mockConversationModel = '';
+let mockConversationAssistant = {name: '', avatarUrl: ''};
 let mockOnCapture: ((capture: unknown) => Promise<unknown>) | undefined;
 jest.mock('../src/services/mediaAttachment', () => ({
   uploadAudioCapture: jest.fn(async () => ({
@@ -23,7 +26,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
   useConversationWorkspace: () => ({
     configured: true,
     catalog: [],
-    messages: [],
+    messages: mockWorkspaceMessages,
     activeTurn: null,
     queuedSends: [],
     selectedConversationId: 'conversation-shell-fixture',
@@ -36,8 +39,8 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     removeQueuedSend: jest.fn(),
     reaskLastAssistant: jest.fn(),
     messagePage: {hasMore: false},
-    conversationModel: '',
-    conversationAssistant: {name: '', avatarUrl: ''},
+    conversationModel: mockConversationModel,
+    conversationAssistant: mockConversationAssistant,
     tasks: [],
     pendingChoices: {},
     openedSessions: mockOpenedSessions,
@@ -82,6 +85,10 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
 }
 beforeEach(() => {
   mockOpenedSessions = [];
+
+  mockWorkspaceMessages = [];
+  mockConversationModel = '';
+  mockConversationAssistant = {name: '', avatarUrl: ''};
   mockSelectConversation.mockClear();
   mockTakeoverConversation.mockClear();
   mockHandoffConversation.mockClear();
@@ -128,6 +135,44 @@ test('opens an opened Desktop session without automatically taking it over', asy
   await act(async () => root.unmount());
 });
 
+
+
+test('shows the resolved Agent identity separately from the conversation model', async () => {
+  mockOpenedSessions = [{
+    conversationId: 'conversation-identity-fixture-0001',
+    title: 'Identity Fixture',
+    visible: true,
+    busy: false,
+    mobileControlled: false,
+    controlledByThisDevice: false,
+    hidden: false,
+    hasDesktopObserver: false,
+  }];
+  mockConversationAssistant = {name: 'Zero', avatarUrl: ''};
+  mockConversationModel = 'CPA | deepseek-v4.1-flash';
+  mockWorkspaceMessages = [{
+    uiMessageId: 'assistant-identity-fixture',
+    messageId: 'assistant-identity-fixture',
+    role: 'assistant',
+    order: 1,
+    payload: {
+      content: 'synthetic response',
+      reasoningContent: '',
+      timestamp: '2026-10-19T00:00:00.000Z',
+      completedTimestamp: '',
+      toolCalls: [],
+    },
+  }];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Identity Fixture')[0].props.onPress());
+  const labels = root.root.findAllByType(Text).map(node => node.props.children);
+  expect(labels).toContain('Zero');
+  expect(labels).toContain('CPA | deepseek-v4.1-flash');
+  await act(async () => root.unmount());
+});
 
 test('opens the assistant router without creation; explicit assistant selection creates; Home does not cancel', async () => {
   mockCreate.mockClear();
