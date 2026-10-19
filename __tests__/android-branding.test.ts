@@ -30,6 +30,18 @@ describe('Android Desktop brand asset boundary', () => {
     ]) expect(mark).toContain(fragment);
   });
 
+  it('uses Anywhere Mobile as the launcher display name in every Android variant', () => {
+    const strings = fs.readFileSync(
+      path.join(root, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'),
+      'utf8',
+    );
+    const gradle = fs.readFileSync(path.join(root, 'android', 'app', 'build.gradle'), 'utf8');
+    expect(strings).toContain('<string name="app_name">Anywhere Mobile</string>');
+    expect(gradle).toContain('resValue "string", "app_name", "Anywhere Mobile"');
+    expect(gradle).not.toContain('Anywhere Mobile 测试');
+  });
+
+
   it('ships all Android launcher densities from the unified Desktop brand source', () => {
     for (const [density, size] of Object.entries({
       'mipmap-mdpi': 48,
