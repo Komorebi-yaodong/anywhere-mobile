@@ -18,6 +18,8 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 
 import type {RemoteRequest} from '../remote/api';
 import {AppIcon} from './AppIcon';
+
+import {DesktopBrandMark} from './DesktopBrandMark';
 import {useThemedStyles} from './theme';
 import {version} from '../../package.json';
 
@@ -396,7 +398,7 @@ function Empty({title}: {title: string}) {
 
 function AboutCard() {
   const s = useThemedStyles(styles);
-  return <ScrollView contentContainerStyle={s.aboutPage}><View style={s.aboutHero}><View style={s.aboutIcon}><AppIcon name="about" size={30} color={C.primary} /></View><Text style={s.aboutTitle}>Anywhere Mobile</Text><Text style={s.aboutMeta}>v{version} · Remote v2 · E2EE</Text></View><View style={s.aboutCard}><Text style={s.aboutHeading}>安全的 Desktop 伴侣</Text><Text style={s.aboutText}>配置和会话均通过加密远程通道访问。Desktop Renderer 保持唯一会话数据库写入权，Mobile 不会获取本地路径、服务商密钥、MCP 命令或 Remote 根密钥。</Text></View><View style={s.aboutCard}><Text style={s.aboutHeading}>开源项目</Text><Pressable style={s.githubRow} onPress={() => Linking.openURL('https://github.com/Komorebi-yaodong/anywheredesktop').catch(() => undefined)}><Text style={s.githubText}>Desktop GitHub</Text><AppIcon name="›" size={18} color={C.primary} /></Pressable><Text style={s.aboutText}>移动端仓库将在准备完成后发布。</Text></View></ScrollView>;
+  return <ScrollView contentContainerStyle={s.aboutPage}><View style={s.aboutHero}><View style={s.aboutIcon}><DesktopBrandMark size={34} /></View><Text style={s.aboutTitle}>Anywhere Mobile</Text><Text style={s.aboutMeta}>v{version} · Remote v2 · E2EE</Text></View><View style={s.aboutCard}><Text style={s.aboutHeading}>安全的 Desktop 伴侣</Text><Text style={s.aboutText}>配置和会话均通过加密远程通道访问。Desktop Renderer 保持唯一会话数据库写入权，Mobile 不会获取本地路径、服务商密钥、MCP 命令或 Remote 根密钥。</Text></View><View style={s.aboutCard}><Text style={s.aboutHeading}>开源项目</Text><Pressable style={s.githubRow} onPress={() => Linking.openURL('https://github.com/Komorebi-yaodong/anywheredesktop').catch(() => undefined)}><Text style={s.githubText}>Desktop GitHub</Text><AppIcon name="›" size={18} color={C.primary} /></Pressable><Text style={s.aboutText}>移动端仓库将在准备完成后发布。</Text></View></ScrollView>;
 }
 
 const styles = StyleSheet.create({

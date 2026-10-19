@@ -140,6 +140,11 @@ export function useConversationWorkspace({
   const catalogEpoch = useRef(0);
   const messageEpoch = useRef(0);
 
+  // An opened Desktop window might not appear in the current catalog page.
+  // Keep only its safe display title while Mobile opens/reads the target; this
+  // is UI state, not a Desktop path or a claim of write control.
+  const selectedOpenedTitleRef = useRef('');
+
   const commitTurn = useCallback(
     (
       updater:
@@ -176,7 +181,8 @@ export function useConversationWorkspace({
       setSelectedConversationId(current => {
         if (
           current &&
-          result.conversations.some(item => item.conversationId === current)
+          (result.conversations.some(item => item.conversationId === current) ||
+            !!selectedOpenedTitleRef.current)
         ) {
           return current;
         }
@@ -323,7 +329,8 @@ export function useConversationWorkspace({
     api.release(conversationId).catch(() => undefined);
   }, [api, desktopStatus]);
 
-  const selectConversation = useCallback((conversationId: string) => {
+  const selectConversation = useCallback((conversationId: string, openedTitle = '') => {
+    selectedOpenedTitleRef.current = openedTitle;
     const previousConversationId = scopeRef.current.selectedConversationId;
     if (previousConversationId && previousConversationId !== conversationId) {
       releaseConversation(previousConversationId);
@@ -643,6 +650,8 @@ export function useConversationWorkspace({
 
   useEffect(() => {
     setCatalog([]);
+
+    selectedOpenedTitleRef.current = '';
     setMessages([]);
     setOpenedSessions([]);
     setControlledConversationIds([]);
@@ -919,7 +928,21 @@ export function useConversationWorkspace({
     selectedConversationId,
     selectedConversation:
       catalog.find(item => item.conversationId === selectedConversationId) ??
-      null,
+      (selectedConversationId && selectedOpenedTitleRef.current
+        ? {
+            conversationId: selectedConversationId,
+            title: selectedOpenedTitleRef.current,
+            format: 'sqlite' as const,
+            revision: 0,
+            createdAt: '',
+            updatedAt: '',
+            byteSize: 0,
+            project: null,
+            migrationRequired: false,
+            readable: true,
+            window: null,
+          }
+        : null),
     messages:
       activeTurn?.conversationId === selectedConversationId &&
       !activeTurn.historyLoaded &&

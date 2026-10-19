@@ -642,6 +642,17 @@ export function WorkspaceShell({
     }
   };
 
+  const enterOpenedSession = (item: OpenedConversationSession) => {
+    audio.cancel();
+    workspace.selectConversation(
+      item.conversationId,
+      item.title || '未命名会话',
+    );
+    setMode('chat');
+    setDrawerOpen(false);
+    setSheet(null);
+  };
+
 
   const activeTurn =
     workspace.activeTurn?.conversationId === workspace.selectedConversationId
@@ -879,14 +890,19 @@ export function WorkspaceShell({
         <View style={styles.openedSessionList}>
           {workspace.openedSessions.length ? workspace.openedSessions.map((item: OpenedConversationSession) => (
             <View key={item.conversationId} style={styles.openedSessionCard}>
-              <View style={styles.openedSessionCopy}>
+              <Pressable
+                style={styles.openedSessionCopy}
+                onPress={() => enterOpenedSession(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`打开会话 ${item.title || '未命名会话'}`}
+              >
                 <Text numberOfLines={1} style={styles.openedSessionTitle}>{item.title || '未命名会话'}</Text>
                 <Text style={styles.openedSessionMeta}>
                   {item.controlledByThisDevice ? 'Mobile 正在控制' : item.mobileControlled ? '其他设备正在控制' : 'Desktop 正在控制'}
                   {item.hidden ? ' · 隐藏 Writer' : item.visible ? ' · Desktop 已显示' : ''}
                   {item.busy ? ' · 处理中' : ''}
                 </Text>
-              </View>
+              </Pressable>
               {item.controlledByThisDevice ? (
                 <Action compact label="交还 Desktop" onPress={() => handoffOpenedSession(item)} disabled={item.busy} />
               ) : item.mobileControlled ? null : (
@@ -2446,7 +2462,7 @@ const baseStyles = StyleSheet.create({
     borderColor: C.line,
     backgroundColor: C.surfaceMuted,
   },
-  openedSessionCopy: {flex: 1, minWidth: 0, gap: 4},
+  openedSessionCopy: {flex: 1, minWidth: 0, gap: 4, minHeight: 48, justifyContent: 'center'},
   openedSessionTitle: {color: C.text, fontSize: 14, fontWeight: '800'},
   openedSessionMeta: {color: C.muted, fontSize: 11, lineHeight: 16},
 

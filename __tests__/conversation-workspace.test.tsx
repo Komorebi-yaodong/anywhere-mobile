@@ -224,6 +224,24 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('keeps an opened session selected when it is outside the current catalog page', async () => {
+    const f = fixture();
+    const openedOnly = 'conversation-opened-only-fixture-0003';
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    await act(async () => { f.state.selectConversation(openedOnly, 'Opened Only'); });
+    await act(async () => { await Promise.resolve(); });
+    expect(f.rpc).toHaveBeenCalledWith(desktopId, 'conversation.open', {conversationId: openedOnly}, 30_000);
+    expect(f.rpc.mock.calls.some(call => call[1] === 'conversation.takeover')).toBe(false);
+    expect(f.state.selectedConversationId).toBe(openedOnly);
+    expect(f.state.selectedConversation?.title).toBe('Opened Only');
+    await act(async () => { await f.state.refreshCatalog(); });
+    expect(f.state.selectedConversationId).toBe(openedOnly);
+    expect(f.state.selectedConversation?.title).toBe('Opened Only');
+    await act(async () => { root.unmount(); });
+  });
+
+
   it('releases an idle hidden writer when switching or leaving a conversation', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;

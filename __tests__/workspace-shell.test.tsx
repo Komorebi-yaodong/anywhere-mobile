@@ -8,6 +8,11 @@ import type { RemoteRequest, RemoteTrackedRequest } from '../src/remote/api';
 const mockCreate = jest.fn(async () => undefined);
 const mockCancel = jest.fn(async () => undefined);
 const mockSend = jest.fn(async () => undefined);
+const mockSelectConversation = jest.fn();
+const mockTakeoverConversation = jest.fn(async () => undefined);
+const mockHandoffConversation = jest.fn(async () => undefined);
+const mockRefreshOpenedSessions = jest.fn(async () => undefined);
+let mockOpenedSessions: Array<Record<string, unknown>> = [];
 let mockOnCapture: ((capture: unknown) => Promise<unknown>) | undefined;
 jest.mock('../src/services/mediaAttachment', () => ({
   uploadAudioCapture: jest.fn(async () => ({
@@ -35,11 +40,12 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     conversationAssistant: {name: '', avatarUrl: ''},
     tasks: [],
     pendingChoices: {},
-    openedSessions: [],
+    openedSessions: mockOpenedSessions,
     canControlConversation: () => true,
-    takeoverConversation: jest.fn(),
-    handoffConversation: jest.fn(),
-    refreshOpenedSessions: jest.fn(),
+    selectConversation: mockSelectConversation,
+    takeoverConversation: mockTakeoverConversation,
+    handoffConversation: mockHandoffConversation,
+    refreshOpenedSessions: mockRefreshOpenedSessions,
     loadOlderMessages: jest.fn(),
     submitChoice: jest.fn(),
     releaseSelectedConversation: jest.fn(),
@@ -74,6 +80,55 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
   if (!node) throw new Error(`Missing button ${label}`);
   return node;
 }
+beforeEach(() => {
+  mockOpenedSessions = [];
+  mockSelectConversation.mockClear();
+  mockTakeoverConversation.mockClear();
+  mockHandoffConversation.mockClear();
+  mockRefreshOpenedSessions.mockClear();
+});
+
+function workspaceProps() {
+  return {
+    desktop: {id: 'desktop-shell-opened', name: 'Fixture Desktop', status: '在线'} as DesktopRuntime,
+    request: jest.fn(async () => ({ok: true, profile: {displayName: 'Fixture'}, configured: true, projects: [], assistants: []})) as RemoteRequest,
+    requestTracked: jest.fn() as RemoteTrackedRequest,
+    subscribeEvents: () => () => undefined,
+    onHome: jest.fn(),
+  };
+}
+
+test('opens an opened Desktop session without automatically taking it over', async () => {
+  mockOpenedSessions = [{
+    conversationId: 'conversation-opened-shell-fixture-0001',
+    title: 'Opened Fixture',
+    visible: true,
+    busy: false,
+    mobileControlled: false,
+    controlledByThisDevice: false,
+    hidden: false,
+    hasDesktopObserver: false,
+  }];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await act(async () => {
+    root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏')[0].props.onPress();
+  });
+  await act(async () => {
+    root.root.findAll(node => node.props.accessibilityLabel === '已打开会话')[0].props.onPress();
+  });
+  await act(async () => {
+    root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Opened Fixture')[0].props.onPress();
+  });
+  expect(mockSelectConversation).toHaveBeenCalledWith(
+    'conversation-opened-shell-fixture-0001',
+    'Opened Fixture',
+  );
+  expect(mockTakeoverConversation).not.toHaveBeenCalled();
+  await act(async () => root.unmount());
+});
+
+
 test('opens the assistant router without creation; explicit assistant selection creates; Home does not cancel', async () => {
   mockCreate.mockClear();
   mockCancel.mockClear();
