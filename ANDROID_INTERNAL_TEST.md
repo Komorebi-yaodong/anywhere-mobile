@@ -3,7 +3,7 @@
 ## 适用范围
 
 - 包名：`com.anywheremobile.qa`
-- 本次内测版本：`1.0.4-internal.4`（`versionCode 5`）
+- 本次内测版本：`1.0.5-internal.5`（`versionCode 6`）
 - 构建类型：`qa`（内置发布模式 JS/Hermes）
 - 签名：**调试签名，仅限封闭测试，不得用于正式发布或公开商店分发。**
 - 目标架构：`arm64-v8a`
@@ -29,7 +29,7 @@
 - 点击标题仅进入查看，**不会自动接管** Desktop 控制权；接管与交还仍需明确点击对应按钮。
 - 已打开但暂未显示在 Mobile 当前历史目录页的会话，进入后仍应保留正确标题与选中状态。
 - 已迁移的 SQLite 会话：消息头左侧应显示当前 Agent 名称（例如 `Zero`），右侧显示服务商与模型（例如 `CPA | deepseek-v4.1-flash`），两者不得都显示为模型标签。
-- HTTPS Markdown 图片、HTML 图片、HTML 音频和 HTML 视频应直接使用原生预览/控制条；HTTP、`file://`、`content://` 或 `data:` 直连媒体不得直接播放。Desktop 本地图片/音频/视频可显示路径文字，但字节必须经会话绑定 `anywhere-media://` 分块通道预览。
+- HTTPS Markdown 图片、HTML 图片、HTML 音频和 HTML 视频应原样保留 HTTPS URL 并使用原生预览/控制条，绝不能被改写为本地媒体引用；HTTP、`file://`、`content://` 或 `data:` 直连媒体不得直接播放。Desktop 的 Windows 盘符、macOS/Linux 绝对路径与 `file:` 本地图片/音频/视频可显示路径文字，但字节必须经会话绑定 `anywhere-media://` 分块通道预览。
 - AI 仅返回思考和/或工具调用而没有可渲染正文时，不应出现空白内容气泡；纯工具调用卡与头像信息应保留正常间距。
 - “开始新的聊天”双列 Agent 卡片应按头像、模型和 MCP/Skill 标签自然收缩，标签下方不应保留大块固定空白。
 - 设置 → 关于：应可分别打开 Anywhere Desktop 与 Anywhere Mobile 的公开 GitHub 仓库。
