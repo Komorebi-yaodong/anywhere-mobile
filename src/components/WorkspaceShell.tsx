@@ -25,9 +25,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { DesktopRuntime } from '../hooks/useDesktops';
+import type {AvatarCache} from '../domain/pairing';
 import { useConversationWorkspace } from '../hooks/useConversationWorkspace';
 import { useAttachmentQueue } from '../hooks/useAttachmentQueue';
 import type {
+  AvatarResourceMetadata,
   ConversationSummary,
   OpenedConversationSession,
   RemoteMessage,
@@ -58,12 +60,12 @@ import { launchImageLibrary } from 'react-native-image-picker';
 import { uploadAudioCapture } from '../services/mediaAttachment';
 import {ConversationMarkdown, hasRenderableConversationContent} from './ConversationMarkdown';
 import {ConversationTaskSheet} from './ConversationTaskSheet';
-import {cacheRemoteImage} from '../services/remoteImageCache';
+import {cacheRemoteHttpsResource, cacheRemoteImage} from '../services/remoteImageCache';
 import {
-  cacheProfileAvatar,
+  ensureAvatarResource,
   isAvatarCacheValid,
-  removeProfileAvatarCache,
-} from '../services/profileAvatarCache';
+  removeAvatarCache,
+} from '../services/avatarResourceCache';
 import {
   ConversationActions,
   type ConversationAction,
@@ -85,6 +87,20 @@ const C = {
   user: '#F7DFD6',
   icon: '#504B43',
 };
+
+function sameStringRecords(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left);
+  return leftKeys.length === Object.keys(right).length && leftKeys.every(key => left[key] === right[key]);
+}
+
+function sameAvatarCacheRecords(left: Record<string, AvatarCache>, right: Record<string, AvatarCache>): boolean {
+  const leftKeys = Object.keys(left);
+  return leftKeys.length === Object.keys(right).length && leftKeys.every(key =>
+    left[key]?.uri === right[key]?.uri &&
+    left[key]?.version === right[key]?.version &&
+    left[key]?.expiresAt === right[key]?.expiresAt,
+  );
+}
 
 type Props = {
   desktop: DesktopRuntime;
@@ -169,6 +185,9 @@ export function WorkspaceShell({
 
   const [draft, setDraft] = useState('');
   const [assistantAvatar, setAssistantAvatar] = useState('');
+  const [agentAvatarResources, setAgentAvatarResources] = useState<Record<string, AvatarResourceMetadata>>({});
+  const [agentAvatarCaches, setAgentAvatarCaches] = useState<Record<string, AvatarCache>>({});
+  const [agentAvatarSources, setAgentAvatarSources] = useState<Record<string, string>>({});
 
   const currentConversation = useRef(workspace.selectedConversationId);
   currentConversation.current = workspace.selectedConversationId;
@@ -235,45 +254,110 @@ export function WorkspaceShell({
     if (desktop.status !== '在线') return;
     setLoadingWorkspace(true);
     try {
-      const [value, routes] = await Promise.all([
+      const [value, routes, assistantMetadata] = await Promise.all([
         request<WorkspaceBootstrap>(desktop.id, 'workspace.bootstrap.get'),
         request<{ok: true; assistants: RemoteAssistant[]}>(desktop.id, 'conversation.assistants.list'),
+        request<{ok: true; assistants: WorkspaceBootstrap['assistants']}>(desktop.id, 'workspace.assistants.list'),
       ]);
       const cachedAvatar = desktop.avatarCache;
-      const avatarVersion = value.profile.avatarVersion || '';
-      let nextAvatarCache = cachedAvatar;
-      if (value.profile.avatarDataUrl && avatarVersion) {
-        const unchanged =
-          cachedAvatar?.version === avatarVersion && isAvatarCacheValid(cachedAvatar);
-        if (!unchanged) {
-          if (cachedAvatar && !isAvatarCacheValid(cachedAvatar)) {
-            await removeProfileAvatarCache(cachedAvatar);
-          }
-          nextAvatarCache = await cacheProfileAvatar({
+      let nextAvatarCache: AvatarCache | undefined;
+      if (value.profile.avatar) {
+        try {
+          nextAvatarCache = await ensureAvatarResource({
             desktopId: desktop.id,
-            avatarDataUrl: value.profile.avatarDataUrl,
-            avatarVersion,
-            displayName: value.profile.displayName,
+            resource: value.profile.avatar,
+            request,
             previous: cachedAvatar,
+            displayName: value.profile.displayName,
           });
+        } catch {
+          // A standalone avatar cache miss must never prevent workspace use.
+          nextAvatarCache = undefined;
+        }
+      } else if (/^https:\/\//i.test(value.profile.avatarUrl || '')) {
+        try {
+          nextAvatarCache = await cacheRemoteHttpsResource({
+            url: value.profile.avatarUrl,
+            namespace: 'avatar',
+            maxBytes: 512 * 1024,
+          });
+        } catch {
+          nextAvatarCache = cachedAvatar;
         }
       } else if (cachedAvatar) {
-        await removeProfileAvatarCache(cachedAvatar);
-        nextAvatarCache = undefined;
+        await removeAvatarCache(cachedAvatar);
       }
       if (
         updateProfile &&
         (value.profile.displayName !== desktop.profileName ||
           nextAvatarCache?.version !== cachedAvatar?.version ||
-          nextAvatarCache?.expiresAt !== cachedAvatar?.expiresAt)
+          nextAvatarCache?.uri !== cachedAvatar?.uri)
       ) {
         await updateProfile(desktop.id, {
           profileName: value.profile.displayName,
           avatarCache: nextAvatarCache,
         });
       }
+
+      const workspaceByCode = new Map(value.assistants.map(item => [item.code, item]));
+      const mergedRoutes = (routes.assistants || []).map(item => {
+        const workspaceAssistant = workspaceByCode.get(item.code);
+        return {
+          ...item,
+          icon: item.icon || workspaceAssistant?.icon || '',
+          avatar: item.avatar || workspaceAssistant?.avatar || null,
+        };
+      });
+      const resources: Record<string, AvatarResourceMetadata> = {};
+      for (const item of assistantMetadata.assistants) {
+        if (item.avatar?.kind === 'agent' && item.avatar.code === item.code) resources[item.code] = item.avatar;
+      }
+      for (const item of value.assistants) {
+        if (item.avatar?.kind === 'agent' && item.avatar.code === item.code) resources[item.code] = item.avatar;
+      }
+      for (const item of mergedRoutes) {
+        if (item.avatar?.kind === 'agent' && item.avatar.code === item.code) resources[item.code] = item.avatar;
+      }
+      const resolved = await Promise.all(mergedRoutes.map(async item => {
+        const resource = resources[item.code];
+        if (!resource) {
+          const source = await cacheRemoteImage(item.icon || '');
+          return {code: item.code, cache: undefined, source};
+        }
+        try {
+          const cache = await ensureAvatarResource({
+            desktopId: desktop.id,
+            resource,
+            request,
+            previous: agentAvatarCaches[item.code],
+            displayName: item.name,
+          });
+          return {code: item.code, cache, source: cache?.uri || item.icon || ''};
+        } catch {
+          return {code: item.code, cache: undefined, source: item.icon || ''};
+        }
+      }));
+      // Preserve verified caches for historical/non-router Agents. A message
+      // header may lazily resolve one of these after the initial route list has
+      // loaded; refreshing the route must not discard it and trigger a state
+      // oscillation or a redundant validation request.
+      const nextAgentCaches: Record<string, AvatarCache> = Object.fromEntries(
+        Object.entries(agentAvatarCaches).filter(([code, cache]) =>
+          resources[code]?.version === cache.version,
+        ),
+      );
+      const nextAgentSources: Record<string, string> = Object.fromEntries(
+        Object.entries(agentAvatarSources).filter(([code]) => Boolean(nextAgentCaches[code])),
+      );
+      for (const item of resolved) {
+        if (item.cache) nextAgentCaches[item.code] = item.cache;
+        if (item.source) nextAgentSources[item.code] = item.source;
+      }
+      setAgentAvatarResources(resources);
+      setAgentAvatarCaches(current => sameAvatarCacheRecords(current, nextAgentCaches) ? current : nextAgentCaches);
+      setAgentAvatarSources(current => sameStringRecords(current, nextAgentSources) ? current : nextAgentSources);
       setBootstrap(value);
-      setRouteAssistants(routes.assistants || []);
+      setRouteAssistants(mergedRoutes);
       setNotice('');
     } catch (error) {
       setNotice(workspaceNotice(error, '无法读取 Desktop 工作区。'));
@@ -281,6 +365,8 @@ export function WorkspaceShell({
       setLoadingWorkspace(false);
     }
   }, [
+    agentAvatarCaches,
+    agentAvatarSources,
     desktop.avatarCache,
     desktop.id,
     desktop.profileName,
@@ -658,17 +744,45 @@ export function WorkspaceShell({
     workspace.activeTurn?.conversationId === workspace.selectedConversationId
       ? workspace.activeTurn
       : null;
-  const activeAssistantIdentity = workspace.conversationAssistant || {name: '', avatarUrl: ''};
+  const activeAssistantIdentity = workspace.conversationAssistant || {code: '', name: '', avatarUrl: ''};
   useEffect(() => {
     let active = true;
-    const url = activeAssistantIdentity.avatarUrl;
-    if (!url) {
+    const code = activeAssistantIdentity.code;
+    const resource = code ? agentAvatarResources[code] : undefined;
+    const fallbackUrl = activeAssistantIdentity.avatarUrl;
+    if (resource) {
+      ensureAvatarResource({
+        desktopId: desktop.id,
+        resource,
+        request,
+        previous: agentAvatarCaches[code],
+        displayName: activeAssistantIdentity.name,
+      }).then(cache => {
+        if (!active) return;
+        const source = cache?.uri || fallbackUrl || '';
+        setAssistantAvatar(source);
+        if (cache) {
+          setAgentAvatarCaches(current => current[code]?.version === cache.version && current[code]?.uri === cache.uri ? current : {...current, [code]: cache});
+          setAgentAvatarSources(current => current[code] === source ? current : {...current, [code]: source});
+        }
+      }).catch(() => { if (active) setAssistantAvatar(fallbackUrl || ''); });
+      return () => { active = false; };
+    }
+    if (!fallbackUrl) {
       setAssistantAvatar('');
       return () => { active = false; };
     }
-    cacheRemoteImage(url).then(value => { if (active) setAssistantAvatar(value); }).catch(() => { if (active) setAssistantAvatar(''); });
+    cacheRemoteImage(fallbackUrl).then(value => { if (active) setAssistantAvatar(value); }).catch(() => { if (active) setAssistantAvatar(''); });
     return () => { active = false; };
-  }, [activeAssistantIdentity.avatarUrl]);
+  }, [
+    activeAssistantIdentity.avatarUrl,
+    activeAssistantIdentity.code,
+    activeAssistantIdentity.name,
+    agentAvatarCaches,
+    agentAvatarResources,
+    desktop.id,
+    request,
+  ]);
 
 
   const conversationTasks = Array.isArray(workspace.tasks) ? workspace.tasks : [];
@@ -767,6 +881,7 @@ export function WorkspaceShell({
       ) : mode === 'router' ? (
         <AssistantRouter
           assistants={routeAssistants}
+          avatarSources={agentAvatarSources}
           loading={loadingWorkspace}
           onSelect={openAssistant}
           onRefresh={refreshWorkspace}
@@ -1078,11 +1193,13 @@ export function WorkspaceShell({
 
 function AssistantRouter({
   assistants,
+  avatarSources,
   loading,
   onSelect,
   onRefresh,
 }: {
   assistants: RemoteAssistant[];
+  avatarSources: Record<string, string>;
   loading: boolean;
   onSelect: (item: RemoteAssistant) => void;
   onRefresh: () => void;
@@ -1104,7 +1221,7 @@ function AssistantRouter({
       <View style={styles.assistantGrid}>
         {visible.map(item => (
           <Pressable key={item.code} style={styles.assistantCard} onPress={() => onSelect(item)}>
-            <View style={styles.assistantCardTop}><Avatar source={item.icon} label={item.name} /><View style={styles.assistantCardCode}><Text numberOfLines={1} style={styles.assistantCodeText}>{item.name}</Text></View></View>
+            <View style={styles.assistantCardTop}><Avatar source={avatarSources[item.code] || item.icon} label={item.name} /><View style={styles.assistantCardCode}><Text numberOfLines={1} style={styles.assistantCodeText}>{item.name}</Text></View></View>
             <Text numberOfLines={2} style={styles.assistantMeta}>{item.model || '默认模型'}</Text>
             {(item.mcpCount || item.skillCount) ? <View style={styles.chipRow}>
               {item.mcpCount ? <Chip label={`${item.mcpCount} MCP`} /> : null}

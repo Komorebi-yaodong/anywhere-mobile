@@ -65,7 +65,7 @@ export function useConversationWorkspace({
   const [messages, setMessages] = useState<RemoteMessage[]>([]);
   const [tasks, setTasks] = useState<ConversationTask[]>([]);
   const [conversationModel, setConversationModel] = useState('');
-  const [conversationAssistant, setConversationAssistant] = useState({name: '', avatarUrl: ''});
+  const [conversationAssistant, setConversationAssistant] = useState({code: '', name: '', avatarUrl: ''});
   const [openedSessions, setOpenedSessions] = useState<OpenedConversationSession[]>([]);
   const [controlledConversationIds, setControlledConversationIds] = useState<string[]>([]);
   const [pendingChoices, setPendingChoices] = useState<Record<string, {conversationId: string; questions: Array<{question: string; header: string; options: Array<{label: string; description: string}>}>}>>({});
@@ -235,6 +235,7 @@ export function useConversationWorkspace({
         setTasks(Array.isArray(result.tasks) ? result.tasks : []);
         setConversationModel(typeof result.conversation?.model === 'string' ? result.conversation.model : '');
         setConversationAssistant({
+          code: typeof result.conversation?.assistant?.code === 'string' ? result.conversation.assistant.code : '',
           name: typeof result.conversation?.assistant?.name === 'string' ? result.conversation.assistant.name : '',
           avatarUrl: typeof result.conversation?.assistant?.avatarUrl === 'string' ? result.conversation.assistant.avatarUrl : '',
         });
@@ -350,7 +351,7 @@ export function useConversationWorkspace({
     setMessages([]);
     setTasks([]);
     setConversationModel('');
-    setConversationAssistant({name: '', avatarUrl: ''});
+    setConversationAssistant({code: '', name: '', avatarUrl: ''});
     setPendingChoices({});
     setMessagePage({ pageSize: 50, nextBeforeUiOrder: null, hasMore: false });
     setSelectedConversationId(conversationId);

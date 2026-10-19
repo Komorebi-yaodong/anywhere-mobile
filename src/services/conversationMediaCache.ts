@@ -13,12 +13,13 @@ type MediaReply = {
   mediaId: string;
   mimeType: string;
   totalBytes: number;
+  sha256: string;
   offset: number;
   byteLength: number;
   data: string;
 };
 
-type CacheEntry = {uri: string; expiresAt: string; mimeType: string; totalBytes: number};
+type CacheEntry = {uri: string; expiresAt: string; mimeType: string; totalBytes: number; sha256: string};
 const pending = new Map<string, Promise<CacheEntry>>();
 
 function extensionFor(mimeType: string): string {
@@ -45,14 +46,37 @@ function uri(path: string): string {
   return path.startsWith('file://') ? path : `file://${path}`;
 }
 
-async function readValid(filePath: string): Promise<CacheEntry | null> {
+function validSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+}
+
+async function removeCache(filePath: string): Promise<void> {
+  await FileSystem.unlink(filePath).catch(() => undefined);
+  await FileSystem.unlink(metaPath(filePath)).catch(() => undefined);
+}
+
+async function readValid(filePath: string, expected: Pick<MediaReply, 'mimeType' | 'totalBytes' | 'sha256'>): Promise<CacheEntry | null> {
   try {
     const raw = await FileSystem.readFile(metaPath(filePath), 'utf8');
     const value = JSON.parse(raw) as CacheEntry;
     const expiresAt = Date.parse(value.expiresAt);
-    if (!value?.uri || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !(await FileSystem.exists(filePath))) {
-      await FileSystem.unlink(filePath).catch(() => undefined);
-      await FileSystem.unlink(metaPath(filePath)).catch(() => undefined);
+    if (
+      !value?.uri ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= Date.now() ||
+      value.mimeType !== expected.mimeType ||
+      value.totalBytes !== expected.totalBytes ||
+      !validSha256(value.sha256) ||
+      value.sha256.toLowerCase() !== expected.sha256.toLowerCase() ||
+      !(await FileSystem.exists(filePath))
+    ) {
+      await removeCache(filePath);
+      return null;
+    }
+    const stat = await FileSystem.stat(filePath);
+    const actual = await FileSystem.hash(filePath, 'SHA-256');
+    if (stat.size !== expected.totalBytes || actual.toLowerCase() !== expected.sha256.toLowerCase()) {
+      await removeCache(filePath);
       return null;
     }
     return value;
@@ -79,51 +103,59 @@ export async function getConversationMediaCache({
   const existing = pending.get(key);
   if (existing) return existing;
   const run = (async () => {
-    const first = await request<MediaReply>(desktopId, 'conversation.media.get', {
+    const metadata = await request<MediaReply>(desktopId, 'conversation.media.get', {
       conversationId: safeConversationId,
       mediaId: safeMediaId,
       offset: 0,
-      length: chunkBytes,
-    }, 60_000);
-    if (!first.ok || first.offset !== 0 || first.totalBytes < 1 || first.totalBytes > maxBytes || first.byteLength < 1) {
-      throw new Error('媒体响应无效。');
+      length: 0,
+    }, 30_000);
+    if (!metadata.ok || metadata.offset !== 0 || metadata.byteLength !== 0 || metadata.data !== '' || metadata.totalBytes < 1 || metadata.totalBytes > maxBytes || !validSha256(metadata.sha256)) {
+      throw new Error('媒体元数据无效。');
     }
-    const filePath = safePath(desktopId, safeMediaId, first.mimeType);
-    const cached = await readValid(filePath);
-    if (cached && cached.totalBytes === first.totalBytes && cached.mimeType === first.mimeType) return cached;
+    const filePath = safePath(desktopId, safeMediaId, metadata.mimeType);
+    const cached = await readValid(filePath, metadata);
+    if (cached) return cached;
     if (!(await FileSystem.exists(cacheDirectory))) await FileSystem.mkdir(cacheDirectory);
-    await FileSystem.unlink(filePath).catch(() => undefined);
-    await FileSystem.unlink(metaPath(filePath)).catch(() => undefined);
+    await removeCache(filePath);
     const write = async (reply: MediaReply, append: boolean) => {
-      if (reply.mediaId !== safeMediaId || reply.mimeType !== first.mimeType || reply.totalBytes !== first.totalBytes || reply.byteLength < 1 || reply.byteLength > chunkBytes || reply.offset < 0) throw new Error('媒体分块无效。');
+      if (
+        reply.mediaId !== safeMediaId ||
+        reply.mimeType !== metadata.mimeType ||
+        reply.totalBytes !== metadata.totalBytes ||
+        reply.sha256.toLowerCase() !== metadata.sha256.toLowerCase() ||
+        reply.byteLength < 1 ||
+        reply.byteLength > chunkBytes ||
+        reply.offset < 0
+      ) throw new Error('媒体分块无效。');
       const bytes = decodeBase64Url(reply.data, 'media.data', {minBytes: reply.byteLength, maxBytes: chunkBytes});
       if (bytes.length !== reply.byteLength) throw new Error('媒体分块长度错误。');
       const base64 = reply.data.replace(/-/g, '+').replace(/_/g, '/');
       if (append) await FileSystem.appendFile(filePath, base64, 'base64');
       else await FileSystem.writeFile(filePath, base64, 'base64');
     };
-    await write(first, false);
-    for (let offset = first.byteLength; offset < first.totalBytes;) {
+    for (let offset = 0; offset < metadata.totalBytes;) {
       const reply = await request<MediaReply>(desktopId, 'conversation.media.get', {
         conversationId: safeConversationId,
         mediaId: safeMediaId,
         offset,
-        length: Math.min(chunkBytes, first.totalBytes - offset),
+        length: Math.min(chunkBytes, metadata.totalBytes - offset),
       }, 60_000);
       if (reply.offset !== offset) throw new Error('媒体分块顺序错误。');
-      await write(reply, true);
+      await write(reply, offset > 0);
       offset += reply.byteLength;
     }
     const stat = await FileSystem.stat(filePath);
-    if (stat.size !== first.totalBytes) {
-      await FileSystem.unlink(filePath).catch(() => undefined);
-      throw new Error('媒体缓存校验失败。');
+    const actual = await FileSystem.hash(filePath, 'SHA-256');
+    if (stat.size !== metadata.totalBytes || actual.toLowerCase() !== metadata.sha256.toLowerCase()) {
+      await removeCache(filePath);
+      throw new Error('媒体缓存完整性校验失败。');
     }
     const entry: CacheEntry = {
       uri: uri(filePath),
       expiresAt: new Date(Date.now() + cacheAgeMs).toISOString(),
-      mimeType: first.mimeType,
-      totalBytes: first.totalBytes,
+      mimeType: metadata.mimeType,
+      totalBytes: metadata.totalBytes,
+      sha256: metadata.sha256.toLowerCase(),
     };
     await FileSystem.writeFile(metaPath(filePath), JSON.stringify(entry), 'utf8');
     return entry;

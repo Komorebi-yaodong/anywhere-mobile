@@ -129,6 +129,14 @@ export type ConversationTask = {
   steps: Array<{content: string; status: 'pending' | 'in_progress' | 'completed'}>;
 };
 
+export type AvatarResourceMetadata = {
+  kind: 'profile' | 'agent';
+  code?: string;
+  version: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  byteLength: number;
+};
+
 export type ConversationMessagesResult = {
   ok: true;
   conversation: {
@@ -138,7 +146,7 @@ export type ConversationMessagesResult = {
     createdAt: string;
     updatedAt: string;
     model?: string;
-    assistant?: {name: string; avatarUrl: string};
+    assistant?: {code?: string; name: string; avatarUrl: string};
     project: ConversationProject | null;
   };
   messages: RemoteMessage[];
@@ -154,6 +162,7 @@ export type RemoteAssistant = {
   code: string;
   name: string;
   icon?: string;
+  avatar?: AvatarResourceMetadata | null;
   model?: string;
   defaultProjectName?: string;
   mcpCount?: number;
@@ -171,6 +180,7 @@ export type WorkspaceAssistant = {
   code: string;
   name: string;
   icon: string;
+  avatar?: AvatarResourceMetadata | null;
   enabled: boolean;
   model: string;
   defaultProjectId: string;
@@ -183,8 +193,13 @@ export type WorkspaceAssistant = {
 export type WorkspaceProfile = {
   displayName: string;
   avatarUrl: string;
-  avatarDataUrl?: string;
-  avatarVersion?: string;
+  avatar?: AvatarResourceMetadata | null;
+};
+
+export type WorkspaceAvatarResponse = {
+  ok: true;
+  avatar: AvatarResourceMetadata;
+  dataUrl: string;
 };
 
 export type WorkspaceBootstrap = {
@@ -211,7 +226,7 @@ export type WorkspaceAgent = {
   name: string;
   enabled: boolean;
   icon: string;
-  iconDataUrl: string;
+  avatar?: AvatarResourceMetadata | null;
   model: string;
   type: 'general' | 'over' | 'img' | 'files';
   showMode: 'window' | 'fastinput';
@@ -361,6 +376,13 @@ export function createRemoteApi({
   return {
     workspaceBootstrap() {
       return request<WorkspaceBootstrap>(desktopId, 'workspace.bootstrap.get');
+    },
+    workspaceAvatar(avatar: AvatarResourceMetadata) {
+      return request<WorkspaceAvatarResponse>(desktopId, 'workspace.avatar.get', {
+        kind: avatar.kind,
+        ...(avatar.kind === 'agent' && avatar.code ? {code: avatar.code} : {}),
+        version: avatar.version,
+      });
     },
     workspaceAssistants() {
       return request<{ok: true; assistants: WorkspaceAssistant[]}>(desktopId, 'workspace.assistants.list');

@@ -31,6 +31,8 @@ import {ManagementSettings} from './ManagementSettings';
 import {TaskSettings} from './TaskSettings';
 import {SimpleManagementSettings} from './SimpleManagementSettings';
 import {useThemedStyles} from './theme';
+import {ensureAvatarResource} from '../services/avatarResourceCache';
+import {cacheRemoteImage} from '../services/remoteImageCache';
 
 const C = {
   background: '#FAF8F3',
@@ -221,6 +223,7 @@ function AgentSettings({
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [avatarSources, setAvatarSources] = useState<Record<string, string>>({});
   const [editor, setEditor] = useState<AgentEditorState | null>(null);
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [tagComposer, setTagComposer] = useState(false);
@@ -236,6 +239,23 @@ function AgentSettings({
         desktopId,
         'workspace.agent.catalog',
       );
+      const entries = await Promise.all(next.agents.map(async agent => {
+        try {
+          if (agent.avatar) {
+            const cache = await ensureAvatarResource({
+              desktopId,
+              resource: agent.avatar,
+              request,
+              displayName: agent.name,
+            });
+            return [agent.code, cache?.uri || agent.icon] as const;
+          }
+          return [agent.code, await cacheRemoteImage(agent.icon || '')] as const;
+        } catch {
+          return [agent.code, agent.icon || ''] as const;
+        }
+      }));
+      setAvatarSources(Object.fromEntries(entries.filter(([, source]) => Boolean(source))));
       setCatalog(next);
       if (selectedTag !== '__all__' && !next.tags.includes(selectedTag)) {
         setSelectedTag('__all__');
@@ -398,7 +418,7 @@ function AgentSettings({
             style={s.agentCard}
             onPress={() => openAgent(agent.code)}
           >
-            <AgentAvatar agent={agent} />
+            <AgentAvatar agent={agent} source={avatarSources[agent.code]} />
             <View style={s.agentCardCopy}>
               <Text numberOfLines={1} style={s.agentCardName}>{agent.name}</Text>
               <Text numberOfLines={1} style={s.agentCardMeta}>
@@ -464,6 +484,7 @@ function AgentSettings({
         options={catalog?.options || emptyOptions}
         allTags={catalog?.tags || []}
         busy={busy}
+        avatarSource={editor?.original ? avatarSources[editor.original.code] : ''}
         onClose={() => setEditor(null)}
         onPick={setPicker}
         onSave={async nextForm => {
@@ -616,11 +637,11 @@ function agentPatch(state: AgentEditorState, form: AgentForm): Record<string, un
   return patch;
 }
 
-function AgentAvatar({agent}: {agent: WorkspaceAgent}) {
+function AgentAvatar({agent, source = ''}: {agent: WorkspaceAgent; source?: string}) {
   const s = useThemedStyles(styles);
-  const source = agent.iconDataUrl || agent.icon;
-  return source ? (
-    <Image source={{uri: source}} style={s.agentAvatar} />
+  const resolved = source || agent.icon;
+  return resolved ? (
+    <Image source={{uri: resolved}} style={s.agentAvatar} />
   ) : (
     <View style={s.agentAvatarFallback}>
       <Text style={s.agentAvatarText}>{agent.name.trim().slice(0, 1).toUpperCase() || 'A'}</Text>
@@ -710,6 +731,7 @@ function AgentEditor({
   options,
   allTags,
   busy,
+  avatarSource,
   onClose,
   onPick,
   onSave,
@@ -719,6 +741,7 @@ function AgentEditor({
   options: WorkspaceAgentOptions;
   allTags: string[];
   busy: boolean;
+  avatarSource: string;
   onClose: () => void;
   onPick: (picker: PickerState) => void;
   onSave: (form: AgentForm) => void;
@@ -740,7 +763,6 @@ function AgentEditor({
     name: form.name,
     enabled: form.enabled,
     icon: '',
-    iconDataUrl: '',
     model: form.model,
     type: form.type,
     showMode: form.showMode,
@@ -772,7 +794,7 @@ function AgentEditor({
           </View>
           <ScrollView style={s.editorScroll} contentContainerStyle={s.editorPage} keyboardShouldPersistTaps="handled">
           <View style={s.agentIdentity}>
-            <AgentAvatar agent={agentForAvatar} />
+            <AgentAvatar agent={agentForAvatar} source={avatarSource} />
             <View style={s.agentIdentityFields}>
               <View style={s.inlineField}>
                 <TextInput

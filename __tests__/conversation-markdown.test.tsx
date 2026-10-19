@@ -1,13 +1,24 @@
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
-import {Image, Text, View} from 'react-native';
+import {Alert, Image, Text, View} from 'react-native';
 
 import {ConversationMarkdown} from '../src/components/ConversationMarkdown';
 import type {RemoteRequest} from '../src/remote/api';
 
-function render(value: string) {
+
+jest.mock('../src/services/remoteImageCache', () => ({
+  cacheRemoteHttpsResource: jest.fn(async ({url}: {url: string}) => ({
+    uri: url,
+    mimeType: '',
+    version: 'fixture',
+    expiresAt: '',
+    byteLength: 1,
+  })),
+}));
+
+async function render(value: string) {
   let root!: TestRenderer.ReactTestRenderer;
-  act(() => {
+  await act(async () => {
     root = TestRenderer.create(
       <ConversationMarkdown
         value={value}
@@ -16,19 +27,20 @@ function render(value: string) {
         request={jest.fn() as RemoteRequest}
       />,
     );
+    await Promise.resolve();
   });
   return root;
 }
 
 describe('ConversationMarkdown media rendering', () => {
-  it('renders HTTPS Markdown image and HTML audio/video with native media views', () => {
-    const root = render([
+  it('renders HTTPS Markdown image and HTML audio/video with native media views', async () => {
+    const root = await render([
       '![angry bird](https://media.example/fixture.png)',
       '<audio controls><source src="https://media.example/fixture.mp3" type="audio/mpeg"></audio>',
       '<video controls><source src="https://media.example/fixture.mp4" type="video/mp4"></video>',
     ].join('\n'));
     const images = root.root.findAllByType(Image);
-    const videos = root.root.findAll(node => node.props.controls === true && node.props.source?.uri);
+    const videos = root.root.findAll(node => node.props.controls === false && node.props.source?.uri);
     expect(images).toHaveLength(1);
     expect(images[0].props.source).toEqual({uri: 'https://media.example/fixture.png'});
     expect([...new Set(videos.map(node => node.props.source.uri))]).toEqual([
@@ -39,10 +51,30 @@ describe('ConversationMarkdown media rendering', () => {
     act(() => root.unmount());
   });
 
-  it('does not render a native player for a direct local file path', () => {
-    const root = render('<audio src="file:///C:/fixture.mp3"></audio>');
+  it('requires explicit confirmation before exporting a long-pressed image to system pictures', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const {FileSystem} = require('react-native-file-access');
+    const root = await render('![save](https://media.example/export.png)');
+    const imagePress = root.root.findAll(node => node.props.accessibilityLabel === '打开图片预览')[0];
+    await act(async () => imagePress.props.onLongPress());
+    expect(alert).toHaveBeenCalledWith('保存图片', expect.any(String), expect.any(Array));
+    expect(FileSystem.cpExternal).not.toHaveBeenCalled();
+    const actions = alert.mock.calls[0][2] as Array<{text: string; onPress?: () => void}>;
+    await act(async () => {
+      actions.find(action => action.text === '保存')?.onPress?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(FileSystem.cpExternal).toHaveBeenCalledWith(expect.any(String), expect.stringMatching(/^Anywhere-.*\.png$/), 'images');
+    alert.mockRestore();
+    act(() => root.unmount());
+  });
+
+
+  it('does not render a native player for a direct local file path', async () => {
+    const root = await render('<audio src="file:///C:/fixture.mp3"></audio>');
     expect(root.root.findAllByType(Image)).toHaveLength(0);
-    expect(root.root.findAll(node => node.props.controls === true && node.props.source?.uri)).toHaveLength(0);
+    expect(root.root.findAll(node => node.props.controls === false && node.props.source?.uri)).toHaveLength(0);
     expect(root.root.findAllByType(View)).toBeTruthy();
     act(() => root.unmount());
   });

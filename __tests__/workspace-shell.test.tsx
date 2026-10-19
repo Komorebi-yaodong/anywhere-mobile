@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import { Text } from 'react-native';
+import {Image, Text} from 'react-native';
 import { WorkspaceShell } from '../src/components/WorkspaceShell';
 
 import {hasMessageBubble, shouldRenderMessage} from '../src/components/WorkspaceShell';
@@ -17,8 +17,21 @@ const mockRefreshOpenedSessions = jest.fn(async () => undefined);
 let mockOpenedSessions: Array<Record<string, unknown>> = [];
 let mockWorkspaceMessages: Array<Record<string, any>> = [];
 let mockConversationModel = '';
-let mockConversationAssistant = {name: '', avatarUrl: ''};
+let mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
 let mockOnCapture: ((capture: unknown) => Promise<unknown>) | undefined;
+jest.mock('../src/services/avatarResourceCache', () => ({
+  ensureAvatarResource: jest.fn(async ({resource}: {resource?: {code?: string; version?: string}}) => resource ? ({
+    uri: `file:///cache/${resource.code || 'profile'}-${resource.version || 'fixture'}.png`,
+    version: resource.version || 'fixture',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  }) : undefined),
+  isAvatarCacheValid: jest.fn(() => false),
+  removeAvatarCache: jest.fn(async () => undefined),
+}));
+jest.mock('../src/services/remoteImageCache', () => ({
+  cacheRemoteImage: jest.fn(async () => ''),
+  cacheRemoteHttpsResource: jest.fn(async () => ({uri: 'file:///cache/profile-https.png', version: 'fixture', expiresAt: '2099-01-01T00:00:00.000Z', mimeType: 'image/png', byteLength: 1})),
+}));
 jest.mock('../src/services/mediaAttachment', () => ({
   uploadAudioCapture: jest.fn(async () => ({
     uploadId: 'upload-audio-fixture',
@@ -90,7 +103,7 @@ beforeEach(() => {
 
   mockWorkspaceMessages = [];
   mockConversationModel = '';
-  mockConversationAssistant = {name: '', avatarUrl: ''};
+  mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
   mockSelectConversation.mockClear();
   mockTakeoverConversation.mockClear();
   mockHandoffConversation.mockClear();
@@ -166,7 +179,7 @@ test('shows the resolved Agent identity separately from the conversation model',
     hidden: false,
     hasDesktopObserver: false,
   }];
-  mockConversationAssistant = {name: 'Zero', avatarUrl: ''};
+  mockConversationAssistant = {code: '', name: 'Zero', avatarUrl: ''};
   mockConversationModel = 'CPA | deepseek-v4.1-flash';
   mockWorkspaceMessages = [{
     uiMessageId: 'assistant-identity-fixture',
@@ -260,6 +273,72 @@ test('opens the assistant router without creation; explicit assistant selection 
   expect(mockSend).toHaveBeenCalledWith('', ['upload-audio-fixture']);
   await act(async () => root.unmount());
 });
+
+test('uses the same hash-resolved Agent avatar for new-chat cards and conversation headers', async () => {
+  mockConversationAssistant = {code: 'DataAgent', name: '数据头像 Agent', avatarUrl: ''};
+  mockWorkspaceMessages = [{
+    uiMessageId: 'agent-avatar-message',
+    messageId: 'agent-avatar-message',
+    role: 'assistant',
+    order: 1,
+    payload: {content: 'synthetic', reasoningContent: '', timestamp: '2026-10-20T00:00:00.000Z', completedTimestamp: '', toolCalls: []},
+  }];
+  const avatar = {
+    kind: 'agent' as const,
+    code: 'DataAgent',
+    version: 'DataAgentAvatarHash_1234567890',
+    mimeType: 'image/png' as const,
+    byteLength: 1,
+  };
+  const request = jest.fn(async () => ({
+    ok: true,
+    profile: {displayName: 'Fixture', avatarUrl: '', avatar: null},
+    configured: true,
+    projects: [],
+    assistants: [{
+      code: 'DataAgent',
+      name: '数据头像 Agent',
+      icon: '',
+      avatar,
+      enabled: true,
+      model: 'Fixture | model',
+      defaultProjectId: '',
+      defaultProjectName: '',
+      mcpCount: 0,
+      skillCount: 0,
+      capabilities: ['chat'],
+    }],
+  }));
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    root = TestRenderer.create(
+      <WorkspaceShell
+        desktop={{id: 'desktop-avatar-ui-fixture', name: 'Fixture Desktop', status: '在线'} as DesktopRuntime}
+        request={request as RemoteRequest}
+        requestTracked={jest.fn() as RemoteTrackedRequest}
+        subscribeEvents={() => () => undefined}
+        onHome={jest.fn()}
+      />,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  const cardAvatar = root.root.findAllByType(Image).find(node =>
+    node.props.source?.uri === 'file:///cache/DataAgent-DataAgentAvatarHash_1234567890.png',
+  );
+  expect(cardAvatar).toBeTruthy();
+  await act(async () => {
+    await button(root, '数据头像 Agent').props.onPress();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  const headerAvatar = root.root.findAllByType(Image).find(node =>
+    node.props.source?.uri === 'file:///cache/DataAgent-DataAgentAvatarHash_1234567890.png',
+  );
+  expect(headerAvatar).toBeTruthy();
+  await act(async () => root.unmount());
+});
+
 
 test.each([
   ['remote_client_closed', '连接被重置，正在恢复。'],

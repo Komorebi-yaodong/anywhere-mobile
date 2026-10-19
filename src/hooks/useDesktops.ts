@@ -11,10 +11,7 @@ import {
 import {RemoteClient, RemoteEventMessage} from '../remote/client';
 import {describeConnectionFailure, reconnectDelayMs, stableConnectionMs} from '../remote/connectionDiagnostics';
 import {pairDesktop} from '../remote/pairingClient';
-import {
-  isAvatarCacheValid,
-  removeProfileAvatarCache,
-} from '../services/profileAvatarCache';
+import {isAvatarCacheValid} from '../services/avatarResourceCache';
 import {
   loadDesktopCredential,
   loadDesktopIndex,
@@ -232,13 +229,14 @@ export function useDesktops() {
         if (disposed) {
           return;
         }
-        const fresh = restored.map(desktop => {
-          if (!desktop.avatarCache || isAvatarCacheValid(desktop.avatarCache)) {
-            return desktop;
-          }
-          removeProfileAvatarCache(desktop.avatarCache).catch(() => undefined);
-          return {...desktop, avatarCache: undefined};
-        });
+        // Do not discard a profile cache merely because its 30-day use marker
+        // elapsed. The next bootstrap compares the Desktop SHA-256 descriptor
+        // with the actual local file before any byte request is considered.
+        const fresh = restored.map(desktop =>
+          !desktop.avatarCache || isAvatarCacheValid(desktop.avatarCache)
+            ? desktop
+            : {...desktop, avatarCache: undefined},
+        );
         if (fresh.some((desktop, index) => desktop.avatarCache !== restored[index].avatarCache)) {
           saveDesktopIndex(fresh).catch(() => undefined);
         }

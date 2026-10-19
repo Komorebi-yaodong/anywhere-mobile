@@ -21,10 +21,11 @@ import { QrScanner } from './src/components/QrScanner';
 import { WorkspaceShell } from './src/components/WorkspaceShell';
 import { useThemedStyles } from './src/components/theme';
 import {
-  cacheProfileAvatar,
+  ensureAvatarResource,
   isAvatarCacheValid,
-  removeProfileAvatarCache,
-} from './src/services/profileAvatarCache';
+  removeAvatarCache,
+} from './src/services/avatarResourceCache';
+import {cacheRemoteHttpsResource} from './src/services/remoteImageCache';
 import {
   parsePairingPayload,
   PairedDesktop,
@@ -67,30 +68,37 @@ function App() {
           if (cancelled) return;
           const currentCache = desktop.avatarCache;
           let avatarCache = currentCache;
-          const avatarVersion = bootstrap.profile.avatarVersion || '';
-          if (bootstrap.profile.avatarDataUrl && avatarVersion) {
-            const unchanged =
-              currentCache?.version === avatarVersion && isAvatarCacheValid(currentCache);
-            if (!unchanged) {
-              if (currentCache && !isAvatarCacheValid(currentCache)) {
-                await removeProfileAvatarCache(currentCache);
-              }
-              avatarCache = await cacheProfileAvatar({
+          if (bootstrap.profile.avatar) {
+            try {
+              avatarCache = await ensureAvatarResource({
                 desktopId: desktop.id,
-                avatarDataUrl: bootstrap.profile.avatarDataUrl,
-                avatarVersion,
-                displayName: bootstrap.profile.displayName,
+                resource: bootstrap.profile.avatar,
+                request,
                 previous: currentCache,
+                displayName: bootstrap.profile.displayName,
               });
+            } catch {
+              // The home card stays usable when an individual avatar is unavailable.
+              avatarCache = undefined;
+            }
+          } else if (/^https:\/\//i.test(bootstrap.profile.avatarUrl || '')) {
+            try {
+              avatarCache = await cacheRemoteHttpsResource({
+                url: bootstrap.profile.avatarUrl,
+                namespace: 'avatar',
+                maxBytes: 512 * 1024,
+              });
+            } catch {
+              avatarCache = currentCache;
             }
           } else if (currentCache) {
-            await removeProfileAvatarCache(currentCache);
+            await removeAvatarCache(currentCache);
             avatarCache = undefined;
           }
           const profileChanged = bootstrap.profile.displayName !== desktop.profileName;
           const avatarChanged =
             avatarCache?.version !== currentCache?.version ||
-            avatarCache?.expiresAt !== currentCache?.expiresAt;
+            avatarCache?.uri !== currentCache?.uri;
           if (!cancelled && (profileChanged || avatarChanged)) {
             await updateProfile(desktop.id, {
               profileName: bootstrap.profile.displayName,

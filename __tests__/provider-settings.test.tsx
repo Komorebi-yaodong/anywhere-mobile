@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
-import {Alert, Text, TextInput} from 'react-native';
+import {Alert, ScrollView, Text, TextInput} from 'react-native';
 
 import {ProviderSettings} from '../src/components/ProviderSettings';
 import type {RemoteRequest} from '../src/remote/api';
@@ -32,11 +32,66 @@ const catalog = {
       apiKeyCount: 2, headerNames: ['X-Existing'], revision: 'provider-revision-fixture',
     },
     {
+      id: 'fixture-two', name: 'Fixture Provider Two', enabled: true, url: 'https://provider.example.test/v2', apiType: 'chat_completions' as const,
+      models: [], retryCount: 2, folderId: 'tools', apiKeyCount: 0, headerNames: [], revision: 'provider-revision-fixture-two',
+    },
+    {
       id: 'root', name: 'Root Provider', enabled: false, url: '', apiType: 'responses' as const,
       models: [], retryCount: 2, folderId: '', apiKeyCount: 0, headerNames: [], revision: 'provider-revision-root',
     },
   ],
 };
+
+test('long press on a provider drag handle locks parent scrolling before vertical sorting', async () => {
+  const request = jest.fn(async (_desktopId: string, method: string) => {
+    if (method === 'workspace.provider.catalog') return catalog;
+    return {ok: true};
+  });
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    root = TestRenderer.create(
+      <ProviderSettings
+        desktopId="desktop-provider-fixture"
+        request={request as RemoteRequest}
+        onChanged={() => undefined}
+        refreshSignal={0}
+      />,
+    );
+  });
+  const handle = root.root.findAll(node => node.props.accessibilityLabel === '排序 Fixture Provider')[0];
+  await act(async () => handle.props.onLongPress());
+  const list = root.root.findAllByType(ScrollView).find(node => node.props.contentContainerStyle);
+  expect(list?.props.scrollEnabled).toBe(false);
+  await act(async () => root.unmount());
+});
+
+
+test('releases the temporary scroll lock when a one-item folder cannot enter sorting', async () => {
+  const request = jest.fn(async (_desktopId: string, method: string) => {
+    if (method === 'workspace.provider.catalog') return catalog;
+    return {ok: true};
+  });
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    root = TestRenderer.create(
+      <ProviderSettings
+        desktopId="desktop-provider-fixture"
+        request={request as RemoteRequest}
+        onChanged={() => undefined}
+        refreshSignal={0}
+      />,
+    );
+  });
+  const handle = root.root.findAll(node => node.props.accessibilityLabel === '排序 Root Provider')[0];
+  await act(async () => {
+    handle.props.onLongPress();
+    handle.props.onPressOut();
+  });
+  const list = root.root.findAllByType(ScrollView).find(node => node.props.contentContainerStyle);
+  expect(list?.props.scrollEnabled).toBe(true);
+  await act(async () => root.unmount());
+});
+
 
 test('provider settings keeps secrets private and submits only changed provider fields', async () => {
   const request = jest.fn(async (_desktopId: string, method: string, _params?: Record<string, unknown>) => {

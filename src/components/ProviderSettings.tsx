@@ -119,6 +119,7 @@ export function ProviderSettings({
   const [ungroupedCollapsed, setUngroupedCollapsed] = useState(false);
   const [sortingFolderId, setSortingFolderId] = useState<string | null>(null);
   const [sortingIds, setSortingIds] = useState<string[]>([]);
+  const [draggingSort, setDraggingSort] = useState(false);
   const sortingFolderRef = useRef<string | null>(null);
   const sortingIdsRef = useRef<string[]>([]);
 
@@ -252,12 +253,14 @@ export function ProviderSettings({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '服务商排序保存失败。');
     } finally {
+      setDraggingSort(false);
       setBusy(false);
     }
   };
 
   const cancelSort = () => {
     if (busy) return;
+    setDraggingSort(false);
     setSortState(null, []);
   };
 
@@ -370,7 +373,12 @@ export function ProviderSettings({
       </View>
       {error ? <Text style={s.error}>{error}</Text> : null}
       {busy && !catalog ? <ActivityIndicator color={C.primary} /> : null}
-      <ScrollView style={s.scroll} contentContainerStyle={s.list} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        style={s.scroll}
+        contentContainerStyle={s.list}
+        keyboardShouldPersistTaps="handled"
+        scrollEnabled={sortingFolderId === null && !draggingSort}
+      >
         {groups.map(group => (
           <ProviderGroup
             key={group.id || '__ungrouped__'}
@@ -386,6 +394,7 @@ export function ProviderSettings({
             sorting={sortingFolderId === group.id}
             sortingIds={sortingFolderId === group.id ? sortingIds : group.providers.map(provider => provider.id)}
             onBeginSort={() => beginSort(group.id, group.providers.map(provider => provider.id))}
+            onDragStateChange={setDraggingSort}
             onMoveSorted={moveSortedProvider}
             onFinishSort={finishSort}
             onOpen={openProvider}
@@ -456,6 +465,7 @@ function ProviderGroup({
   sorting,
   sortingIds,
   onBeginSort,
+  onDragStateChange,
   onMoveSorted,
   onFinishSort,
   onOpen,
@@ -471,6 +481,7 @@ function ProviderGroup({
   sorting: boolean;
   sortingIds: string[];
   onBeginSort: () => void;
+  onDragStateChange: (dragging: boolean) => void;
   onMoveSorted: (providerId: string, direction: -1 | 1) => void;
   onFinishSort: () => Promise<void>;
   onOpen: (id: string) => void;
@@ -509,6 +520,7 @@ function ProviderGroup({
               sorting={sorting}
               busy={_busy}
               onBeginSort={onBeginSort}
+              onDragStateChange={onDragStateChange}
               onMove={onMoveSorted}
               onFinish={onFinishSort}
               onOpen={() => onOpen(provider.id)}
@@ -527,6 +539,7 @@ function ProviderSortRow({
   sorting,
   busy,
   onBeginSort,
+  onDragStateChange,
   onMove,
   onFinish,
   onOpen,
@@ -536,6 +549,7 @@ function ProviderSortRow({
   sorting: boolean;
   busy: boolean;
   onBeginSort: () => void;
+  onDragStateChange: (dragging: boolean) => void;
   onMove: (providerId: string, direction: -1 | 1) => void;
   onFinish: () => Promise<void>;
   onOpen: () => void;
@@ -544,37 +558,56 @@ function ProviderSortRow({
   const s = useThemedStyles(styles);
   const movedSteps = useRef(0);
   const dragging = useRef(false);
+  const sortArmed = useRef(false);
   const responder = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => !busy,
-    onMoveShouldSetPanResponder: (_event, gesture) => !busy && Math.abs(gesture.dy) > 6,
+    // Do not claim a normal touch: the surrounding ScrollView must keep its
+    // native scroll behavior until this particular handle has been long-pressed.
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_event, gesture) =>
+      !busy && sortArmed.current && Math.abs(gesture.dy) > 1,
+    onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+      !busy && sortArmed.current && Math.abs(gesture.dy) > 1,
     onPanResponderGrant: () => {
-      dragging.current = false;
+      dragging.current = true;
       movedSteps.current = 0;
+      onDragStateChange(true);
     },
     onPanResponderMove: (_event, gesture) => {
-      if (!dragging.current && Math.abs(gesture.dy) < 8) return;
-      if (!dragging.current) {
-        dragging.current = true;
-        onBeginSort();
-      }
       const targetSteps = Math.trunc(gesture.dy / 62);
       if (targetSteps === 0 || targetSteps === movedSteps.current) return;
       const direction: -1 | 1 = targetSteps > movedSteps.current ? 1 : -1;
       onMove(provider.id, direction);
       movedSteps.current += direction;
     },
+    onPanResponderTerminationRequest: () => false,
     onPanResponderRelease: () => {
+      sortArmed.current = false;
       if (dragging.current) onFinish().catch(() => undefined);
       dragging.current = false;
     },
-    onPanResponderTerminate: () => { dragging.current = false; },
+    onPanResponderTerminate: () => {
+      sortArmed.current = false;
+      dragging.current = false;
+      onDragStateChange(false);
+    },
   })).current;
+  const beginLongPressSort = () => {
+    if (busy) return;
+    sortArmed.current = true;
+    onDragStateChange(true);
+    onBeginSort();
+  };
   return (
     <View style={[s.providerRow, sorting && s.providerRowSorting]}>
       <Pressable
         accessibilityLabel={`排序 ${provider.name}`}
         disabled={busy}
-        onLongPress={onBeginSort}
+        onLongPress={beginLongPressSort}
+        onPressOut={() => {
+          if (dragging.current) return;
+          sortArmed.current = false;
+          onDragStateChange(false);
+        }}
         delayLongPress={280}
         style={[s.providerDragHandle, sorting && s.providerDragHandleActive]}
         {...responder.panHandlers}
