@@ -217,7 +217,7 @@ describe('conversation workspace state boundaries', () => {
 
 
 
-  it('resets live reasoning when a tool loop starts a new Assistant segment', async () => {
+  it('keeps tool-loop segments in one readable live Assistant turn', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
@@ -233,6 +233,7 @@ describe('conversation workspace state boundaries', () => {
     });
     expect(f.state.activeTurn).toMatchObject({
       segmentId: 'assistant-segment-two', text: 'second answer', reasoning: 'second thinking', historyLoaded: false,
+      segments: [{segmentId: 'assistant-segment-one', text: 'first answer', reasoning: 'first thinking'}],
     });
     await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
   });
@@ -259,6 +260,34 @@ describe('conversation workspace state boundaries', () => {
     expect(f.rpc.mock.calls.filter(call => call[1] === 'conversation.messages.list').length).toBeGreaterThan(1);
     await act(async () => { root.unmount(); });
   });
+
+  it('retires terminal preview even when the final history is empty, and deletion invalidates a pending read', async () => {
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    let rows: Array<Record<string, unknown>> = [{messageId: 'assistant-segment', uiMessageId: 'real-assistant', role: 'assistant', order: 1, payload: {content: 'saved'}}];
+    let pendingPage: ReturnType<typeof deferred<unknown>> | undefined;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A
+      ? pendingPage?.promise || Promise.resolve({...page(A), messages: rows}) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let send!: Promise<void>;
+    await act(async () => { send = f.state.sendMessage('fixture'); f.emit('assistant.delta', 1, {segmentId: 'assistant-segment', textDelta: 'live'}); });
+    await act(async () => { f.response.resolve({ok: true}); await send; f.emit('assistant.completed', 2); });
+    expect(f.state.activeTurn?.historyLoaded).toBe(true);
+    pendingPage = deferred<unknown>();
+    let refresh!: Promise<void>;
+    await act(async () => { refresh = f.state.refreshMessages(); f.state.removeMessageFromView('real-assistant'); });
+    expect(f.state.messages).toEqual([]);
+    await act(async () => { pendingPage!.resolve({...page(A), messages: rows}); await refresh; });
+    expect(f.state.messages).toEqual([]);
+    pendingPage = undefined;
+    rows = [];
+    await act(async () => { await f.state.refreshMessages(); });
+    expect(f.state.activeTurn?.historyLoaded).toBe(true);
+    expect(f.state.messages).toEqual([]);
+    await act(async () => root.unmount());
+  });
+
 
   it('keeps uncertain work after disconnect and queries its original request on reconnect', async () => {
     const f = fixture();
@@ -311,6 +340,63 @@ describe('conversation workspace state boundaries', () => {
     expect(f.state.messages[0].payload.content).toBe(B);
     await act(async () => { root.unmount(); });
   });
+
+  it('retains already loaded older rows and their pagination cursor when refreshing the latest page', async () => {
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    const row = (order: number) => ({uiMessageId: `ui-${order}`, messageId: `stored-${order}`, role: 'user', order, payload: {content: `fixture-${order}`}});
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A
+      ? Promise.resolve(params?.beforeUiOrder
+        ? {...page(A), messages: [row(1), row(2)], page: {pageSize: 50, nextBeforeUiOrder: 1, hasMore: false}}
+        : {...page(A), messages: [row(3), row(4)], page: {pageSize: 50, nextBeforeUiOrder: 3, hasMore: true}})
+      : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    await act(async () => { await f.state.loadOlderMessages(); });
+    expect(f.state.messages.map(item => item.order)).toEqual([1, 2, 3, 4]);
+    await act(async () => { await f.state.refreshMessages(); });
+    expect(f.state.messages.map(item => item.order)).toEqual([1, 2, 3, 4]);
+    expect(f.state.messagePage.hasMore).toBe(false);
+    expect(f.state.messagePage.nextBeforeUiOrder).toBe(1);
+    await act(async () => root.unmount());
+  });
+
+
+  it('removes the hidden subset reasoning projection too, without hiding an independent message', async () => {
+    const f = fixture();
+    const payload = {content: '', reasoningContent: 'same reasoning', toolCalls: []};
+    const rows = [
+      {messageId: 'same-message', uiMessageId: 'thought-ui', role: 'assistant', order: 1, payload},
+      {messageId: 'same-message', uiMessageId: 'tool-ui', role: 'assistant', order: 2, payload: {...payload, toolCalls: [{id: 'tool', name: 'tool', status: 'finished'}]}},
+      {messageId: 'different-message', uiMessageId: 'keep-ui', role: 'assistant', order: 3, payload},
+    ];
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A ? Promise.resolve({...page(A), messages: rows}) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    await act(async () => f.state.removeMessageFromView('tool-ui'));
+    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['keep-ui']);
+    await act(async () => { await f.state.refreshMessages(); });
+    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['keep-ui']);
+    await act(async () => root.unmount());
+  });
+
+
+  it('keeps a confirmed deletion hidden when a stale history refresh arrives', async () => {
+    const f = fixture();
+    const stalePage = {...page(A), messages: [{uiMessageId: 'deleted-ui', role: 'user', order: 1, payload: {content: 'must stay hidden'}}]};
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A ? Promise.resolve(stalePage) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    expect(f.state.messages.map(item => item.uiMessageId)).toEqual(['deleted-ui']);
+    await act(async () => { f.state.removeMessageFromView('deleted-ui'); });
+    expect(f.state.messages).toEqual([]);
+    await act(async () => { await f.state.refreshMessages(); });
+    expect(f.state.messages).toEqual([]);
+    await act(async () => { root.unmount(); });
+  });
+
 
   it('keeps an opened session selected when it is outside the current catalog page', async () => {
     const f = fixture();

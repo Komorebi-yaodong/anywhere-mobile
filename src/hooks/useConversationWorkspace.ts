@@ -16,6 +16,8 @@ import {
 } from '../remote/api';
 import type { RemoteEventMessage } from '../remote/client';
 
+import {deletedProjectionUiIds} from '../components/conversationTimeline';
+
 export type ActiveConversationTurn = {
   requestId: string;
   conversationId: string;
@@ -23,13 +25,11 @@ export type ActiveConversationTurn = {
   text: string;
   reasoning: string;
   toolCalls?: RemoteMessage['payload']['toolCalls'];
-  /** Previous live Assistant segments remain visible until Desktop persistence confirms them. */
-  pendingSegments?: Array<{
-    segmentId: string;
-    text: string;
-    reasoning: string;
-    toolCalls?: RemoteMessage['payload']['toolCalls'];
-  }>;
+  /** Segment snapshots belonging to the one request-level live preview. */
+  segments?: Array<{segmentId: string; text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}>;
+  baselineUiMessageIds?: string[];
+  baselineLastOrder?: number;
+  handoffUiMessageId?: string;
   event: string;
   eventSequence: number;
   terminal: boolean;
@@ -72,6 +72,9 @@ export function useConversationWorkspace({
   const [configured, setConfigured] = useState(true);
   const [selectedConversationId, setSelectedConversationId] = useState('');
   const [messages, setMessages] = useState<RemoteMessage[]>([]);
+
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const [tasks, setTasks] = useState<ConversationTask[]>([]);
   const [conversationModel, setConversationModel] = useState('');
   const [conversationAssistant, setConversationAssistant] = useState({code: '', name: '', avatarUrl: ''});
@@ -85,6 +88,10 @@ export function useConversationWorkspace({
     nextBeforeUiOrder: null,
     hasMore: false,
   });
+  const messagePageRef = useRef(messagePage);
+  messagePageRef.current = messagePage;
+
+
   const [activeTurn, setActiveTurn] = useState<ActiveConversationTurn | null>(
     null,
   );
@@ -148,6 +155,10 @@ export function useConversationWorkspace({
   scopeRef.current = { desktopId, desktopStatus, selectedConversationId };
   const catalogEpoch = useRef(0);
   const messageEpoch = useRef(0);
+
+  // Confirmed deletions remain hidden for this selected transcript, including
+  // any stale in-flight refresh or older page. Cleared on conversation change.
+  const deletedUiMessageIdsRef = useRef(new Set<string>());
 
   // An opened Desktop window might not appear in the current catalog page.
   // Keep only its safe display title while Mobile opens/reads the target; this
@@ -240,7 +251,16 @@ export function useConversationWorkspace({
       try {
         const result = await api.listMessages(conversationId, { pageSize: 50 });
         if (!isCurrent()) return;
-        setMessages(result.messages);
+        // A confirmed deletion stays hidden for this selected transcript so a
+        // stale in-flight list response cannot visibly resurrect its card.
+        const incoming = result.messages.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
+        // Reload the latest page without discarding already loaded older
+        // pages or resetting the pagination cursor back into the loaded range.
+        const firstOrder = incoming[0]?.order;
+        const older = result.page.hasMore && firstOrder !== undefined
+          ? messagesRef.current.filter(message => message.order < firstOrder && !deletedUiMessageIdsRef.current.has(message.uiMessageId))
+          : [];
+        setMessages([...older, ...incoming]);
         setTasks(Array.isArray(result.tasks) ? result.tasks : []);
         setConversationModel(typeof result.conversation?.model === 'string' ? result.conversation.model : '');
         setConversationAssistant({
@@ -248,24 +268,29 @@ export function useConversationWorkspace({
           name: typeof result.conversation?.assistant?.name === 'string' ? result.conversation.assistant.name : '',
           avatarUrl: typeof result.conversation?.assistant?.avatarUrl === 'string' ? result.conversation.assistant.avatarUrl : '',
         });
-        setMessagePage(result.page);
+        setMessagePage(older.length ? {...result.page,
+          hasMore: messagePageRef.current.hasMore,
+          nextBeforeUiOrder: messagePageRef.current.nextBeforeUiOrder,
+        } : result.page);
         commitTurn(current => {
           if (
             !current ||
             current.conversationId !== conversationId ||
             (requestedTurn && current.requestId !== requestedTurn.requestId)
           ) return current;
-          const persistedSegmentIds = new Set(result.messages.map(message => message.messageId));
-          const persistedLiveSegment = Boolean(
-            current.segmentId && persistedSegmentIds.has(current.segmentId),
-          );
-          const pendingSegments = (current.pendingSegments || []).filter(
-            segment => !persistedSegmentIds.has(segment.segmentId),
-          );
-          const allLiveSegmentsPersisted = pendingSegments.length === 0 && (!current.segmentId || persistedLiveSegment);
-          return current.terminal || persistedLiveSegment || pendingSegments.length !== (current.pendingSegments || []).length
-            ? { ...current, pendingSegments, historyLoaded: current.terminal ? allLiveSegmentsPersisted : persistedLiveSegment }
-            : current;
+          // Intermediate persistence must never replace the one live Mobile
+          // bubble. Only the terminal history read is allowed to reveal its
+          // durable rows, preventing thought/tool/text cards from splitting.
+          if (!current.terminal || !requestedTurn?.terminal) return current;
+          // A successful read STARTED after terminal is authoritative, including
+          // an empty page or a segment removed by a later edit/delete.
+          const segmentIds = new Set([current.segmentId, ...(current.segments || []).map(segment => segment.segmentId)]);
+          const baseline = current.baselineUiMessageIds ? new Set(current.baselineUiMessageIds) : null;
+          const lastDurable = incoming.filter(message => message.role === 'assistant' && (
+            segmentIds.has(message.messageId) || segmentIds.has(message.uiMessageId) ||
+            (baseline !== null && !baseline.has(message.uiMessageId) && message.order >= (current.baselineLastOrder ?? Number.MAX_SAFE_INTEGER))
+          )).at(-1);
+          return {...current, historyLoaded: true, handoffUiMessageId: current.handoffUiMessageId || lastDurable?.uiMessageId};
         });
       } catch (cause) {
         if (isCurrent()) {
@@ -300,10 +325,11 @@ export function useConversationWorkspace({
         beforeUiOrder: messagePage.nextBeforeUiOrder,
       });
       if (!isCurrent()) return;
+      const visibleIncoming = result.messages.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
       setMessages(current =>
-        mergeById(result.messages, current, 'uiMessageId').sort(
-          (left, right) => left.order - right.order,
-        ),
+        mergeById(visibleIncoming, current, 'uiMessageId')
+          .filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId))
+          .sort((left, right) => left.order - right.order),
       );
       setMessagePage(result.page);
     } catch (cause) {
@@ -366,6 +392,7 @@ export function useConversationWorkspace({
         .catch(cause => setError(errorMessage(cause)));
     }
     messageEpoch.current += 1;
+    deletedUiMessageIdsRef.current.clear();
     scopeRef.current.selectedConversationId = conversationId;
     setMessages([]);
     setTasks([]);
@@ -437,6 +464,12 @@ export function useConversationWorkspace({
           conversationId: state.conversationId,
           text: state.text,
           reasoning: state.reasoning,
+          toolCalls: state.toolCalls,
+          segments: state.segmentId && current.segmentId && state.segmentId !== current.segmentId
+            ? [...(current.segments || []).filter(segment => segment.segmentId !== current.segmentId), {
+                segmentId: current.segmentId, text: current.text, reasoning: current.reasoning, toolCalls: current.toolCalls,
+              }]
+            : current.segments,
           segmentId: state.segmentId || current.segmentId,
           event: state.event,
           eventSequence: Math.max(current.eventSequence, state.eventSequence),
@@ -600,6 +633,8 @@ export function useConversationWorkspace({
                 requestId,
                 conversationId: conversationId || queued.conversationId,
                 submittedText: queued.text,
+                baselineUiMessageIds: messagesRef.current.map(message => message.uiMessageId),
+                baselineLastOrder: Math.max(0, ...messagesRef.current.map(message => message.order)),
                 text: '',
                 reasoning: '',
                 event: 'conversation.command.pending',
@@ -615,52 +650,42 @@ export function useConversationWorkspace({
         );
       }
       let becameTerminal = false;
-      let segmentChanged = false;
       commitTurn(current => {
         if (!current || current.requestId !== requestId || current.terminal)
           return current;
         if (sequence < 1 || sequence <= current.eventSequence) return current;
         const terminal = isTerminalEvent(event.event);
-        const nextSegmentId =
-          event.event === 'assistant.delta'
-            ? stringValue(payload.segmentId) || current.segmentId
-            : current.segmentId;
-        segmentChanged = event.event === 'assistant.delta' &&
-          Boolean(nextSegmentId && nextSegmentId !== current.segmentId);
-        const previousSegments = segmentChanged && current.segmentId &&
-          (current.text || current.reasoning || current.toolCalls?.length)
-          ? [
-              ...(current.pendingSegments || []).filter(segment => segment.segmentId !== current.segmentId),
-              {
-                segmentId: current.segmentId,
-                text: current.text,
-                reasoning: current.reasoning,
-                toolCalls: current.toolCalls,
-              },
-            ]
-          : (current.pendingSegments || []);
+        const nextSegmentId = event.event === 'assistant.delta'
+          ? stringValue(payload.segmentId) || current.segmentId
+          : current.segmentId;
+        const segmentChanged = Boolean(nextSegmentId && nextSegmentId !== current.segmentId);
+        const segments = segmentChanged && current.segmentId
+          ? [...(current.segments || []).filter(segment => segment.segmentId !== current.segmentId), {
+              segmentId: current.segmentId, text: current.text, reasoning: current.reasoning, toolCalls: current.toolCalls,
+            }]
+          : current.segments;
         becameTerminal = terminal;
         return {
           ...current,
           conversationId: conversationId || current.conversationId,
-          text:
-            event.event === 'assistant.delta'
-              ? (segmentChanged ? '' : current.text) + stringValue(payload.textDelta)
-              : current.text,
-          reasoning:
-            event.event === 'assistant.delta'
-              ? (segmentChanged ? '' : current.reasoning) + stringValue(payload.reasoningDelta)
-              : current.reasoning,
+          // A Desktop turn can create multiple storage segments. They remain
+          // one Mobile card and accumulate instead of being rendered as cards.
+          text: event.event === 'assistant.delta'
+            ? (segmentChanged ? '' : current.text) + stringValue(payload.textDelta)
+            : current.text,
+          reasoning: event.event === 'assistant.delta'
+            ? (segmentChanged ? '' : current.reasoning) + stringValue(payload.reasoningDelta)
+            : current.reasoning,
           segmentId: nextSegmentId,
-          historyLoaded: segmentChanged ? false : current.historyLoaded,
-          pendingSegments: previousSegments,
+          segments,
+          historyLoaded: terminal ? current.historyLoaded : false,
           toolCalls: event.event === 'assistant.delta' && Array.isArray(payload.toolCalls)
-            ? payload.toolCalls as RemoteMessage['payload']['toolCalls']
-            : (segmentChanged ? [] : current.toolCalls),
+            ? mergeLiveToolCalls(segmentChanged ? undefined : current.toolCalls, payload.toolCalls as RemoteMessage['payload']['toolCalls'])
+            : segmentChanged ? [] : current.toolCalls,
           event: event.event,
           eventSequence: Math.max(current.eventSequence, sequence),
           terminal,
-          truncated: segmentChanged ? false : current.truncated,
+          truncated: current.truncated,
           errorCode:
             event.event === 'assistant.failed' ||
             event.event === 'conversation.operation.failed'
@@ -669,7 +694,7 @@ export function useConversationWorkspace({
         };
       });
       if (
-        (becameTerminal || event.event === 'assistant.started' || segmentChanged) &&
+        (becameTerminal || event.event === 'assistant.started') &&
         conversationId
       ) {
         if (scopeRef.current.selectedConversationId === conversationId) {
@@ -710,6 +735,7 @@ export function useConversationWorkspace({
     setCatalog([]);
 
     selectedOpenedTitleRef.current = '';
+    deletedUiMessageIdsRef.current.clear();
     setMessages([]);
     setOpenedSessions([]);
     setControlledConversationIds([]);
@@ -797,6 +823,8 @@ export function useConversationWorkspace({
           conversationId: selectedConversationId,
           submittedText: body,
           replacedUiMessageId: reaskRole === 'assistant' ? reaskUiMessageId : undefined,
+          baselineUiMessageIds: messagesRef.current.map(message => message.uiMessageId),
+          baselineLastOrder: Math.max(0, ...messagesRef.current.map(message => message.order)),
           text: '',
           reasoning: '',
           event: 'conversation.command.pending',
@@ -987,6 +1015,7 @@ export function useConversationWorkspace({
       messageEpoch.current += 1;
       scopeRef.current.selectedConversationId = '';
       selectedOpenedTitleRef.current = '';
+      deletedUiMessageIdsRef.current.clear();
       setSelectedConversationId('');
       setMessages([]);
       setTasks([]);
@@ -1001,6 +1030,17 @@ export function useConversationWorkspace({
     await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
   }, [api, assertControl, commitTurn, refreshCatalog, refreshOpenedSessions]);
 
+
+
+  const removeMessageFromView = useCallback((uiMessageId: string) => {
+    if (!uiMessageId) return;
+    for (const id of deletedProjectionUiIds(messagesRef.current, uiMessageId)) deletedUiMessageIdsRef.current.add(id);
+    // Invalidate any pre-deletion history response, then retire its preview.
+    messageEpoch.current += 1;
+    setMessagesLoading(false);
+    setMessages(current => current.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId)));
+    commitTurn(current => current?.terminal ? {...current, historyLoaded: true} : current);
+  }, [commitTurn]);
 
 
   const refreshMessages = useCallback(async () => {
@@ -1076,8 +1116,11 @@ export function useConversationWorkspace({
     cancelActiveTurn,
     showSelectedOnDesktop,
     releaseSelectedConversation,
+    removeMessageFromView,
   };
 }
+
+
 
 function isTerminalEvent(event: string): boolean {
   return (
@@ -1087,6 +1130,28 @@ function isTerminalEvent(event: string): boolean {
     event === 'conversation.operation.failed'
   );
 }
+
+
+function mergeLiveToolCalls(
+  current: RemoteMessage['payload']['toolCalls'] | undefined,
+  incoming: RemoteMessage['payload']['toolCalls'],
+): RemoteMessage['payload']['toolCalls'] {
+  const merged = new Map<string, RemoteMessage['payload']['toolCalls'][number]>();
+  for (const call of current || []) merged.set(call.id || call.name, call);
+  for (const call of incoming) {
+    const key = call.id || call.name;
+    if (!key) continue;
+    const previous = merged.get(key);
+    merged.set(key, {
+      ...previous,
+      ...call,
+      arguments: call.arguments ?? previous?.arguments,
+      ...(call.result === undefined && previous?.result !== undefined ? {result: previous.result} : {}),
+    });
+  }
+  return [...merged.values()];
+}
+
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';

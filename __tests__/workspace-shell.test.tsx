@@ -64,6 +64,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     sendMessage: mockSend,
     refreshCatalog: jest.fn(),
     refreshMessages: jest.fn(),
+    removeMessageFromView: jest.fn(),
     removeQueuedSend: jest.fn(),
     reaskLastAssistant: jest.fn(),
     resendLastUser: mockResendLastUser,
@@ -205,7 +206,7 @@ test('reconciles a persisted live Assistant segment instead of appending a dupli
   });
   expect(reconciled.hasPersistedLiveSegment).toBe(true);
   expect(reconciled.messages).toHaveLength(1);
-  expect(reconciled.messages[0].uiMessageId).toBe('assistant-ui-fixture');
+  expect(reconciled.messages[0].uiMessageId).toBe('live-turn-assistant-storage-fixture');
   expect(reconciled.messages[0].payload.reasoningContent).toBe('live thinking');
   expect(reconciled.messages[0].payload.toolCalls).toHaveLength(1);
 });
@@ -214,22 +215,25 @@ test('reconciles a persisted live Assistant segment instead of appending a dupli
 test('keeps earlier live tool segments until each persisted segment is confirmed', () => {
   const active = {
     segmentId: 'tool-segment-two', text: '', reasoning: '', terminal: false,
-    pendingSegments: [{segmentId: 'tool-segment-one', text: '', reasoning: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished'}]}],
+    segments: [{segmentId: 'tool-segment-one', text: '', reasoning: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished'}]}],
     toolCalls: [{id: 'tool-two', name: 'second_tool', status: 'executing'}],
   };
   const first = reconcileLiveAssistantSegment([], active);
-  expect(first.messages.map(message => message.uiMessageId)).toEqual(['live-tool-segment-one', 'live-tool-segment-two']);
+  expect(first.messages.map(message => message.uiMessageId)).toEqual(['live-turn-tool-segment-two']);
+  expect(first.messages[0].payload.toolCalls.map(tool => tool.id)).toEqual(['tool-one', 'tool-two']);
   const persistedFirst = [{
     messageId: 'tool-segment-one', uiMessageId: 'assistant-one', role: 'assistant' as const, order: 1,
     payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished', arguments: {safe: true}, result: {ok: true}}]},
   }];
   const second = reconcileLiveAssistantSegment(persistedFirst, {...active, historyLoaded: true});
-  expect(second.messages.map(message => message.uiMessageId)).toEqual(['assistant-one', 'live-tool-segment-two']);
+  expect(second.messages.map(message => message.uiMessageId)).toEqual(['live-turn-tool-segment-two']);
+  expect(second.messages[0].payload.toolCalls.map(tool => tool.id)).toEqual(['tool-one', 'tool-two']);
   const final = reconcileLiveAssistantSegment([...persistedFirst, {
     messageId: 'tool-segment-two', uiMessageId: 'assistant-two', role: 'assistant' as const, order: 2,
     payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-two', name: 'second_tool', status: 'finished', arguments: {safe: true}, result: {ok: true}}]},
   }], {...active, terminal: true, historyLoaded: true});
   expect(final.messages.map(message => message.uiMessageId)).toEqual(['assistant-one', 'assistant-two']);
+  expect(final.messages.some(message => message.preview)).toBe(false);
 });
 
 
@@ -242,6 +246,38 @@ test('renders a live tool-only Assistant card before normal assistant text arriv
   const renderedText = root.root.findAllByType(Text).map(node => Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children || ''));
   expect(renderedText).toContain('调用 safe_tool');
   expect(renderedText).toContain('executing');
+  await act(async () => root.unmount());
+});
+
+
+test('keeps an expanded live tool mounted across updates and hands off to real message actions', async () => {
+  openConfigSession();
+  const props = workspaceProps();
+  const tool = {id: 'stable-tool', name: 'stable_tool', status: 'executing', arguments: '[参数已隐藏]'};
+  mockActiveTurn = {requestId: 'stable-request', conversationId: 'conversation-shell-fixture', segmentId: 'stable-segment', text: '', reasoning: 'thinking fixture', toolCalls: [tool], terminal: false};
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  const detailButton = () => root.root.findAll(node => node.props.accessibilityLabel === '查看工具 stable_tool 详情' && typeof node.props.onPress === 'function')[0];
+  await act(async () => detailButton().props.onPress());
+  const details = () => root.root.findAllByType(ScrollView).filter(node => node.props.nestedScrollEnabled && node.props.showsVerticalScrollIndicator);
+  expect(details()).toHaveLength(1);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '删除消息' && typeof node.props.onPress === 'function')).toHaveLength(0);
+  mockActiveTurn = {...mockActiveTurn, toolCalls: [{...tool, status: 'finished'}]};
+  await act(async () => root.update(<WorkspaceShell {...props} />));
+  expect(details()).toHaveLength(1);
+  mockWorkspaceMessages = [{messageId: 'stable-segment', uiMessageId: 'real-ui-message', role: 'assistant', order: 1, payload: {content: '', reasoningContent: 'thinking fixture', toolCalls: [{...tool, status: 'finished', arguments: {query: 'safe'}, result: {ok: true}}]}}];
+  mockActiveTurn = {...mockActiveTurn, terminal: true, historyLoaded: true, handoffUiMessageId: 'real-ui-message'};
+  await act(async () => root.update(<WorkspaceShell {...props} />));
+  expect(details()).toHaveLength(1);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === '输出结果')).toBe(true);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '删除消息' && typeof node.props.onPress === 'function')).toHaveLength(1);
+  const dock = root.root.findAll(node => node.props.accessibilityLabel === '消息导航居中区域')[0];
+  expect(StyleSheet.flatten(dock.props.style).justifyContent).toBe('center');
+  expect(StyleSheet.flatten(dock.props.style)).toMatchObject({top: 0, bottom: 0});
+  mockWorkspaceMessages = [];
+  await act(async () => root.update(<WorkspaceShell {...props} />));
+  expect(details()).toHaveLength(0);
   await act(async () => root.unmount());
 });
 

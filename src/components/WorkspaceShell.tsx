@@ -54,6 +54,10 @@ import {
 
 import { AppIcon } from './AppIcon';
 import {KeyboardDock} from './KeyboardDock';
+
+import {projectConversationTimeline, type TimelineMessage} from './conversationTimeline';
+
+import {createConversationScrollController} from './conversationScroll';
 import { useThemedStyles } from './theme';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
@@ -172,85 +176,9 @@ export function keyboardFrameNeedsComposerScroll(previousTop: number | null, scr
 }
 
 
-type LiveAssistantSegment = {
-  segmentId?: string;
-  text: string;
-  reasoning: string;
-  toolCalls?: RemoteMessage['payload']['toolCalls'];
-  pendingSegments?: Array<{
-    segmentId: string;
-    text: string;
-    reasoning: string;
-    toolCalls?: RemoteMessage['payload']['toolCalls'];
-  }>;
-  terminal?: boolean;
-  historyLoaded?: boolean;
-} | null | undefined;
+export {projectConversationTimeline as reconcileLiveAssistantSegment} from './conversationTimeline';
 
-function hasLiveSegmentContent(segment: {text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}) {
-  return Boolean(segment.text || segment.reasoning || segment.toolCalls?.length);
-}
-
-function liveSegmentMessage(segment: {segmentId: string; text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}, index: number): RemoteMessage {
-  return {
-    messageId: `live-${segment.segmentId}`,
-    uiMessageId: `live-${segment.segmentId}`,
-    role: 'assistant',
-    order: Number.MAX_SAFE_INTEGER - 100 + index,
-    payload: {
-      content: segment.text,
-      reasoningContent: segment.reasoning,
-      summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '',
-      aiName: '', voiceName: '', status: '', toolCalls: segment.toolCalls || [],
-    },
-  };
-}
-
-export function reconcileLiveAssistantSegment(
-  messages: RemoteMessage[],
-  activeTurn: LiveAssistantSegment,
-) {
-  const persistedIds = new Set(messages.map(message => message.messageId));
-  const segments: Array<{segmentId: string; text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}> = [
-    ...(activeTurn?.pendingSegments || []),
-    ...(activeTurn?.segmentId ? [{
-      segmentId: activeTurn.segmentId,
-      text: activeTurn.text,
-      reasoning: activeTurn.reasoning,
-      toolCalls: activeTurn.toolCalls,
-    }] : []),
-  ].filter(hasLiveSegmentContent);
-  const segmentById = new Map(segments.map(segment => [segment.segmentId, segment]));
-  const hasPersistedLiveSegment = Boolean(activeTurn?.segmentId && persistedIds.has(activeTurn.segmentId));
-  const canRenderLive = !activeTurn?.terminal || activeTurn.historyLoaded !== true || segments.some(segment => !persistedIds.has(segment.segmentId));
-  return {
-    hasPersistedLiveSegment,
-    messages: [
-      ...messages.map(message => {
-        const segment = segmentById.get(message.messageId);
-        // Until the matching history read is confirmed, the live snapshot can
-        // be newer than the persisted page. Afterwards retain the durable,
-        // fully sanitized Desktop detail (including tool input/output).
-        if (!segment || (persistedIds.has(segment.segmentId) && activeTurn?.historyLoaded === true)) return message;
-        return {
-          ...message,
-          payload: {
-            ...message.payload,
-            content: segment.text || message.payload.content,
-            reasoningContent: segment.reasoning || message.payload.reasoningContent,
-            toolCalls: segment.toolCalls?.length ? segment.toolCalls : message.payload.toolCalls,
-          },
-        };
-      }),
-      ...(canRenderLive ? segments.filter(segment => !persistedIds.has(segment.segmentId)).map(liveSegmentMessage) : []),
-    ],
-  };
-}
-
-export function isPinnedToBottom(offsetY: number, viewportHeight: number, contentHeight: number, threshold = 48): boolean {
-  return Number.isFinite(offsetY) && Number.isFinite(viewportHeight) && Number.isFinite(contentHeight) &&
-    contentHeight - (offsetY + viewportHeight) <= threshold;
-}
+export {isPinnedToBottom} from './conversationScroll';
 
 export function adjacentMessageIndex(current: number, length: number, direction: -1 | 1): number {
   if (length <= 0) return -1;
@@ -1144,6 +1072,7 @@ export function WorkspaceShell({
         />
       ) : (
         <ChatPage
+          key={workspace.selectedConversationId}
           title={selectedTitle}
           desktopId={desktop.id}
           conversationId={workspace.selectedConversationId}
@@ -1208,7 +1137,11 @@ export function WorkspaceShell({
           requestTracked={requestTracked}
           onClose={() => setMessageAction(null)}
           onCompleted={() => {
+            const completedAction = messageAction;
             setMessageAction(null);
+            if (completedAction.method === 'conversation.message.delete') {
+              workspace.removeMessageFromView(completedAction.uiMessageId);
+            }
             workspace.refreshCatalog();
             workspace.refreshMessages();
           }}
@@ -1534,7 +1467,7 @@ function AssistantRouter({
 }
 
 const ChatPage = React.forwardRef<
-  FlatList<RemoteMessage>,
+  FlatList<TimelineMessage>,
   {
     title: string;
     desktopId: string;
@@ -1621,97 +1554,79 @@ const ChatPage = React.forwardRef<
   ) => {
     const styles = useThemedStyles(baseStyles);
     const [voiceMode, setVoiceMode] = useState(false);
-    const list = useRef<FlatList<RemoteMessage>>(null);
-    const pinnedToBottom = useRef(true);
+    const list = useRef<FlatList<TimelineMessage>>(null);
     const [pinned, setPinned] = useState(true);
     const visibleIndex = useRef(0);
-    const viewabilityConfig = useRef({itemVisiblePercentThreshold: 45}).current;
-    const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    const setPinnedState = (next: boolean) => {
-      pinnedToBottom.current = next;
-      setPinned(current => current === next ? current : next);
-    };
-    const scrollToBottom = useCallback((animated = true) => {
-      setPinnedState(true);
-      requestAnimationFrame(() => list.current?.scrollToEnd({animated}));
-    }, []);
+    const viewabilityConfig = useRef({itemVisiblePercentThreshold: 1}).current;
+    const onViewableItemsChanged = useRef(({viewableItems}: {viewableItems: Array<{index: number | null}>}) => {
+      const first = viewableItems.find(item => item.index != null);
+      if (first?.index != null) visibleIndex.current = first.index;
+    }).current;
+    const scroll = useMemo(() => createConversationScrollController({
+      scheduler: {request: requestAnimationFrame, cancel: cancelAnimationFrame},
+      // Use measured ScrollView content geometry, not FlatList's average-row
+      // estimate for an unmeasured tail (which can oscillate on long messages).
+      scrollToEnd: (animated, offset) => list.current?.scrollToOffset({animated, offset}),
+      onPinnedChange: setPinned,
+    }), []);
     React.useImperativeHandle(ref, () => list.current!);
-
     useEffect(() => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let keyboardTop: number | null = null;
-      const cancelScheduledScroll = () => {
-        if (timer) clearTimeout(timer);
-        timer = undefined;
-      };
-      const scheduleScrollToComposer = () => {
-        cancelScheduledScroll();
-        timer = setTimeout(() => scrollToBottom(true), 100);
-      };
-      const show = Keyboard.addListener('keyboardDidShow', event => {
-        keyboardTop = event.endCoordinates.screenY;
-        if (event.endCoordinates.height > 0) scheduleScrollToComposer();
-      });
-      const change = Keyboard.addListener('keyboardDidChangeFrame', event => {
-        if (keyboardFrameNeedsComposerScroll(keyboardTop, event.endCoordinates.screenY, event.endCoordinates.height)) scheduleScrollToComposer();
-        keyboardTop = event.endCoordinates.height > 0 ? event.endCoordinates.screenY : null;
-      });
-      const hide = Keyboard.addListener('keyboardDidHide', () => {
-        // Keep the user's reading position when the composer is dismissed.
-        keyboardTop = null;
-        cancelScheduledScroll();
-      });
-      return () => { show.remove(); change.remove(); hide.remove(); cancelScheduledScroll(); };
-    }, [scrollToBottom]);
+      scroll.reset();
+      return () => scroll.dispose();
+    }, [conversationId, scroll]);
     const lastVisibleMessage = [...messages]
       .reverse()
       .find(message => message.role === 'user' || message.role === 'assistant');
     const lastAssistant = lastVisibleMessage?.role === 'assistant' ? lastVisibleMessage.uiMessageId : '';
     const lastUser = lastVisibleMessage?.role === 'user' ? lastVisibleMessage.uiMessageId : '';
-    const liveSegment = reconcileLiveAssistantSegment(messages, activeTurn);
-    const renderedMessages = liveSegment.messages.filter(message =>
-      shouldRenderMessage(message),
-    );
+    const displayKeys = useRef(new Map<string, string>());
+    const liveSegment = projectConversationTimeline(messages, activeTurn);
+    const renderedMessages = liveSegment.messages.filter(message => shouldRenderMessage(message)).map(message => {
+      if (message.preview) return message;
+      if (message.renderKey !== message.uiMessageId) displayKeys.current.set(message.uiMessageId, message.renderKey);
+      return {...message, renderKey: displayKeys.current.get(message.uiMessageId) || message.renderKey};
+    });
     const rows = renderedMessages;
-    const liveRevision = Number(activeTurn?.eventSequence || 0);
-    useEffect(() => {
-      if (!pinnedToBottom.current) return;
-      if (scrollTimer.current) clearTimeout(scrollTimer.current);
-      scrollTimer.current = setTimeout(() => scrollToBottom(false), 0);
-      return () => { if (scrollTimer.current) clearTimeout(scrollTimer.current); };
-    }, [rows.length, liveRevision, scrollToBottom]);
     const navigate = (target: 'top' | 'previous' | 'next' | 'bottom') => {
       if (!rows.length) return;
       if (target === 'top') {
-        setPinnedState(false);
+        scroll.leaveBottom();
         list.current?.scrollToOffset({offset: 0, animated: true});
         return;
       }
-      if (target === 'bottom') { scrollToBottom(true); return; }
+      if (target === 'bottom') { scroll.jumpToBottom(true); return; }
       const index = adjacentMessageIndex(visibleIndex.current, rows.length, target === 'previous' ? -1 : 1);
       if (index < 0) return;
-      setPinnedState(false);
+      scroll.leaveBottom();
       list.current?.scrollToIndex({index, animated: true, viewPosition: 0.15});
     };
       const liveChoices = Object.entries(pendingChoices || {})
       .filter(([toolCallId, pending]) =>
         pending.conversationId === conversationId &&
-        !messages.some(message => message.payload.toolCalls?.some(tool => tool.id === toolCallId)),
+        !rows.some(message => message.payload.toolCalls?.some(tool => tool.id === toolCallId)),
       );
     return (
       <KeyboardDock>
+        <View style={styles.chatViewport}>
         <FlatList
           style={styles.chatMessages}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           ref={list}
           data={rows}
-          keyExtractor={item => item.uiMessageId}
+          keyExtractor={item => item.renderKey}
           contentContainerStyle={styles.messageList}
+          removeClippedSubviews={false}
+          maintainVisibleContentPosition={pinned ? undefined : {minIndexForVisible: 0}}
           scrollEventThrottle={16}
-          onScroll={event => setPinnedState(isPinnedToBottom(event.nativeEvent.contentOffset.y, event.nativeEvent.layoutMeasurement.height, event.nativeEvent.contentSize.height))}
-          onContentSizeChange={() => { if (pinnedToBottom.current) scrollToBottom(false); }}
-          onViewableItemsChanged={({viewableItems}) => { const first = viewableItems.find(item => item.index != null); if (first?.index != null) visibleIndex.current = first.index; }}
+          onScrollBeginDrag={() => scroll.beginDrag()}
+          onScrollEndDrag={() => scroll.endDrag()}
+          onMomentumScrollBegin={() => scroll.beginDrag()}
+          onMomentumScrollEnd={() => scroll.endDrag()}
+          onScroll={event => scroll.onScroll(event.nativeEvent.contentOffset.y, event.nativeEvent.layoutMeasurement.height, event.nativeEvent.contentSize.height)}
+          onContentSizeChange={(_width, height) => scroll.onContentSize(height)}
+          onLayout={event => scroll.onLayout(event.nativeEvent.layout.height)}
+          onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={viewabilityConfig}
           onScrollToIndexFailed={({index, averageItemLength}) => list.current?.scrollToOffset({offset: Math.max(0, index * averageItemLength), animated: true})}
           ListHeaderComponent={
@@ -1736,7 +1651,9 @@ const ChatPage = React.forwardRef<
               onSubmitChoice={onSubmitChoice}
               onEdit={() => onEdit(item)}
               onDelete={() => onDelete(item)}
-              writable={writable}
+              writable={writable && !item.preview && (!activeTurn || activeTurn.terminal)}
+              preview={item.preview}
+              choiceWritable={writable}
               reask={
                 writable && (!activeTurn || activeTurn.terminal) && item.uiMessageId === lastAssistant
                   ? () => onReask(item.uiMessageId).catch(() => undefined)
@@ -1750,11 +1667,14 @@ const ChatPage = React.forwardRef<
             />
           )}
         />
-        <View pointerEvents="box-none" style={styles.chatNavigator}>
+        <View pointerEvents="box-none" accessibilityLabel="消息导航居中区域" style={styles.chatNavigatorDock}>
+        <View style={styles.chatNavigator}>
           <Pressable accessibilityLabel="跳到顶部" style={styles.chatNavigatorButton} onPress={() => navigate('top')}><AppIcon name="top" size={17} color={C.primary} /></Pressable>
           <Pressable accessibilityLabel="上一条消息" style={styles.chatNavigatorButton} onPress={() => navigate('previous')}><AppIcon name="↑" size={17} color={C.primary} /></Pressable>
           <Pressable accessibilityLabel="下一条消息" style={styles.chatNavigatorButton} onPress={() => navigate('next')}><AppIcon name="↓" size={17} color={C.primary} /></Pressable>
           <Pressable accessibilityLabel="跳到底部" style={[styles.chatNavigatorButton, pinned && styles.chatNavigatorButtonActive]} onPress={() => navigate('bottom')}><AppIcon name="bottom" size={17} color={C.primary} /></Pressable>
+        </View>
+        </View>
         </View>
 
         {liveChoices.map(([toolCallId, pending]) => (
@@ -2216,6 +2136,8 @@ function MessageCard({
   onEdit,
   onDelete,
   writable,
+  preview = false,
+  choiceWritable,
 }: {
   message: RemoteMessage;
   desktopId: string;
@@ -2230,17 +2152,19 @@ function MessageCard({
   onSubmitChoice: (toolCallId: string, responses: Array<Record<string, unknown>>) => Promise<void>;
   reask?: () => void;
   resend?: () => void;
+  preview?: boolean;
+  choiceWritable?: boolean;
   onEdit: () => void;
   onDelete: () => void;
   writable: boolean;
 }) {
   const styles = useThemedStyles(baseStyles);
   const isUser = message.role === 'user';
-  const editableMessage = message.role === 'user' || message.role === 'assistant';
+  const editableMessage = !preview && (message.role === 'user' || message.role === 'assistant');
   const content = renderText(message.payload.content);
   const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
   const timestamp = message.payload.timestamp || message.payload.completedTimestamp;
-  const formattedTimestamp = formatTime(timestamp);
+  const formattedTimestamp = formatTime(timestamp || '');
   const toolOnly = !isUser && !hasMessageBubble(message) && !String(message.payload.reasoningContent || '').trim() && Boolean(message.payload.toolCalls?.length);
   const copyText = content || (message.payload.toolCalls || []).map(tool => `调用 ${tool.name || '工具'}`).join('\n');
   return (
@@ -2257,7 +2181,7 @@ function MessageCard({
       {hasMessageBubble(message) ? <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
         <ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} />
       </View> : null}
-      {message.payload.toolCalls?.length ? <View style={[styles.toolList, toolOnly && styles.toolListFullWidth]}>{message.payload.toolCalls.map(tool => <ToolCallCard key={tool.id || tool.name} tool={tool} pending={pendingChoices[tool.id]} writable={writable} onSubmit={onSubmitChoice} />)}</View> : null}
+      {message.payload.toolCalls?.length ? <View style={[styles.toolList, toolOnly && styles.toolListFullWidth]}>{message.payload.toolCalls.map(tool => <ToolCallCard key={tool.id || tool.name} tool={tool} pending={pendingChoices[tool.id]} writable={choiceWritable ?? writable} onSubmit={onSubmitChoice} />)}</View> : null}
       <View style={[styles.messageTools, isUser && styles.messageToolsRight]}>
         <Pressable accessibilityLabel="复制消息" onPress={() => Clipboard.setString(copyText)}><AppIcon name="copy" size={17} /></Pressable>
         {editableMessage ? <Pressable disabled={!writable} accessibilityLabel="编辑消息" onPress={onEdit}><AppIcon name="edit" size={17} /></Pressable> : null}
@@ -2746,6 +2670,7 @@ const baseStyles = StyleSheet.create({
   taskBadge: {position: 'absolute', top: 1, right: 0, minWidth: 15, height: 15, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primary},
   taskBadgeText: {fontSize: 9, color: '#fff', fontWeight: '900'},
 
+  chatViewport: {flex: 1, minHeight: 0, position: 'relative'},
   chatMessages: {flex: 1, minHeight: 0},
   messageList: {padding: 16, paddingBottom: 14, gap: 16},
   messageWrap: {maxWidth: '94%', gap: 7},
@@ -2753,7 +2678,8 @@ const baseStyles = StyleSheet.create({
 
   toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 7},
 
-  chatNavigator: {position: 'absolute', right: 12, top: 14, gap: 7, zIndex: 3, padding: 6, borderRadius: 17, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, backgroundColor: 'rgba(255,255,255,0.94)', shadowColor: '#372C26', shadowOpacity: 0.1, shadowRadius: 8, shadowOffset: {width: 0, height: 3}, elevation: 3},
+  chatNavigatorDock: {position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'flex-end', justifyContent: 'center', paddingRight: 12},
+  chatNavigator: { gap: 7, zIndex: 3, padding: 6, borderRadius: 17, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, backgroundColor: C.surface, shadowColor: '#372C26', shadowOpacity: 0.1, shadowRadius: 8, shadowOffset: {width: 0, height: 3}, elevation: 3},
   chatNavigatorButton: {width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: C.surfaceMuted},
   chatNavigatorButtonActive: {backgroundColor: C.primarySoft, borderWidth: StyleSheet.hairlineWidth, borderColor: '#E6B9A7'},
 
