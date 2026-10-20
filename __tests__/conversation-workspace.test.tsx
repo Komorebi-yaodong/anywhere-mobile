@@ -165,6 +165,42 @@ describe('conversation workspace state boundaries', () => {
   });
 
 
+  it('refreshes persisted user history as soon as Desktop starts the assistant', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let send!: Promise<void>;
+    await act(async () => { send = f.state.sendMessage('show without manual refresh'); });
+    const before = f.rpc.mock.calls.filter(call => call[1] === 'conversation.messages.list').length;
+    await act(async () => {
+      f.emit('assistant.started', 1);
+      await Promise.resolve();
+    });
+    expect(f.rpc.mock.calls.filter(call => call[1] === 'conversation.messages.list').length).toBeGreaterThan(before);
+    await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
+  });
+
+  it('resets live reasoning when a tool loop starts a new Assistant segment', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let send!: Promise<void>;
+    await act(async () => { send = f.state.sendMessage('segment fixture'); });
+    await act(async () => {
+      f.emit('assistant.delta', 1, {
+        textDelta: 'first answer', reasoningDelta: 'first thinking', segmentId: 'assistant-segment-one',
+      });
+      f.emit('assistant.delta', 2, {
+        textDelta: 'second answer', reasoningDelta: 'second thinking', segmentId: 'assistant-segment-two',
+      });
+    });
+    expect(f.state.activeTurn).toMatchObject({
+      segmentId: 'assistant-segment-two', text: 'second answer', reasoning: 'second thinking', historyLoaded: false,
+    });
+    await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
+  });
+
+
   it('applies early stream events once and refreshes persisted history on terminal', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;

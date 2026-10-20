@@ -26,6 +26,7 @@ export type ActiveConversationTurn = {
   eventSequence: number;
   terminal: boolean;
   truncated: boolean;
+  segmentId?: string;
   historyLoaded?: boolean;
   replacedUiMessageId?: string;
   errorCode?: string;
@@ -240,14 +241,20 @@ export function useConversationWorkspace({
           avatarUrl: typeof result.conversation?.assistant?.avatarUrl === 'string' ? result.conversation.assistant.avatarUrl : '',
         });
         setMessagePage(result.page);
-        commitTurn(current =>
-          requestedTurn?.terminal &&
-          current?.terminal &&
-          current.requestId === requestedTurn.requestId &&
-          current.conversationId === conversationId
+        commitTurn(current => {
+          if (
+            !current ||
+            current.conversationId !== conversationId ||
+            (requestedTurn && current.requestId !== requestedTurn.requestId)
+          ) return current;
+          const persistedLiveSegment = Boolean(
+            current.segmentId &&
+            result.messages.some(message => message.messageId === current.segmentId),
+          );
+          return current.terminal || persistedLiveSegment
             ? { ...current, historyLoaded: true }
-            : current,
-        );
+            : current;
+        });
       } catch (cause) {
         if (isCurrent()) {
           setMessages([]);
@@ -418,6 +425,7 @@ export function useConversationWorkspace({
           conversationId: state.conversationId,
           text: state.text,
           reasoning: state.reasoning,
+          segmentId: state.segmentId || current.segmentId,
           event: state.event,
           eventSequence: Math.max(current.eventSequence, state.eventSequence),
           terminal: state.terminal,
@@ -479,6 +487,7 @@ export function useConversationWorkspace({
             submittedText: '',
             text: state.text,
             reasoning: state.reasoning,
+            segmentId: state.segmentId || undefined,
             event: state.event,
             eventSequence: state.eventSequence,
             terminal: state.terminal,
@@ -517,6 +526,7 @@ export function useConversationWorkspace({
             submittedText: queued.text,
             text: state.text,
             reasoning: state.reasoning,
+            segmentId: state.segmentId || undefined,
             event: state.event,
             eventSequence: state.eventSequence,
             terminal: false,
@@ -596,22 +606,31 @@ export function useConversationWorkspace({
           return current;
         if (sequence < 1 || sequence <= current.eventSequence) return current;
         const terminal = isTerminalEvent(event.event);
+        const nextSegmentId =
+          event.event === 'assistant.delta'
+            ? stringValue(payload.segmentId) || current.segmentId
+            : current.segmentId;
+        const segmentChanged =
+          event.event === 'assistant.delta' &&
+          Boolean(nextSegmentId && nextSegmentId !== current.segmentId);
         becameTerminal = terminal;
         return {
           ...current,
           conversationId: conversationId || current.conversationId,
           text:
             event.event === 'assistant.delta'
-              ? current.text + stringValue(payload.textDelta)
+              ? (segmentChanged ? '' : current.text) + stringValue(payload.textDelta)
               : current.text,
           reasoning:
             event.event === 'assistant.delta'
-              ? current.reasoning + stringValue(payload.reasoningDelta)
+              ? (segmentChanged ? '' : current.reasoning) + stringValue(payload.reasoningDelta)
               : current.reasoning,
+          segmentId: nextSegmentId,
+          historyLoaded: segmentChanged ? false : current.historyLoaded,
           event: event.event,
           eventSequence: Math.max(current.eventSequence, sequence),
           terminal,
-          truncated: current.truncated,
+          truncated: segmentChanged ? false : current.truncated,
           errorCode:
             event.event === 'assistant.failed' ||
             event.event === 'conversation.operation.failed'
@@ -619,11 +638,16 @@ export function useConversationWorkspace({
               : current.errorCode,
         };
       });
-      if (becameTerminal && conversationId) {
+      if (
+        (becameTerminal || event.event === 'assistant.started') &&
+        conversationId
+      ) {
         if (scopeRef.current.selectedConversationId === conversationId) {
+          // Desktop emits assistant.started only after the user message has
+          // been persisted by its Renderer lease holder.
           loadMessages(conversationId).catch(() => undefined);
         }
-        refreshCatalog().catch(() => undefined);
+        if (becameTerminal) refreshCatalog().catch(() => undefined);
       }
     },
     [commitQueue, commitTurn, loadMessages, refreshCatalog],
@@ -905,6 +929,30 @@ export function useConversationWorkspace({
     await api.cancel(active.conversationId);
   }, [api, assertControl]);
 
+  const closeConversation = useCallback(async (conversationId: string) => {
+    if (!conversationId) return;
+    assertControl(conversationId);
+    await api.closeConversation(conversationId);
+    if (scopeRef.current.selectedConversationId === conversationId) {
+      messageEpoch.current += 1;
+      scopeRef.current.selectedConversationId = '';
+      selectedOpenedTitleRef.current = '';
+      setSelectedConversationId('');
+      setMessages([]);
+      setTasks([]);
+      setConversationModel('');
+      setConversationAssistant({code: '', name: '', avatarUrl: ''});
+      setPendingChoices({});
+      setMessagePage({pageSize: 50, nextBeforeUiOrder: null, hasMore: false});
+      commitTurn(current =>
+        current?.conversationId === conversationId ? null : current,
+      );
+    }
+    await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
+  }, [api, assertControl, commitTurn, refreshCatalog, refreshOpenedSessions]);
+
+
+
   const refreshMessages = useCallback(async () => {
     if (selectedConversationId) await loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
@@ -962,6 +1010,7 @@ export function useConversationWorkspace({
     canControlConversation,
     takeoverConversation,
     handoffConversation,
+    closeConversation,
     refreshOpenedSessions,
     pendingChoices,
     submitChoice,

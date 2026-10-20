@@ -3,7 +3,9 @@ import TestRenderer, { act } from 'react-test-renderer';
 import {Image, Text} from 'react-native';
 import {
   filterSessionMcpServers,
+  filterSessionSkills,
   hasMessageBubble,
+  reconcileLiveAssistantSegment,
   shouldRenderMessage,
   WorkspaceShell,
 } from '../src/components/WorkspaceShell';
@@ -16,6 +18,7 @@ const mockSend = jest.fn(async () => undefined);
 const mockSelectConversation = jest.fn();
 const mockTakeoverConversation = jest.fn(async () => undefined);
 const mockHandoffConversation = jest.fn(async () => undefined);
+const mockCloseConversation = jest.fn(async () => undefined);
 const mockRefreshOpenedSessions = jest.fn(async () => undefined);
 let mockOpenedSessions: Array<Record<string, unknown>> = [];
 let mockWorkspaceMessages: Array<Record<string, any>> = [];
@@ -66,6 +69,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     selectConversation: mockSelectConversation,
     takeoverConversation: mockTakeoverConversation,
     handoffConversation: mockHandoffConversation,
+    closeConversation: mockCloseConversation,
     refreshOpenedSessions: mockRefreshOpenedSessions,
     loadOlderMessages: jest.fn(),
     submitChoice: jest.fn(),
@@ -110,6 +114,7 @@ beforeEach(() => {
   mockSelectConversation.mockClear();
   mockTakeoverConversation.mockClear();
   mockHandoffConversation.mockClear();
+  mockCloseConversation.mockClear();
   mockRefreshOpenedSessions.mockClear();
 });
 
@@ -145,6 +150,53 @@ test('filters session MCP options by quick filter and keyword, including configu
     quickFilter: 'preset',
     query: '文件',
   })).toEqual([]);
+});
+
+
+test('filters session Skill options by safe display name only', () => {
+  const skills = [
+    {id: 'skill-research', name: 'Research Notes'},
+    {id: 'skill-release', name: '发布检查'},
+  ];
+  expect(filterSessionSkills(skills, 'research').map(item => item.id)).toEqual(['skill-research']);
+  expect(filterSessionSkills(skills, '发布').map(item => item.id)).toEqual(['skill-release']);
+  expect(filterSessionSkills(skills, 'missing')).toEqual([]);
+});
+
+test('reconciles a persisted live Assistant segment instead of appending a duplicate card', () => {
+  const messages = [{
+    messageId: 'assistant-storage-fixture',
+    uiMessageId: 'assistant-ui-fixture',
+    role: 'assistant' as const,
+    order: 1,
+    payload: {content: '', reasoningContent: 'saved thinking', toolCalls: [{id: 'tool-fixture', name: 'get_file'}]},
+  }];
+  const reconciled = reconcileLiveAssistantSegment(messages, {
+    segmentId: 'assistant-storage-fixture', text: '', reasoning: 'live thinking', terminal: false,
+  });
+  expect(reconciled.hasPersistedLiveSegment).toBe(true);
+  expect(reconciled.messages).toHaveLength(1);
+  expect(reconciled.messages[0].uiMessageId).toBe('assistant-ui-fixture');
+  expect(reconciled.messages[0].payload.reasoningContent).toBe('live thinking');
+  expect(reconciled.messages[0].payload.toolCalls).toHaveLength(1);
+});
+
+
+test('offers a close action only for a session controlled by this Mobile device', async () => {
+  mockOpenedSessions = [{
+    conversationId: 'conversation-close-shell-fixture-0001', title: 'Closable Fixture',
+    visible: false, busy: false, mobileControlled: true, controlledByThisDevice: true,
+    hidden: true, hasDesktopObserver: false,
+  }];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话')[0].props.onPress());
+  expect(root.root.findAll(node =>
+    node.props.accessibilityLabel === '关闭会话' &&
+    typeof node.props.onPress === 'function',
+  )).toHaveLength(1);
+  await act(async () => root.unmount());
 });
 
 

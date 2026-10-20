@@ -344,6 +344,7 @@ export type ConversationRequestState = {
   terminal: boolean;
   text: string;
   reasoning: string;
+  segmentId?: string;
   truncated: boolean;
   updatedAt: string;
   result?: Record<string, unknown>;
@@ -357,6 +358,7 @@ export type ConversationStreamEvent = RemoteEventMessage & {
     eventSequence?: number;
     textDelta?: string;
     reasoningDelta?: string;
+    segmentId?: string;
     status?: string;
     code?: string;
     revision?: number;
@@ -488,6 +490,14 @@ export function createRemoteApi({
         'conversation.release',
         {conversationId},
         15_000,
+      );
+    },
+    closeConversation(conversationId: string) {
+      return request<{ok: true; conversationId: string; windowId: string; closed?: boolean; closing?: boolean}>(
+        desktopId,
+        'conversation.close',
+        {conversationId},
+        45_000,
       );
     },
 

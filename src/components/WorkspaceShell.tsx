@@ -161,6 +161,50 @@ export function filterSessionMcpServers(
   });
 }
 
+type LiveAssistantSegment = {
+  segmentId?: string;
+  text: string;
+  reasoning: string;
+  terminal?: boolean;
+} | null | undefined;
+
+export function reconcileLiveAssistantSegment(
+  messages: RemoteMessage[],
+  activeTurn: LiveAssistantSegment,
+) {
+  const hasPersistedLiveSegment = Boolean(
+    activeTurn?.segmentId &&
+    messages.some(message => message.messageId === activeTurn.segmentId),
+  );
+  return {
+    hasPersistedLiveSegment,
+    messages: messages.map(message =>
+      activeTurn?.segmentId && message.messageId === activeTurn.segmentId
+        ? {
+            ...message,
+            payload: {
+              ...message.payload,
+              content: activeTurn.text || message.payload.content,
+              reasoningContent:
+                activeTurn.reasoning || message.payload.reasoningContent,
+            },
+          }
+        : message,
+    ),
+  };
+}
+
+export function filterSessionSkills(
+  skills: ConversationConfigResult['options']['skills'],
+  query = '',
+) {
+  const keyword = query.trim().toLocaleLowerCase('zh-CN');
+  return skills.filter(item =>
+    !keyword || item.name.toLocaleLowerCase('zh-CN').includes(keyword),
+  );
+}
+
+
 
 export function WorkspaceShell({
   desktop,
@@ -277,6 +321,7 @@ export function WorkspaceShell({
   >('prompt');
   const [sessionBusy, setSessionBusy] = useState(false);
   const [mcpQuery, setMcpQuery] = useState('');
+  const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
   const listRef = useRef<FlatList<RemoteMessage>>(null);
 
@@ -547,6 +592,7 @@ export function WorkspaceShell({
     setSessionConfig(null);
     setSessionOptions(null);
     setMcpQuery('');
+    setSkillQuery('');
     setMcpQuickFilter('all');
     if (target === 'session') setSessionTab('prompt');
     setSheet(target);
@@ -743,6 +789,34 @@ export function WorkspaceShell({
     }
   };
 
+  const closeOpenedSession = (item: OpenedConversationSession) => {
+    const title = item.title || '未命名会话';
+    Alert.alert(
+      `关闭“${title}”？`,
+      item.busy
+        ? '将停止当前生成，保存已完成内容后关闭 Desktop 会话窗口。聊天历史、附件和设置都会保留。'
+        : '将关闭 Desktop 会话窗口。聊天历史、附件和设置都会保留。',
+      [
+        {text: '取消', style: 'cancel'},
+        {
+          text: '关闭会话',
+          style: 'destructive',
+          onPress: () => {
+            workspace.closeConversation(item.conversationId)
+              .then(() => {
+                if (workspace.selectedConversationId === item.conversationId) setMode('router');
+                setSheet(null);
+                setNotice(`已关闭“${title}”的 Desktop 会话窗口，历史已保留。`);
+              })
+              .catch(error => setNotice(workspaceNotice(error, '会话未关闭；请稍后重试。')));
+          },
+        },
+      ],
+    );
+  };
+
+
+
   const takeoverOpenedSession = async (item: OpenedConversationSession) => {
     try {
       await workspace.takeoverConversation(item.conversationId);
@@ -825,6 +899,13 @@ export function WorkspaceShell({
     ),
     [mcpQuery, mcpQuickFilter, sessionConfig?.mcpServerIds, sessionOptions?.mcpServers],
   );
+
+
+  const visibleSessionSkills = useMemo(
+    () => filterSessionSkills(sessionOptions?.skills || [], skillQuery),
+    [sessionOptions?.skills, skillQuery],
+  );
+
 
 
   const conversationTasks = Array.isArray(workspace.tasks) ? workspace.tasks : [];
@@ -1061,7 +1142,10 @@ export function WorkspaceShell({
                 </Text>
               </Pressable>
               {item.controlledByThisDevice ? (
-                <Action compact label="交还 Desktop" onPress={() => handoffOpenedSession(item)} disabled={item.busy} />
+                <View style={styles.openedSessionActions}>
+                  <Action compact label="交还 Desktop" onPress={() => handoffOpenedSession(item)} disabled={item.busy} />
+                  <Action compact label="关闭会话" onPress={() => closeOpenedSession(item)} danger />
+                </View>
               ) : item.mobileControlled ? null : (
                 <Action compact label="接管" onPress={() => takeoverOpenedSession(item)} disabled={item.busy} />
               )}
@@ -1215,10 +1299,12 @@ export function WorkspaceShell({
               {!visibleSessionMcpServers.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 MCP 服务。</Text></View> : null}
             </View> : null}
             {sessionTab === 'skill' ? <View style={styles.sessionSection}>
-              <View style={styles.toolSelectList}>{(sessionOptions?.skills || []).map(item => {
+              <View style={styles.sessionMcpSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput accessibilityLabel="搜索会话 Skill" value={skillQuery} onChangeText={setSkillQuery} placeholder="搜索 Skill 名称" placeholderTextColor={C.muted} style={styles.sessionMcpSearchInput} /></View>
+              <View style={styles.toolSelectList}>{visibleSessionSkills.map(item => {
                 const active = (sessionConfig.skillIds || []).includes(item.id);
-                return <Pressable key={item.id} disabled={!controlledByMobile} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, skillIds: toggleId(sessionConfig.skillIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="skills" size={17} color={active ? C.primary : C.muted} /></View><Text style={styles.toolSelectName}>{item.name}</Text><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
+                return <Pressable key={item.id} accessibilityLabel={`选择会话 Skill ${item.name}`} disabled={!controlledByMobile} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, skillIds: toggleId(sessionConfig.skillIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="skills" size={17} color={active ? C.primary : C.muted} /></View><Text numberOfLines={1} style={styles.toolSelectName}>{item.name}</Text><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
               })}</View>
+              {!visibleSessionSkills.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 Skill。</Text></View> : null}
             </View> : null}
             {sessionTab === 'compact' ? <View style={styles.sessionSection}>
               <View style={styles.compactAction}><Text style={styles.sessionSectionTitle}>上下文</Text><Action compact label="立即压缩" onPress={compactNow} disabled={!controlledByMobile || sessionBusy} /></View>
@@ -1384,9 +1470,17 @@ const ChatPage = React.forwardRef<
     const lastAssistant = [...messages]
       .reverse()
       .find(message => message.role === 'assistant')?.uiMessageId;
+    const liveSegment = reconcileLiveAssistantSegment(messages, activeTurn);
+    const renderedMessages = liveSegment.messages.filter(message =>
+      shouldRenderMessage(message),
+    );
+    const hasPersistedLiveSegment = liveSegment.hasPersistedLiveSegment;
     const rows = [
-      ...messages.filter(message => shouldRenderMessage(message)),
-      ...(activeTurn && !activeTurn.historyLoaded && (activeTurn.text || activeTurn.reasoning)
+      ...renderedMessages,
+      ...(activeTurn &&
+      !activeTurn.terminal &&
+      !hasPersistedLiveSegment &&
+      (activeTurn.text || activeTurn.reasoning)
         ? [{
             messageId: '__live__',
             uiMessageId: '__live__',
@@ -2060,6 +2154,7 @@ function Action({
   const styles = useThemedStyles(baseStyles);
   return (
     <Pressable
+      accessibilityLabel={label}
       disabled={disabled}
       onPress={onPress}
       style={[
@@ -2639,6 +2734,8 @@ const baseStyles = StyleSheet.create({
   },
   openedSessionCopy: {flex: 1, minWidth: 0, gap: 4, minHeight: 48, justifyContent: 'center'},
   openedSessionTitle: {color: C.text, fontSize: 14, fontWeight: '800'},
+  openedSessionActions: {alignItems: 'flex-end', gap: 7},
+
   openedSessionMeta: {color: C.muted, fontSize: 11, lineHeight: 16},
 
   liveChoiceCard: {marginHorizontal: 16, marginBottom: 10, gap: 12, padding: 13, borderRadius: 19, borderWidth: 1, borderColor: C.primary, backgroundColor: C.surface},
