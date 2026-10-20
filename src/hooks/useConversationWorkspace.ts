@@ -23,6 +23,13 @@ export type ActiveConversationTurn = {
   text: string;
   reasoning: string;
   toolCalls?: RemoteMessage['payload']['toolCalls'];
+  /** Previous live Assistant segments remain visible until Desktop persistence confirms them. */
+  pendingSegments?: Array<{
+    segmentId: string;
+    text: string;
+    reasoning: string;
+    toolCalls?: RemoteMessage['payload']['toolCalls'];
+  }>;
   event: string;
   eventSequence: number;
   terminal: boolean;
@@ -248,12 +255,16 @@ export function useConversationWorkspace({
             current.conversationId !== conversationId ||
             (requestedTurn && current.requestId !== requestedTurn.requestId)
           ) return current;
+          const persistedSegmentIds = new Set(result.messages.map(message => message.messageId));
           const persistedLiveSegment = Boolean(
-            current.segmentId &&
-            result.messages.some(message => message.messageId === current.segmentId),
+            current.segmentId && persistedSegmentIds.has(current.segmentId),
           );
-          return current.terminal || persistedLiveSegment
-            ? { ...current, historyLoaded: true }
+          const pendingSegments = (current.pendingSegments || []).filter(
+            segment => !persistedSegmentIds.has(segment.segmentId),
+          );
+          const allLiveSegmentsPersisted = pendingSegments.length === 0 && (!current.segmentId || persistedLiveSegment);
+          return current.terminal || persistedLiveSegment || pendingSegments.length !== (current.pendingSegments || []).length
+            ? { ...current, pendingSegments, historyLoaded: current.terminal ? allLiveSegmentsPersisted : persistedLiveSegment }
             : current;
         });
       } catch (cause) {
@@ -604,6 +615,7 @@ export function useConversationWorkspace({
         );
       }
       let becameTerminal = false;
+      let segmentChanged = false;
       commitTurn(current => {
         if (!current || current.requestId !== requestId || current.terminal)
           return current;
@@ -613,9 +625,20 @@ export function useConversationWorkspace({
           event.event === 'assistant.delta'
             ? stringValue(payload.segmentId) || current.segmentId
             : current.segmentId;
-        const segmentChanged =
-          event.event === 'assistant.delta' &&
+        segmentChanged = event.event === 'assistant.delta' &&
           Boolean(nextSegmentId && nextSegmentId !== current.segmentId);
+        const previousSegments = segmentChanged && current.segmentId &&
+          (current.text || current.reasoning || current.toolCalls?.length)
+          ? [
+              ...(current.pendingSegments || []).filter(segment => segment.segmentId !== current.segmentId),
+              {
+                segmentId: current.segmentId,
+                text: current.text,
+                reasoning: current.reasoning,
+                toolCalls: current.toolCalls,
+              },
+            ]
+          : (current.pendingSegments || []);
         becameTerminal = terminal;
         return {
           ...current,
@@ -630,6 +653,7 @@ export function useConversationWorkspace({
               : current.reasoning,
           segmentId: nextSegmentId,
           historyLoaded: segmentChanged ? false : current.historyLoaded,
+          pendingSegments: previousSegments,
           toolCalls: event.event === 'assistant.delta' && Array.isArray(payload.toolCalls)
             ? payload.toolCalls as RemoteMessage['payload']['toolCalls']
             : (segmentChanged ? [] : current.toolCalls),
@@ -645,7 +669,7 @@ export function useConversationWorkspace({
         };
       });
       if (
-        (becameTerminal || event.event === 'assistant.started') &&
+        (becameTerminal || event.event === 'assistant.started' || segmentChanged) &&
         conversationId
       ) {
         if (scopeRef.current.selectedConversationId === conversationId) {
@@ -729,6 +753,7 @@ export function useConversationWorkspace({
       text: string,
       uploadIds: string[] = [],
       reaskUiMessageId?: string,
+      reaskRole?: 'user' | 'assistant',
     ) => {
       const body = text;
       if (
@@ -771,7 +796,7 @@ export function useConversationWorkspace({
           requestId: tracked.requestId,
           conversationId: selectedConversationId,
           submittedText: body,
-          replacedUiMessageId: reaskUiMessageId,
+          replacedUiMessageId: reaskRole === 'assistant' ? reaskUiMessageId : undefined,
           text: '',
           reasoning: '',
           event: 'conversation.command.pending',
@@ -884,17 +909,30 @@ export function useConversationWorkspace({
     ],
   );
 
-  const reaskLastAssistant = useCallback(
-    async (uiMessageId: string) => {
+  const retryLastVisibleMessage = useCallback(
+    async (uiMessageId: string, role: 'user' | 'assistant') => {
+      if (activeTurnRef.current && !activeTurnRef.current.terminal) {
+        throw new Error('当前回复仍在生成或执行工具，请先停止或等待本轮结束。');
+      }
       const last = [...messages]
         .reverse()
-        .find(item => item.role === 'assistant');
-      if (!last || last.uiMessageId !== uiMessageId) {
-        throw new Error('仅允许重答最后一条 assistant 回复。');
+        .find(item => item.role === 'user' || item.role === 'assistant');
+      if (!last || last.role !== role || last.uiMessageId !== uiMessageId) {
+        throw new Error(role === 'user' ? '仅允许重发送最后一条用户消息。' : '仅允许重答最后一条 Assistant 回复。');
       }
-      await sendMessage('', [], uiMessageId);
+      // Desktop reuses the existing persisted user turn (and any persisted
+      // attachments), so Mobile must not create a duplicate message or upload.
+      await sendMessage('', [], uiMessageId, role);
     },
     [messages, sendMessage],
+  );
+  const reaskLastAssistant = useCallback(
+    (uiMessageId: string) => retryLastVisibleMessage(uiMessageId, 'assistant'),
+    [retryLastVisibleMessage],
+  );
+  const resendLastUser = useCallback(
+    (uiMessageId: string) => retryLastVisibleMessage(uiMessageId, 'user'),
+    [retryLastVisibleMessage],
   );
 
   const removeQueuedSend = useCallback(
@@ -1034,6 +1072,7 @@ export function useConversationWorkspace({
     loadOlderMessages,
     sendMessage,
     reaskLastAssistant,
+    resendLastUser,
     cancelActiveTurn,
     showSelectedOnDesktop,
     releaseSelectedConversation,

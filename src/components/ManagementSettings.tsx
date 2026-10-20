@@ -19,9 +19,7 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import type {RemoteRequest} from '../remote/api';
 import {AppIcon} from './AppIcon';
 
-import {DesktopBrandMark} from './DesktopBrandMark';
 import {useThemedStyles} from './theme';
-import {version} from '../../package.json';
 
 type Section = 'mcp' | 'skills' | 'general' | 'about';
 type Field = {key: string; label: string; type: string; options?: string[]};
@@ -398,7 +396,7 @@ function Empty({title}: {title: string}) {
 
 function AboutCard() {
   const s = useThemedStyles(styles);
-  return <ScrollView contentContainerStyle={s.aboutPage}><View style={s.aboutHero}><View style={s.aboutIcon}><DesktopBrandMark size={34} /></View><Text style={s.aboutTitle}>Anywhere Mobile</Text><Text style={s.aboutMeta}>v{version} · Remote v2 · E2EE</Text></View><View style={s.aboutCard}><Text style={s.aboutHeading}>安全的 Desktop 伴侣</Text><Text style={s.aboutText}>配置和会话均通过加密远程通道访问。Desktop Renderer 保持唯一会话数据库写入权，Mobile 不会获取本地路径、服务商密钥、MCP 命令或 Remote 根密钥。</Text></View><View style={s.aboutCard}><Text style={s.aboutHeading}>开源项目</Text><Pressable accessibilityLabel="打开 Anywhere Desktop GitHub" style={s.githubRow} onPress={() => Linking.openURL('https://github.com/Komorebi-yaodong/anywheredesktop').catch(() => undefined)}><Text style={s.githubText}>Anywhere Desktop · GitHub</Text><AppIcon name="›" size={18} color={C.primary} /></Pressable><Pressable accessibilityLabel="打开 Anywhere Mobile GitHub" style={s.githubRow} onPress={() => Linking.openURL('https://github.com/Komorebi-yaodong/anywhere-mobile').catch(() => undefined)}><Text style={s.githubText}>Anywhere Mobile · GitHub</Text><AppIcon name="›" size={18} color={C.primary} /></Pressable></View></ScrollView>;
+  return <ScrollView contentContainerStyle={s.aboutPage}><View style={s.aboutCard}><Text style={s.aboutHeading}>GitHub</Text><Pressable accessibilityLabel="打开 Anywhere Desktop GitHub" style={s.githubRow} onPress={() => Linking.openURL('https://github.com/Komorebi-yaodong/anywheredesktop').catch(() => undefined)}><Text style={s.githubText}>Anywhere Desktop</Text><AppIcon name="›" size={18} color={C.primary} /></Pressable><Pressable accessibilityLabel="打开 Anywhere Mobile GitHub" style={s.githubRow} onPress={() => Linking.openURL('https://github.com/Komorebi-yaodong/anywhere-mobile').catch(() => undefined)}><Text style={s.githubText}>Anywhere Mobile</Text><AppIcon name="›" size={18} color={C.primary} /></Pressable></View></ScrollView>;
 }
 
 const styles = StyleSheet.create({
@@ -464,13 +462,8 @@ const styles = StyleSheet.create({
   optionCheck: {color: C.primary, fontSize: 18, fontWeight: '800'},
   pickerClose: {alignItems: 'center', paddingTop: 8, paddingBottom: 3},
   aboutPage: {padding: 18, gap: 12},
-  aboutHero: {alignItems: 'center', gap: 7, paddingVertical: 20},
-  aboutIcon: {width: 62, height: 62, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primarySoft},
-  aboutTitle: {fontSize: 24, color: C.text, fontWeight: '800'},
-  aboutMeta: {fontSize: 13, color: C.muted},
   aboutCard: {padding: 16, gap: 9, borderRadius: 19, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
   aboutHeading: {fontSize: 16, color: C.text, fontWeight: '800'},
-  aboutText: {fontSize: 13, lineHeight: 20, color: C.muted},
   githubRow: {minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, borderRadius: 13, backgroundColor: C.surfaceMuted},
   githubText: {color: C.primary, fontWeight: '800'},
 });

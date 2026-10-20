@@ -180,6 +180,23 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
   });
 
+  it('resends only the final user message through reask without creating a duplicate user message', async () => {
+    const f = fixture();
+    const userPage = {...page(A), messages: [{uiMessageId: 'user-final', role: 'user', order: 1, payload: {content: 'persisted user', attachments: [{id: 'attachment-fixture'}]}}]};
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A ? Promise.resolve(userPage) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let resend!: Promise<void>;
+    await act(async () => { resend = f.state.resendLastUser('user-final'); });
+    expect(f.tracked).toHaveBeenCalledWith(desktopId, 'conversation.message.reask', {conversationId: A, uiMessageId: 'user-final'}, 30_000);
+    expect(f.state.messages.map(item => item.uiMessageId)).toEqual(['user-final']);
+    await act(async () => { f.response.resolve({ok: true}); await resend; f.emit('assistant.completed', 1); });
+    await expect(f.state.resendLastUser('not-final')).rejects.toThrow('仅允许重发送最后一条用户消息');
+    await act(async () => { root.unmount(); });
+  });
+
+
   it('creates and updates a live tool-only assistant turn before any content delta', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;

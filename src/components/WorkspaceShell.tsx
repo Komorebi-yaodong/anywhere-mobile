@@ -177,34 +177,84 @@ type LiveAssistantSegment = {
   text: string;
   reasoning: string;
   toolCalls?: RemoteMessage['payload']['toolCalls'];
+  pendingSegments?: Array<{
+    segmentId: string;
+    text: string;
+    reasoning: string;
+    toolCalls?: RemoteMessage['payload']['toolCalls'];
+  }>;
   terminal?: boolean;
+  historyLoaded?: boolean;
 } | null | undefined;
+
+function hasLiveSegmentContent(segment: {text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}) {
+  return Boolean(segment.text || segment.reasoning || segment.toolCalls?.length);
+}
+
+function liveSegmentMessage(segment: {segmentId: string; text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}, index: number): RemoteMessage {
+  return {
+    messageId: `live-${segment.segmentId}`,
+    uiMessageId: `live-${segment.segmentId}`,
+    role: 'assistant',
+    order: Number.MAX_SAFE_INTEGER - 100 + index,
+    payload: {
+      content: segment.text,
+      reasoningContent: segment.reasoning,
+      summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '',
+      aiName: '', voiceName: '', status: '', toolCalls: segment.toolCalls || [],
+    },
+  };
+}
 
 export function reconcileLiveAssistantSegment(
   messages: RemoteMessage[],
   activeTurn: LiveAssistantSegment,
 ) {
-  const hasPersistedLiveSegment = Boolean(
-    activeTurn?.segmentId &&
-    messages.some(message => message.messageId === activeTurn.segmentId),
-  );
+  const persistedIds = new Set(messages.map(message => message.messageId));
+  const segments: Array<{segmentId: string; text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}> = [
+    ...(activeTurn?.pendingSegments || []),
+    ...(activeTurn?.segmentId ? [{
+      segmentId: activeTurn.segmentId,
+      text: activeTurn.text,
+      reasoning: activeTurn.reasoning,
+      toolCalls: activeTurn.toolCalls,
+    }] : []),
+  ].filter(hasLiveSegmentContent);
+  const segmentById = new Map(segments.map(segment => [segment.segmentId, segment]));
+  const hasPersistedLiveSegment = Boolean(activeTurn?.segmentId && persistedIds.has(activeTurn.segmentId));
+  const canRenderLive = !activeTurn?.terminal || activeTurn.historyLoaded !== true || segments.some(segment => !persistedIds.has(segment.segmentId));
   return {
     hasPersistedLiveSegment,
-    messages: messages.map(message =>
-      activeTurn?.segmentId && message.messageId === activeTurn.segmentId
-        ? {
-            ...message,
-            payload: {
-              ...message.payload,
-              content: activeTurn.text || message.payload.content,
-              reasoningContent:
-                activeTurn.reasoning || message.payload.reasoningContent,
-              toolCalls: activeTurn.toolCalls?.length ? activeTurn.toolCalls : message.payload.toolCalls,
-            },
-          }
-        : message,
-    ),
+    messages: [
+      ...messages.map(message => {
+        const segment = segmentById.get(message.messageId);
+        // Until the matching history read is confirmed, the live snapshot can
+        // be newer than the persisted page. Afterwards retain the durable,
+        // fully sanitized Desktop detail (including tool input/output).
+        if (!segment || (persistedIds.has(segment.segmentId) && activeTurn?.historyLoaded === true)) return message;
+        return {
+          ...message,
+          payload: {
+            ...message.payload,
+            content: segment.text || message.payload.content,
+            reasoningContent: segment.reasoning || message.payload.reasoningContent,
+            toolCalls: segment.toolCalls?.length ? segment.toolCalls : message.payload.toolCalls,
+          },
+        };
+      }),
+      ...(canRenderLive ? segments.filter(segment => !persistedIds.has(segment.segmentId)).map(liveSegmentMessage) : []),
+    ],
   };
+}
+
+export function isPinnedToBottom(offsetY: number, viewportHeight: number, contentHeight: number, threshold = 48): boolean {
+  return Number.isFinite(offsetY) && Number.isFinite(viewportHeight) && Number.isFinite(contentHeight) &&
+    contentHeight - (offsetY + viewportHeight) <= threshold;
+}
+
+export function adjacentMessageIndex(current: number, length: number, direction: -1 | 1): number {
+  if (length <= 0) return -1;
+  return Math.max(0, Math.min(length - 1, current + direction));
 }
 
 export function filterSessionSkills(
@@ -338,10 +388,10 @@ export function WorkspaceShell({
   const [sessionReadError, setSessionReadError] = useState('');
   const [contextLengthDraft, setContextLengthDraft] = useState('');
   const [contextLengthEdited, setContextLengthEdited] = useState(false);
+  const [triggerRatioDraft, setTriggerRatioDraft] = useState('');
   const [mcpQuery, setMcpQuery] = useState('');
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
-  const listRef = useRef<FlatList<RemoteMessage>>(null);
 
   const refreshWorkspace = useCallback(async () => {
     if (desktop.status !== '在线') return;
@@ -472,13 +522,6 @@ export function WorkspaceShell({
     refreshWorkspace().catch(() => undefined);
   }, [refreshWorkspace]);
 
-  useEffect(() => {
-    if (mode === 'chat' && workspace.messages.length) {
-      requestAnimationFrame(() =>
-        listRef.current?.scrollToEnd({ animated: true }),
-      );
-    }
-  }, [mode, workspace.messages.length]);
 
   const conversationsByProject = useMemo(() => {
     const groups = new Map<string, ConversationSummary[]>();
@@ -647,6 +690,7 @@ export function WorkspaceShell({
         setSessionOptions(result.options);
         setConfigExecutionBusy(result.busy === true);
         setContextLengthDraft(String(result.config.compact?.contextLength || ''));
+        setTriggerRatioDraft(String(result.config.compact?.triggerRatio ?? 0.9));
       }
     } catch (error) {
       setSessionReadError(workspaceNotice(error, '无法读取会话设置，请稍后重试。'));
@@ -711,8 +755,13 @@ export function WorkspaceShell({
   const saveSessionSettings = async () => {
     if (!sessionConfig) return;
     const contextLength = Number(contextLengthDraft);
+    const triggerRatio = Number(triggerRatioDraft);
     if (sessionTab === 'compact' && contextLengthEdited && (!Number.isInteger(contextLength) || contextLength < 4096 || contextLength > 10_000_000)) {
       setNotice('上下文长度请输入 4096–10000000 之间的整数。');
+      return;
+    }
+    if (sessionTab === 'compact' && (!Number.isFinite(triggerRatio) || triggerRatio < 0.1 || triggerRatio > 0.99)) {
+      setNotice('触发比例请输入 0.1–0.99 之间的数值。');
       return;
     }
     const patch = sessionTab === 'prompt'
@@ -725,7 +774,7 @@ export function WorkspaceShell({
               compact: {
                 autoCompactEnabled: sessionConfig.compact?.autoCompactEnabled !== false,
                 ...(contextLengthEdited ? {contextLength} : {}),
-                triggerRatio: Number(sessionConfig.compact?.triggerRatio) || 0.9,
+                triggerRatio,
                 keepRecentRounds: Number(sessionConfig.compact?.keepRecentRounds) || 0,
                 compactPrompt: sessionConfig.compact?.compactPrompt || '',
               },
@@ -1095,7 +1144,6 @@ export function WorkspaceShell({
         />
       ) : (
         <ChatPage
-          ref={listRef}
           title={selectedTitle}
           desktopId={desktop.id}
           conversationId={workspace.selectedConversationId}
@@ -1114,6 +1162,7 @@ export function WorkspaceShell({
           onOlder={workspace.loadOlderMessages}
           hasOlder={workspace.messagePage?.hasMore === true}
           onReask={async id => { if (!requireControl()) return; await workspace.reaskLastAssistant(id); }}
+          onResendUser={async id => { if (!requireControl()) return; await workspace.resendLastUser(id); }}
           onEdit={message => {
             if (!requireControl()) return;
             setMessageAction({
@@ -1414,7 +1463,7 @@ export function WorkspaceShell({
               <SheetTextInput accessibilityLabel="会话上下文长度" keyboardType="number-pad" value={contextLengthDraft} editable={canEditSession} onChangeText={value => { setContextLengthDraft(value); setContextLengthEdited(true); }} style={styles.input} placeholder="输入 4096–10000000" placeholderTextColor={C.muted} />
               <Action label={sessionBusy ? '正在获取…' : '一键获取上下文长度'} onPress={refreshContextLength} disabled={!canEditSession} />
               <ToggleRow label="自动压缩" disabled={!canEditSession} value={sessionConfig.compact?.autoCompactEnabled !== false} onChange={autoCompactEnabled => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, autoCompactEnabled}})} />
-              <View style={styles.sessionGrid}><Field label="触发比例 (0.1–0.99)" editable={canEditSession} value={String(sessionConfig.compact?.triggerRatio ?? 0.9)} onChange={raw => { const triggerRatio = Number(raw); if (Number.isFinite(triggerRatio)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, triggerRatio}}); }} /><Field label="保留轮数" editable={canEditSession} value={String(sessionConfig.compact?.keepRecentRounds ?? 0)} onChange={raw => { const keepRecentRounds = Number(raw); if (Number.isFinite(keepRecentRounds)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, keepRecentRounds}}); }} /></View>
+              <View style={styles.sessionGrid}><View style={styles.field}><Text style={styles.fieldLabel}>触发比例 (0.1–0.99)</Text><SheetTextInput accessibilityLabel="压缩触发比例" keyboardType="decimal-pad" editable={canEditSession} value={triggerRatioDraft} onChangeText={setTriggerRatioDraft} style={styles.input} placeholder="例如 0.9" placeholderTextColor={C.muted} /></View><Field label="保留轮数" editable={canEditSession} value={String(sessionConfig.compact?.keepRecentRounds ?? 0)} onChange={raw => { const keepRecentRounds = Number(raw); if (Number.isFinite(keepRecentRounds)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, keepRecentRounds}}); }} /></View>
               <View style={styles.field}><Text style={styles.fieldLabel}>压缩提示词</Text><SheetTextInput value={sessionConfig.compact?.compactPrompt || ''} editable={canEditSession} onChangeText={compactPrompt => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, compactPrompt}})} multiline style={[styles.input, styles.textarea]} placeholder="留空使用默认提示词" placeholderTextColor={C.muted} /></View>
             </View> : null}
             <Action label={sessionBusy ? '正在保存…' : '保存'} onPress={saveSessionSettings} disabled={!canEditSession} />
@@ -1434,7 +1483,7 @@ export function WorkspaceShell({
       <Sheet visible={sheet === 'voice'} onClose={() => setSheet(null)} title="语音">
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
         {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
-        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '默认语音'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
+        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '关闭'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
     </SafeAreaView>
   );
@@ -1505,6 +1554,7 @@ const ChatPage = React.forwardRef<
     onOlder: () => void;
     hasOlder: boolean;
     onReask: (id: string) => Promise<void>;
+    onResendUser: (id: string) => Promise<void>;
     onEdit: (message: RemoteMessage) => void;
     onDelete: (message: RemoteMessage) => void;
     writable: boolean;
@@ -1540,6 +1590,7 @@ const ChatPage = React.forwardRef<
       messages,
       activeTurn,
       onReask,
+      onResendUser,
       onEdit,
       onDelete,
       writable,
@@ -1570,6 +1621,21 @@ const ChatPage = React.forwardRef<
   ) => {
     const styles = useThemedStyles(baseStyles);
     const [voiceMode, setVoiceMode] = useState(false);
+    const list = useRef<FlatList<RemoteMessage>>(null);
+    const pinnedToBottom = useRef(true);
+    const [pinned, setPinned] = useState(true);
+    const visibleIndex = useRef(0);
+    const viewabilityConfig = useRef({itemVisiblePercentThreshold: 45}).current;
+    const scrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const setPinnedState = (next: boolean) => {
+      pinnedToBottom.current = next;
+      setPinned(current => current === next ? current : next);
+    };
+    const scrollToBottom = useCallback((animated = true) => {
+      setPinnedState(true);
+      requestAnimationFrame(() => list.current?.scrollToEnd({animated}));
+    }, []);
+    React.useImperativeHandle(ref, () => list.current!);
 
     useEffect(() => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1580,7 +1646,7 @@ const ChatPage = React.forwardRef<
       };
       const scheduleScrollToComposer = () => {
         cancelScheduledScroll();
-        timer = setTimeout(() => (ref as React.RefObject<FlatList<RemoteMessage> | null>)?.current?.scrollToEnd({animated: true}), 100);
+        timer = setTimeout(() => scrollToBottom(true), 100);
       };
       const show = Keyboard.addListener('keyboardDidShow', event => {
         keyboardTop = event.endCoordinates.screenY;
@@ -1596,41 +1662,37 @@ const ChatPage = React.forwardRef<
         cancelScheduledScroll();
       });
       return () => { show.remove(); change.remove(); hide.remove(); cancelScheduledScroll(); };
-    }, [ref]);
-    const lastAssistant = [...messages]
+    }, [scrollToBottom]);
+    const lastVisibleMessage = [...messages]
       .reverse()
-      .find(message => message.role === 'assistant')?.uiMessageId;
+      .find(message => message.role === 'user' || message.role === 'assistant');
+    const lastAssistant = lastVisibleMessage?.role === 'assistant' ? lastVisibleMessage.uiMessageId : '';
+    const lastUser = lastVisibleMessage?.role === 'user' ? lastVisibleMessage.uiMessageId : '';
     const liveSegment = reconcileLiveAssistantSegment(messages, activeTurn);
     const renderedMessages = liveSegment.messages.filter(message =>
       shouldRenderMessage(message),
     );
-    const hasPersistedLiveSegment = liveSegment.hasPersistedLiveSegment;
-    const rows = [
-      ...renderedMessages,
-      ...(activeTurn &&
-      !activeTurn.terminal &&
-      !hasPersistedLiveSegment &&
-      (activeTurn.text || activeTurn.reasoning || activeTurn.toolCalls?.length)
-        ? [{
-            messageId: '__live__',
-            uiMessageId: '__live__',
-            role: 'assistant',
-            order: Number.MAX_SAFE_INTEGER,
-            payload: {
-              content: activeTurn.text,
-              reasoningContent: activeTurn.reasoning,
-              summary: '',
-              summaryPrefix: '',
-              timestamp: '',
-              completedTimestamp: '',
-              aiName: assistantName,
-              voiceName: '',
-              status: '',
-              toolCalls: activeTurn.toolCalls || [],
-            },
-          } as RemoteMessage]
-        : []),
-    ];
+    const rows = renderedMessages;
+    const liveRevision = Number(activeTurn?.eventSequence || 0);
+    useEffect(() => {
+      if (!pinnedToBottom.current) return;
+      if (scrollTimer.current) clearTimeout(scrollTimer.current);
+      scrollTimer.current = setTimeout(() => scrollToBottom(false), 0);
+      return () => { if (scrollTimer.current) clearTimeout(scrollTimer.current); };
+    }, [rows.length, liveRevision, scrollToBottom]);
+    const navigate = (target: 'top' | 'previous' | 'next' | 'bottom') => {
+      if (!rows.length) return;
+      if (target === 'top') {
+        setPinnedState(false);
+        list.current?.scrollToOffset({offset: 0, animated: true});
+        return;
+      }
+      if (target === 'bottom') { scrollToBottom(true); return; }
+      const index = adjacentMessageIndex(visibleIndex.current, rows.length, target === 'previous' ? -1 : 1);
+      if (index < 0) return;
+      setPinnedState(false);
+      list.current?.scrollToIndex({index, animated: true, viewPosition: 0.15});
+    };
       const liveChoices = Object.entries(pendingChoices || {})
       .filter(([toolCallId, pending]) =>
         pending.conversationId === conversationId &&
@@ -1642,10 +1704,16 @@ const ChatPage = React.forwardRef<
           style={styles.chatMessages}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          ref={ref}
+          ref={list}
           data={rows}
           keyExtractor={item => item.uiMessageId}
           contentContainerStyle={styles.messageList}
+          scrollEventThrottle={16}
+          onScroll={event => setPinnedState(isPinnedToBottom(event.nativeEvent.contentOffset.y, event.nativeEvent.layoutMeasurement.height, event.nativeEvent.contentSize.height))}
+          onContentSizeChange={() => { if (pinnedToBottom.current) scrollToBottom(false); }}
+          onViewableItemsChanged={({viewableItems}) => { const first = viewableItems.find(item => item.index != null); if (first?.index != null) visibleIndex.current = first.index; }}
+          viewabilityConfig={viewabilityConfig}
+          onScrollToIndexFailed={({index, averageItemLength}) => list.current?.scrollToOffset({offset: Math.max(0, index * averageItemLength), animated: true})}
           ListHeaderComponent={
             hasOlder ? (
               <Pressable onPress={onOlder}>
@@ -1670,13 +1738,25 @@ const ChatPage = React.forwardRef<
               onDelete={() => onDelete(item)}
               writable={writable}
               reask={
-                writable && item.uiMessageId === lastAssistant
+                writable && (!activeTurn || activeTurn.terminal) && item.uiMessageId === lastAssistant
                   ? () => onReask(item.uiMessageId).catch(() => undefined)
+                  : undefined
+              }
+              resend={
+                writable && (!activeTurn || activeTurn.terminal) && item.uiMessageId === lastUser
+                  ? () => onResendUser(item.uiMessageId).catch(() => undefined)
                   : undefined
               }
             />
           )}
         />
+        <View pointerEvents="box-none" style={styles.chatNavigator}>
+          <Pressable accessibilityLabel="跳到顶部" style={styles.chatNavigatorButton} onPress={() => navigate('top')}><AppIcon name="top" size={17} color={C.primary} /></Pressable>
+          <Pressable accessibilityLabel="上一条消息" style={styles.chatNavigatorButton} onPress={() => navigate('previous')}><AppIcon name="↑" size={17} color={C.primary} /></Pressable>
+          <Pressable accessibilityLabel="下一条消息" style={styles.chatNavigatorButton} onPress={() => navigate('next')}><AppIcon name="↓" size={17} color={C.primary} /></Pressable>
+          <Pressable accessibilityLabel="跳到底部" style={[styles.chatNavigatorButton, pinned && styles.chatNavigatorButtonActive]} onPress={() => navigate('bottom')}><AppIcon name="bottom" size={17} color={C.primary} /></Pressable>
+        </View>
+
         {liveChoices.map(([toolCallId, pending]) => (
           <LiveChoiceCard
             key={toolCallId}
@@ -2132,6 +2212,7 @@ function MessageCard({
   pendingChoices,
   onSubmitChoice,
   reask,
+  resend,
   onEdit,
   onDelete,
   writable,
@@ -2148,6 +2229,7 @@ function MessageCard({
   pendingChoices: Record<string, {conversationId: string; questions: Array<{question: string; header: string; options: Array<{label: string; description: string}>}>}>;
   onSubmitChoice: (toolCallId: string, responses: Array<Record<string, unknown>>) => Promise<void>;
   reask?: () => void;
+  resend?: () => void;
   onEdit: () => void;
   onDelete: () => void;
   writable: boolean;
@@ -2181,6 +2263,7 @@ function MessageCard({
         {editableMessage ? <Pressable disabled={!writable} accessibilityLabel="编辑消息" onPress={onEdit}><AppIcon name="edit" size={17} /></Pressable> : null}
         {editableMessage ? <Pressable disabled={!writable} accessibilityLabel="删除消息" onPress={onDelete}><AppIcon name="delete" size={17} /></Pressable> : null}
         {reask ? <Pressable onPress={reask} accessibilityLabel="重答"><AppIcon name="reask" size={17} /></Pressable> : null}
+        {resend ? <Pressable onPress={resend} accessibilityLabel="重发送"><AppIcon name="reask" size={17} /></Pressable> : null}
       </View>
     </View>
   );
@@ -2196,9 +2279,9 @@ function ToolCallCard({tool, pending, writable = true, onSubmit}: {tool: RemoteM
   const styles = useThemedStyles(baseStyles);
   const [open, setOpen] = useState(false);
   return <View style={styles.toolCard}>
-    <Pressable style={styles.toolHeader} onPress={() => setOpen(current => !current)}><View style={styles.toolHeaderCopy}><AppIcon name="mcp" size={16} color={C.primary} /><Text numberOfLines={1} style={styles.toolName}>调用 {tool.name || '工具'}</Text></View><Text style={styles.toolState}>{tool.status === 'choosing' || pending ? '等待选择' : tool.status || (tool.result !== undefined ? '已完成' : '处理中')}</Text></Pressable>
+    <Pressable accessibilityLabel={`查看工具 ${tool.name || '工具'} 详情`} style={styles.toolHeader} onPress={() => setOpen(current => !current)}><View style={styles.toolHeaderCopy}><AppIcon name="mcp" size={16} color={C.primary} /><Text numberOfLines={1} style={styles.toolName}>调用 {tool.name || '工具'}</Text></View><Text style={styles.toolState}>{tool.status === 'choosing' || pending ? '等待选择' : tool.status || (tool.result !== undefined ? '已完成' : '处理中')}</Text></Pressable>
     {open ? <View style={styles.toolBody}>
-      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : null}</>}
+      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{tool.arguments === '[参数已隐藏]' ? '实时执行中，等待安全详情同步…' : formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>等待工具完成并同步安全详情…</Text>}</ScrollView>}
     </View> : null}
   </View>;
 }
@@ -2670,6 +2753,11 @@ const baseStyles = StyleSheet.create({
 
   toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 7},
 
+  chatNavigator: {position: 'absolute', right: 12, top: 14, gap: 7, zIndex: 3, padding: 6, borderRadius: 17, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, backgroundColor: 'rgba(255,255,255,0.94)', shadowColor: '#372C26', shadowOpacity: 0.1, shadowRadius: 8, shadowOffset: {width: 0, height: 3}, elevation: 3},
+  chatNavigatorButton: {width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: C.surfaceMuted},
+  chatNavigatorButtonActive: {backgroundColor: C.primarySoft, borderWidth: StyleSheet.hairlineWidth, borderColor: '#E6B9A7'},
+
+
   toolListFullWidth: {alignSelf: 'stretch', width: '100%'},
 
   messageRight: {alignSelf: 'flex-end'},
@@ -2697,9 +2785,12 @@ const baseStyles = StyleSheet.create({
   toolHeaderCopy: {flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 7},
   toolName: {flex: 1, color: C.text, fontSize: 12, fontWeight: '800'},
   toolState: {color: C.muted, fontSize: 10},
-  toolBody: {gap: 7, padding: 11, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line, backgroundColor: C.surface},
+  toolBody: {padding: 11, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line, backgroundColor: C.surface},
+  toolDetailScroll: {height: 184, borderRadius: 10, backgroundColor: C.surfaceMuted},
+  toolDetailContent: {gap: 7, padding: 9},
   toolLabel: {color: C.muted, fontSize: 10, fontWeight: '800'},
-  toolCode: {maxHeight: 180, padding: 9, borderRadius: 10, backgroundColor: C.surfaceMuted, color: C.text, fontFamily: 'monospace', fontSize: 11, lineHeight: 16},
+  toolCode: {color: C.text, fontFamily: 'monospace', fontSize: 11, lineHeight: 16, flexShrink: 0},
+  toolPending: {color: C.muted, fontSize: 12, lineHeight: 18, paddingTop: 4},
   toolError: {color: C.danger, fontSize: 12},
   choiceWrap: {gap: 10, paddingTop: 3},
   choiceQuestion: {gap: 6},

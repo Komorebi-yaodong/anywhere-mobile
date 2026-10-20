@@ -1,10 +1,12 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import {Image, Text, TextInput, StyleSheet} from 'react-native';
+import {Image, ScrollView, Text, TextInput, StyleSheet} from 'react-native';
 import {
   filterSessionMcpServers,
   filterSessionSkills,
   keyboardFrameNeedsComposerScroll,
+  isPinnedToBottom,
+  adjacentMessageIndex,
   hasMessageBubble,
   reconcileLiveAssistantSegment,
   shouldRenderMessage,
@@ -13,9 +15,12 @@ import {
 import type { DesktopRuntime } from '../src/hooks/useDesktops';
 import type { RemoteRequest, RemoteTrackedRequest } from '../src/remote/api';
 
+import {ManagementSettings} from '../src/components/ManagementSettings';
+
 const mockCreate = jest.fn(async () => undefined);
 const mockCancel = jest.fn(async () => undefined);
 const mockSend = jest.fn(async () => undefined);
+const mockResendLastUser = jest.fn(async () => undefined);
 const mockSelectConversation = jest.fn();
 const mockTakeoverConversation = jest.fn(async () => undefined);
 const mockHandoffConversation = jest.fn(async () => undefined);
@@ -61,6 +66,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     refreshMessages: jest.fn(),
     removeQueuedSend: jest.fn(),
     reaskLastAssistant: jest.fn(),
+    resendLastUser: mockResendLastUser,
     messagePage: {hasMore: false},
     conversationModel: mockConversationModel,
     conversationAssistant: mockConversationAssistant,
@@ -114,6 +120,7 @@ beforeEach(() => {
   mockConversationModel = '';
   mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
   mockActiveTurn = null;
+  mockResendLastUser.mockClear();
   mockSelectConversation.mockClear();
   mockTakeoverConversation.mockClear();
   mockHandoffConversation.mockClear();
@@ -174,6 +181,17 @@ test('only scrolls to the composer while a visible keyboard moves upward, never 
 });
 
 
+test('keeps pinned geometry and message navigation within the visible message range', () => {
+  expect(isPinnedToBottom(452, 500, 1000)).toBe(true);
+  expect(isPinnedToBottom(450, 500, 1000)).toBe(false);
+  expect(isPinnedToBottom(420, 500, 1000, 96)).toBe(true);
+  expect(adjacentMessageIndex(0, 3, -1)).toBe(0);
+  expect(adjacentMessageIndex(1, 3, 1)).toBe(2);
+  expect(adjacentMessageIndex(2, 3, 1)).toBe(2);
+  expect(adjacentMessageIndex(0, 0, 1)).toBe(-1);
+});
+
+
 test('reconciles a persisted live Assistant segment instead of appending a duplicate card', () => {
   const messages = [{
     messageId: 'assistant-storage-fixture',
@@ -193,6 +211,28 @@ test('reconciles a persisted live Assistant segment instead of appending a dupli
 });
 
 
+test('keeps earlier live tool segments until each persisted segment is confirmed', () => {
+  const active = {
+    segmentId: 'tool-segment-two', text: '', reasoning: '', terminal: false,
+    pendingSegments: [{segmentId: 'tool-segment-one', text: '', reasoning: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished'}]}],
+    toolCalls: [{id: 'tool-two', name: 'second_tool', status: 'executing'}],
+  };
+  const first = reconcileLiveAssistantSegment([], active);
+  expect(first.messages.map(message => message.uiMessageId)).toEqual(['live-tool-segment-one', 'live-tool-segment-two']);
+  const persistedFirst = [{
+    messageId: 'tool-segment-one', uiMessageId: 'assistant-one', role: 'assistant' as const, order: 1,
+    payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished', arguments: {safe: true}, result: {ok: true}}]},
+  }];
+  const second = reconcileLiveAssistantSegment(persistedFirst, {...active, historyLoaded: true});
+  expect(second.messages.map(message => message.uiMessageId)).toEqual(['assistant-one', 'live-tool-segment-two']);
+  const final = reconcileLiveAssistantSegment([...persistedFirst, {
+    messageId: 'tool-segment-two', uiMessageId: 'assistant-two', role: 'assistant' as const, order: 2,
+    payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-two', name: 'second_tool', status: 'finished', arguments: {safe: true}, result: {ok: true}}]},
+  }], {...active, terminal: true, historyLoaded: true});
+  expect(final.messages.map(message => message.uiMessageId)).toEqual(['assistant-one', 'assistant-two']);
+});
+
+
 test('renders a live tool-only Assistant card before normal assistant text arrives', async () => {
   mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: false, controlledByThisDevice: true, mobileControlled: true}];
   mockActiveTurn = {requestId: 'request-tool-live', conversationId: 'conversation-shell-fixture', submittedText: '', text: '', reasoning: '', segmentId: 'tool-live-card', toolCalls: [{id: 'tool-live-card-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}], event: 'assistant.delta', eventSequence: 1, terminal: false, truncated: false};
@@ -202,6 +242,76 @@ test('renders a live tool-only Assistant card before normal assistant text arriv
   const renderedText = root.root.findAllByType(Text).map(node => Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children || ''));
   expect(renderedText).toContain('调用 safe_tool');
   expect(renderedText).toContain('executing');
+  await act(async () => root.unmount());
+});
+
+
+test('renders one theme-consistent right navigation rail and resends only the final visible user message', async () => {
+  openConfigSession();
+  mockWorkspaceMessages = [{
+    messageId: 'user-final-fixture', uiMessageId: 'user-final-fixture', role: 'user', order: 1,
+    payload: {content: 'send again', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: []},
+  }];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await enterFixtureChat(root);
+  for (const label of ['跳到顶部', '上一条消息', '下一条消息', '跳到底部']) {
+    expect(root.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')).toHaveLength(1);
+  }
+  const resend = root.root.findAll(node => node.props.accessibilityLabel === '重发送' && typeof node.props.onPress === 'function');
+  expect(resend).toHaveLength(1);
+  await act(async () => resend[0].props.onPress());
+  expect(mockResendLastUser).toHaveBeenCalledWith('user-final-fixture');
+  await act(async () => root.unmount());
+});
+
+test('keeps trigger-ratio edit drafts and validates only when saving, and labels empty voice as disabled', async () => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => button(root, '上下文').props.onPress());
+  const ratio = () => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '压缩触发比例')!;
+  await act(async () => ratio().props.onChangeText('0.'));
+  expect(ratio().props.value).toBe('0.');
+  await act(async () => ratio().props.onChangeText('.'));
+  expect(ratio().props.value).toBe('.');
+  await act(async () => button(root, '保存').props.onPress());
+  expect(props.tracked.mock.calls.some(([, method]) => method === 'conversation.config.patch')).toBe(false);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '语音配置')[0].props.onPress());
+  expect(root.root.findAllByType(Text).some(node => node.props.children === '关闭')).toBe(true);
+  await act(async () => root.unmount());
+});
+
+test('shows a fixed-height scrollable safe tool detail panel', async () => {
+  openConfigSession();
+  mockWorkspaceMessages = [{
+    messageId: 'assistant-tool-detail', uiMessageId: 'assistant-tool-detail', role: 'assistant', order: 1,
+    payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'safe-tool-detail', name: 'safe_tool', status: 'finished', arguments: {query: 'synthetic'}, result: {value: 'synthetic output'}}]},
+  }];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '查看工具 safe_tool 详情')[0].props.onPress());
+  const details = root.root.findAllByType(ScrollView).find(node => node.props.showsVerticalScrollIndicator === true && node.props.nestedScrollEnabled === true);
+  expect(StyleSheet.flatten(details?.props.style).height).toBe(184);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === '输入参数')).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === '输出结果')).toBe(true);
+  await act(async () => root.unmount());
+});
+
+test('about page lists only the GitHub repositories', async () => {
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<ManagementSettings section="about" desktopId="desktop-about" request={jest.fn() as RemoteRequest} onChanged={jest.fn()} refreshSignal={0} />); });
+  const text = root.root.findAllByType(Text).map(node => Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children || ''));
+  expect(text).toContain('GitHub');
+  expect(text).toContain('Anywhere Desktop');
+  expect(text).toContain('Anywhere Mobile');
+  expect(text.join(' ')).not.toContain('安全的 Desktop 伴侣');
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '打开 Anywhere Desktop GitHub' && typeof node.props.onPress === 'function')).toHaveLength(1);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '打开 Anywhere Mobile GitHub' && typeof node.props.onPress === 'function')).toHaveLength(1);
   await act(async () => root.unmount());
 });
 
