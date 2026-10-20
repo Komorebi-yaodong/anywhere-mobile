@@ -12,10 +12,11 @@ import {
 
 import type {RemoteRequest} from '../remote/api';
 import {AppIcon} from './AppIcon';
+import {mcpTransportLabel, mcpTransportSearchTerms} from './mcpPresentation';
 import {useThemedStyles} from './theme';
 
 type ToggleSection = 'mcp' | 'skills';
-type ToggleItem = {id: string; name: string; enabled: boolean; revision: string; tags?: string[]};
+type ToggleItem = {id: string; name: string; enabled: boolean; revision: string; tags?: string[]; transport?: string};
 type DetailsReply = {ok: true; section: ToggleSection; items: ToggleItem[]};
 type GeneralReply = {
   ok: true;
@@ -179,10 +180,11 @@ export function SimpleManagementSettings({
   const keyword = query.trim().toLocaleLowerCase('zh-CN');
   const visibleItems = items.filter(item => {
     const tags = section === 'mcp' ? item.tags || [] : [];
+    const transportTerms = section === 'mcp' ? mcpTransportSearchTerms(item.transport) : [];
     const tagMatches = section !== 'mcp' || selectedTag === '__all__' || tags.includes(selectedTag);
     if (!tagMatches) return false;
     if (!keyword) return true;
-    const haystack = [item.name || item.id, item.id, ...tags].join(' ').toLocaleLowerCase('zh-CN');
+    const haystack = [item.name || item.id, item.id, ...tags, ...transportTerms].join(' ').toLocaleLowerCase('zh-CN');
     return haystack.includes(keyword);
   });
   return (
@@ -200,7 +202,7 @@ export function SimpleManagementSettings({
             <View style={s.itemIcon}><AppIcon name={section === 'mcp' ? 'mcp' : 'skills'} size={20} color={C.primary} /></View>
             <View style={s.itemCopy}>
               <Text numberOfLines={1} style={s.itemName}>{item.name || item.id}</Text>
-              {section === 'mcp' && item.tags?.length ? <View style={s.itemTags}>{item.tags.map(tag => <View key={tag} style={s.itemTag}><Text style={s.itemTagText}>{tag}</Text></View>)}</View> : null}
+              {section === 'mcp' && (mcpTransportLabel(item.transport) || item.tags?.length) ? <View style={s.itemTags}>{mcpTransportLabel(item.transport) ? <View style={s.itemType}><Text style={s.itemTypeText}>{mcpTransportLabel(item.transport)}</Text></View> : null}{item.tags?.map(tag => <View key={tag} style={s.itemTag}><Text style={s.itemTagText}>{tag}</Text></View>)}</View> : null}
             </View>
             <Switch
               value={item.enabled}
@@ -234,6 +236,9 @@ const styles = StyleSheet.create({
   itemCopy: {flex: 1, minWidth: 0, gap: 5},
   itemName: {minWidth: 0, color: C.text, fontSize: 15, fontWeight: '800'},
   itemTags: {flexDirection: 'row', flexWrap: 'wrap', gap: 4},
+  itemType: {paddingHorizontal: 6, paddingVertical: 2, borderRadius: 7, backgroundColor: C.primarySoft},
+  itemTypeText: {color: C.primary, fontSize: 10, fontWeight: '800'},
+
   itemTag: {paddingHorizontal: 6, paddingVertical: 2, borderRadius: 7, backgroundColor: C.surfaceMuted},
   itemTagText: {color: C.muted, fontSize: 10, fontWeight: '700'},
   empty: {marginTop: 8, padding: 22, alignItems: 'center', borderRadius: 18, backgroundColor: C.surfaceMuted},

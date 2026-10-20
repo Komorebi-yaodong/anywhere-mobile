@@ -1,12 +1,13 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Image,
   Linking,
   Modal,
+  PanResponder,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -146,11 +147,136 @@ async function exportImageToPictures(uri: string, mimeType: string): Promise<voi
   }
 }
 
+const minPreviewScale = 1;
+const maxPreviewScale = 4;
+
+type Point = {x: number; y: number};
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function touchPoint(touch?: {pageX: number; pageY: number}): Point {
+  return {x: Number(touch?.pageX) || 0, y: Number(touch?.pageY) || 0};
+}
+
+function touchDistance(touches: ReadonlyArray<{pageX: number; pageY: number}>): number {
+  if (touches.length < 2) return 0;
+  const first = touchPoint(touches[0]);
+  const second = touchPoint(touches[1]);
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
 function ImagePreview({state, onError}: {state: MediaState; onError: () => void}) {
   const [open, setOpen] = useState(false);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(minPreviewScale);
   const [saving, setSaving] = useState(false);
-  const close = () => { setZoom(1); setOpen(false); };
+  const [viewport, setViewport] = useState({width: 0, height: 0});
+  const scale = useRef(new Animated.Value(minPreviewScale)).current;
+  const pan = useRef(new Animated.ValueXY({x: 0, y: 0})).current;
+  const zoomRef = useRef(minPreviewScale);
+  const panRef = useRef<Point>({x: 0, y: 0});
+  const lastTapAt = useRef(0);
+  const gesture = useRef({
+    mode: 'idle' as 'idle' | 'pan' | 'pinch',
+    startScale: minPreviewScale,
+    startDistance: 0,
+    startPan: {x: 0, y: 0},
+    startTouch: {x: 0, y: 0},
+    moved: false,
+  });
+
+  const applyTransform = useCallback((nextScale: number, nextPan: Point, animated = false) => {
+    const boundedScale = clamp(nextScale, minPreviewScale, maxPreviewScale);
+    const maximumX = viewport.width > 0 ? Math.max(0, (viewport.width * (boundedScale - 1)) / 2) : 0;
+    const maximumY = viewport.height > 0 ? Math.max(0, (viewport.height * (boundedScale - 1)) / 2) : 0;
+    const boundedPan = boundedScale <= minPreviewScale
+      ? {x: 0, y: 0}
+      : {x: clamp(nextPan.x, -maximumX, maximumX), y: clamp(nextPan.y, -maximumY, maximumY)};
+    zoomRef.current = boundedScale;
+    panRef.current = boundedPan;
+    setZoom(current => Math.abs(current - boundedScale) >= 0.01 ? boundedScale : current);
+    const changes = [
+      Animated.timing(scale, {toValue: boundedScale, duration: animated ? 160 : 0, useNativeDriver: true}),
+      Animated.timing(pan, {toValue: boundedPan, duration: animated ? 160 : 0, useNativeDriver: true}),
+    ];
+    if (animated) Animated.parallel(changes).start();
+    else {
+      scale.setValue(boundedScale);
+      pan.setValue(boundedPan);
+    }
+  }, [pan, scale, viewport.height, viewport.width]);
+
+  const resetTransform = useCallback((animated = false) => {
+    applyTransform(minPreviewScale, {x: 0, y: 0}, animated);
+  }, [applyTransform]);
+
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: event => {
+      const touches = event.nativeEvent.touches;
+      const next = gesture.current;
+      next.moved = false;
+      next.startPan = panRef.current;
+      next.startScale = zoomRef.current;
+      if (touches.length >= 2) {
+        next.mode = 'pinch';
+        next.startDistance = touchDistance(touches);
+      } else {
+        next.mode = 'pan';
+        next.startTouch = touchPoint(touches[0]);
+      }
+    },
+    onPanResponderMove: event => {
+      const touches = event.nativeEvent.touches;
+      const next = gesture.current;
+      if (touches.length >= 2) {
+        if (next.mode !== 'pinch') {
+          next.mode = 'pinch';
+          next.startScale = zoomRef.current;
+          next.startPan = panRef.current;
+          next.startDistance = touchDistance(touches);
+        }
+        const distance = touchDistance(touches);
+        if (next.startDistance > 0 && distance > 0) {
+          next.moved = true;
+          applyTransform(next.startScale * (distance / next.startDistance), next.startPan);
+        }
+        return;
+      }
+      if (touches.length !== 1) return;
+      const point = touchPoint(touches[0]);
+      if (next.mode !== 'pan') {
+        next.mode = 'pan';
+        next.startTouch = point;
+        next.startPan = panRef.current;
+        return;
+      }
+      const deltaX = point.x - next.startTouch.x;
+      const deltaY = point.y - next.startTouch.y;
+      if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) next.moved = true;
+      if (zoomRef.current > minPreviewScale) {
+        applyTransform(zoomRef.current, {x: next.startPan.x + deltaX, y: next.startPan.y + deltaY});
+      }
+    },
+    onPanResponderRelease: () => {
+      const wasTap = gesture.current.mode === 'pan' && !gesture.current.moved;
+      gesture.current.mode = 'idle';
+      if (zoomRef.current <= minPreviewScale + 0.01) resetTransform(false);
+      if (!wasTap) return;
+      const now = Date.now();
+      if (now - lastTapAt.current <= 280) {
+        lastTapAt.current = 0;
+        resetTransform(true);
+      } else {
+        lastTapAt.current = now;
+      }
+    },
+    onPanResponderTerminate: () => { gesture.current.mode = 'idle'; },
+  }), [applyTransform, resetTransform]);
+
+  const close = () => { resetTransform(false); setOpen(false); };
   const save = () => {
     Alert.alert('保存图片', '将把当前图片保存到系统图片目录。', [
       {text: '取消', style: 'cancel'},
@@ -169,7 +295,7 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
   return <>
     <Pressable
       accessibilityLabel="打开图片预览"
-      onPress={() => setOpen(true)}
+      onPress={() => { resetTransform(false); setOpen(true); }}
       onLongPress={save}
       delayLongPress={420}
       style={styles.imagePress}
@@ -180,15 +306,16 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
     <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
       <View style={styles.imageModal}>
         <View style={styles.imageModalTop}>
-          <Pressable accessibilityLabel="缩小图片" style={styles.zoomButton} onPress={() => setZoom(current => Math.max(1, Number((current - 0.5).toFixed(1))))}><Text style={styles.zoomButtonText}>−</Text></Pressable>
+          <Pressable accessibilityLabel="缩小图片" style={styles.zoomButton} onPress={() => applyTransform(zoomRef.current - 0.5, panRef.current, true)}><Text style={styles.zoomButtonText}>−</Text></Pressable>
           <Text style={styles.zoomLabel}>{Math.round(zoom * 100)}%</Text>
-          <Pressable accessibilityLabel="放大图片" style={styles.zoomButton} onPress={() => setZoom(current => Math.min(3, Number((current + 0.5).toFixed(1))))}><Text style={styles.zoomButtonText}>＋</Text></Pressable>
+          <Pressable accessibilityLabel="放大图片" style={styles.zoomButton} onPress={() => applyTransform(zoomRef.current + 0.5, panRef.current, true)}><Text style={styles.zoomButtonText}>＋</Text></Pressable>
           <Pressable accessibilityLabel="保存当前图片" style={styles.saveButton} onPress={save}><Text style={styles.saveButtonText}>{saving ? '保存中' : '保存'}</Text></Pressable>
           <Pressable accessibilityLabel="关闭图片预览" style={styles.closeButton} onPress={close}><Text style={styles.closeButtonText}>关闭</Text></Pressable>
         </View>
-        <ScrollView contentContainerStyle={styles.imageModalScroll} maximumZoomScale={3} minimumZoomScale={1} centerContent>
-          <Image source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{scale: zoom}]}]} onError={onError} />
-        </ScrollView>
+        <Text style={styles.imageGestureHint}>双指缩放 · 放大后拖动 · 双击复位</Text>
+        <View accessibilityLabel="图片预览画布" onLayout={event => setViewport({width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height})} style={styles.imageGestureSurface} {...panResponder.panHandlers}>
+          <Animated.Image source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{translateX: pan.x}, {translateY: pan.y}, {scale}]}]} onError={onError} />
+        </View>
       </View>
     </Modal>
   </>;
@@ -331,8 +458,9 @@ const styles = StyleSheet.create({
   saveButtonText: {color: '#FFF9F2', fontSize: 12, fontWeight: '800'},
   closeButton: {borderRadius: 10, paddingHorizontal: 10, paddingVertical: 9, backgroundColor: '#3F3933'},
   closeButtonText: {color: '#FFF9F2', fontSize: 12, fontWeight: '800'},
-  imageModalScroll: {flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 18},
-  imageFullscreen: {width: '100%', height: 540, maxHeight: '100%'},
+  imageGestureHint: {paddingHorizontal: 18, paddingBottom: 8, textAlign: 'center', color: '#CFC6BC', fontSize: 11, fontWeight: '700'},
+  imageGestureSurface: {flex: 1, minHeight: 0, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', padding: 18},
+  imageFullscreen: {width: '100%', height: '100%'},
   audioCard: {overflow: 'hidden', gap: 12, padding: 14, borderRadius: 18, borderWidth: 1, borderColor: '#ECDACE', backgroundColor: '#FFF8F1'},
   audioEngine: {width: 1, height: 1, opacity: 0},
   audioHeader: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10},

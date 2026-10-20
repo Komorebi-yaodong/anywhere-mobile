@@ -31,6 +31,14 @@ test('filters global MCP services by visible configuration tags and keywords onl
         enabled: true,
         transport: 'stdio',
       },
+      {
+        id: 'mcp-builtin-fixture',
+        revision: 'revision-builtin',
+        name: '工作区工具 MCP',
+        tags: ['系统'],
+        enabled: true,
+        transport: 'builtin',
+      },
     ],
   }));
   let root!: TestRenderer.ReactTestRenderer;
@@ -50,6 +58,8 @@ test('filters global MCP services by visible configuration tags and keywords onl
   expect(hasText(root, 'Research')).toBe(true);
   expect(hasText(root, '研究 MCP')).toBe(true);
   expect(hasText(root, '文件 MCP')).toBe(true);
+  expect(hasText(root, '工作区工具 MCP')).toBe(true);
+  expect(hasText(root, '内置')).toBe(true);
 
   await act(async () => {
     root.root.findByProps({accessibilityLabel: '筛选 MCP 标签 Research'}).props.onPress();
@@ -63,6 +73,12 @@ test('filters global MCP services by visible configuration tags and keywords onl
   });
   expect(hasText(root, '研究 MCP')).toBe(false);
   expect(hasText(root, '文件 MCP')).toBe(true);
+
+  await act(async () => root.root.findByType(TextInput).props.onChangeText('内置'));
+  expect(hasText(root, '工作区工具 MCP')).toBe(true);
+  expect(hasText(root, '文件 MCP')).toBe(false);
+  await act(async () => root.root.findByType(TextInput).props.onChangeText('builtin'));
+  expect(hasText(root, '工作区工具 MCP')).toBe(true);
   expect(JSON.stringify(root.toJSON())).not.toContain('PRIVATE_COMMAND_MUST_NOT_RENDER');
   expect(request).toHaveBeenCalledWith(
     'desktop-management-tags-fixture',

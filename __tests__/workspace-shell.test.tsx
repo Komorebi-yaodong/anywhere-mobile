@@ -199,6 +199,43 @@ test('does not reserve a content bubble for reasoning or tool-only assistant mes
   expect(hasMessageBubble(reasoningAndTool)).toBe(false);
 });
 
+test('shows the Desktop timestamp for a tool-only assistant message without a content bubble', async () => {
+  mockOpenedSessions = [{
+    conversationId: 'conversation-tool-time-fixture-0001',
+    title: 'Tool Time Fixture',
+    visible: true,
+    busy: false,
+    mobileControlled: false,
+    controlledByThisDevice: false,
+    hidden: false,
+    hasDesktopObserver: false,
+  }];
+  mockWorkspaceMessages = [{
+    uiMessageId: 'assistant-tool-time-fixture',
+    messageId: 'assistant-tool-time-fixture',
+    role: 'assistant',
+    order: 1,
+    payload: {
+      content: '',
+      reasoningContent: '',
+      timestamp: '',
+      completedTimestamp: '2026-10-20T12:34:00.000Z',
+      toolCalls: [{id: 'tool-time-fixture', name: 'read_file', status: 'finished'}],
+    },
+  }];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Tool Time Fixture')[0].props.onPress());
+  const time = root.root.findAll(node => node.props.accessibilityLabel === 'AI 回复时间');
+  expect(time.length).toBeGreaterThan(0);
+  expect(time.some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)).match(/2026\/10\/20\s+\d{2}:\d{2}/))).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)) === '调用 read_file')).toBe(true);
+  await act(async () => root.unmount());
+});
+
+
 test('shows the resolved Agent identity separately from the conversation model', async () => {
   mockOpenedSessions = [{
     conversationId: 'conversation-identity-fixture-0001',

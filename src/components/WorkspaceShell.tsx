@@ -1949,6 +1949,7 @@ function MessageCard({
   const content = renderText(message.payload.content);
   const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
   const timestamp = message.payload.completedTimestamp || message.payload.timestamp;
+  const formattedTimestamp = formatTime(timestamp);
   const toolOnly = !isUser && !hasMessageBubble(message) && !String(message.payload.reasoningContent || '').trim() && Boolean(message.payload.toolCalls?.length);
   const copyText = content || (message.payload.toolCalls || []).map(tool => `调用 ${tool.name || '工具'}`).join('\n');
   return (
@@ -1957,7 +1958,7 @@ function MessageCard({
         {!isUser ? <Avatar source={assistantAvatar} label={displayName} /> : null}
         <View style={[styles.messageIdentityCopy, isUser && styles.messageIdentityCopyRight]}>
           <View style={[styles.messageNameLine, isUser && styles.messageNameLineRight]}><Text style={styles.messageRole}>{displayName}</Text>{!isUser && (model || message.payload.voiceName) ? <Text numberOfLines={1} style={styles.messageModel}>{model || message.payload.voiceName}</Text> : null}</View>
-          <Text style={[styles.messageTime, isUser && styles.messageTimeRight]}>{formatTime(timestamp)}</Text>
+          {formattedTimestamp ? <Text accessibilityLabel={isUser ? '用户消息时间' : 'AI 回复时间'} style={[styles.messageTime, isUser && styles.messageTimeRight]}>{formattedTimestamp}</Text> : null}
         </View>
         {isUser ? <Avatar source={userAvatar} label={displayName} /> : null}
       </View>
