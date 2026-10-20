@@ -68,6 +68,53 @@ describe('Remote destructive confirmation and business revision UI', () => {
   });
 
 
+  it('blocks same-frame double confirmation, never displays the request ID, and completes only once', async () => {
+    let release!: (value: unknown) => void;
+    const tracked = jest.fn(() => ({requestId: 'request-internal-delete-secret', response: new Promise(resolve => { release = resolve; })}));
+    const request = jest.fn().mockResolvedValue({terminal: true, event: 'conversation.operation.completed'});
+    const completed = jest.fn();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={completed} />); });
+    const confirm = button(root, '确认').props.onPress;
+    await act(async () => { confirm(); confirm(); });
+    expect(tracked).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(root.toJSON())).not.toContain('request-internal-delete-secret');
+    expect(JSON.stringify(root.toJSON())).not.toContain('原请求');
+    await act(async () => { release({ok: true}); });
+    expect(completed).toHaveBeenCalledTimes(1);
+    expect(button(root, '已完成').props.disabled).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it('queries the same pending delete without another mutation or user-visible request ID', async () => {
+    const tracked = jest.fn(() => ({requestId: 'request-pending-delete-internal', response: Promise.resolve({ok: true})}));
+    const request = jest.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue({terminal: true, event: 'conversation.operation.completed'});
+    const completed = jest.fn();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={completed} />); });
+    await act(async () => button(root, '确认').props.onPress());
+    expect(JSON.stringify(root.toJSON())).not.toContain('request-pending-delete-internal');
+    await act(async () => button(root, '检查删除结果').props.onPress());
+    expect(request).toHaveBeenLastCalledWith('desktop-fixture', 'conversation.request.get', {requestId: 'request-pending-delete-internal'});
+    expect(tracked).toHaveBeenCalledTimes(1);
+    expect(completed).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+  });
+
+  it('does not offer another destructive confirmation after a terminal failure', async () => {
+    const tracked = jest.fn(() => ({requestId: 'request-failed-delete', response: Promise.resolve({ok: true})}));
+    const request = jest.fn().mockResolvedValue({terminal: true, event: 'conversation.operation.failed', result: {code: 'remote_message_state_changed'}});
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={jest.fn()} />); });
+    await act(async () => button(root, '确认').props.onPress());
+    expect(button(root, '请关闭后刷新').props.disabled).toBe(true);
+    await act(async () => button(root, '请关闭后刷新').props.onPress());
+    expect(tracked).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(root.toJSON())).not.toContain('remote_message_state_changed');
+    await act(async () => root.unmount());
+  });
+
+
   it('hides business secrets until explicitly revealed and preserves expectedRevision on save', async () => {
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     const request = jest.fn(async (_id: string, method: string, params?: Record<string, unknown>) => ({

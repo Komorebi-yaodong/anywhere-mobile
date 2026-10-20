@@ -20,6 +20,7 @@
     "@react-native/new-app-screen": "0.86.2",
     "base64-js": "^1.5.1",
     "lucide-react-native": "^1.59.0",
+    "markdown-it": "^15.0.3",
     "react": "19.2.3",
     "react-native": "0.86.2",
     "react-native-file-access": "^4.0.4",

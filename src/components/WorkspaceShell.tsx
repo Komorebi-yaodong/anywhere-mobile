@@ -53,6 +53,7 @@ import {
 } from './GlobalSettings';
 
 import { AppIcon } from './AppIcon';
+import {KeyboardDock} from './KeyboardDock';
 import { useThemedStyles } from './theme';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
@@ -1563,12 +1564,14 @@ const ChatPage = React.forwardRef<
     const [voiceMode, setVoiceMode] = useState(false);
 
     useEffect(() => {
-      const scrollToComposer = () => requestAnimationFrame(() => {
-        setTimeout(() => (ref as React.RefObject<FlatList<RemoteMessage> | null>)?.current?.scrollToEnd({animated: true}), 80);
-      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const scrollToComposer = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => (ref as React.RefObject<FlatList<RemoteMessage> | null>)?.current?.scrollToEnd({animated: true}), 100);
+      };
       const show = Keyboard.addListener('keyboardDidShow', scrollToComposer);
       const change = Keyboard.addListener('keyboardDidChangeFrame', scrollToComposer);
-      return () => { show.remove(); change.remove(); };
+      return () => { show.remove(); change.remove(); if (timer) clearTimeout(timer); };
     }, [ref]);
     const lastAssistant = [...messages]
       .reverse()
@@ -1610,11 +1613,11 @@ const ChatPage = React.forwardRef<
         !messages.some(message => message.payload.toolCalls?.some(tool => tool.id === toolCallId)),
       );
     return (
-      <KeyboardAvoidingView
-        style={styles.chat}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      <KeyboardDock>
         <FlatList
+          style={styles.chatMessages}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           ref={ref}
           data={rows}
           keyExtractor={item => item.uiMessageId}
@@ -1772,7 +1775,7 @@ const ChatPage = React.forwardRef<
         >
           <Text style={styles.conversationControlText}>{writable ? '交还 Desktop' : '接管会话'}</Text>
         </Pressable>
-      </KeyboardAvoidingView>
+      </KeyboardDock>
     );
   },
 );
@@ -2636,7 +2639,7 @@ const baseStyles = StyleSheet.create({
   taskBadge: {position: 'absolute', top: 1, right: 0, minWidth: 15, height: 15, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primary},
   taskBadgeText: {fontSize: 9, color: '#fff', fontWeight: '900'},
 
-  chat: {flex: 1},
+  chatMessages: {flex: 1, minHeight: 0},
   messageList: {padding: 16, paddingBottom: 14, gap: 16},
   messageWrap: {maxWidth: '94%', gap: 7},
   messageLeft: {alignSelf: 'flex-start'},

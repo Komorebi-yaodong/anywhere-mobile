@@ -1,3 +1,6 @@
+import {markdownCodeRanges} from './markdownParser';
+
+
 export type ConversationMediaKind = 'image' | 'video' | 'audio';
 
 export type ConversationMedia = {
@@ -80,16 +83,24 @@ function addLocatedMedia(items: LocatedMedia[], start: number, end: number, medi
   items.push({start, end, media: {...media, key: `media-${start}-${end}-${items.length}`}});
 }
 
-function isInside(items: LocatedMedia[], position: number): boolean {
+function isInside(items: Array<{start: number; end: number}>, position: number): boolean {
   return items.some(item => item.start <= position && position < item.end);
 }
 
 function stripUnsupportedMarkup(value: string): string {
-  return value
-    .replace(MARKDOWN_IMAGE_ANY, '')
+  const ranges = markdownCodeRanges(value);
+  const strip = (part: string) => part.replace(MARKDOWN_IMAGE_ANY, '')
     .replace(/<\/?(?:audio|video)\b[^>]*>/gi, '')
-    .replace(/<(?:img|source)\b[^>]*>/gi, '')
-    .replace(/<[^>]+>/g, '');
+    .replace(/<(?:img|source)\b[^>]*>/gi, '');
+  let cursor = 0;
+  let output = '';
+  for (const range of ranges) {
+    output += strip(value.slice(cursor, range.start)) + value.slice(range.start, range.end);
+    cursor = range.end;
+  }
+  // Ordinary HTML is literal text in the native Markdown renderer (html:false),
+  // not an executable DOM. Keep it so blockquotes/autolinks/code are not lost.
+  return output + strip(value.slice(cursor));
 }
 
 /**
@@ -100,13 +111,16 @@ function stripUnsupportedMarkup(value: string): string {
 export function parseConversationContent(value: string): ConversationContentBlock[] {
   const source = String(value || '');
   const located: LocatedMedia[] = [];
+  const codeRanges = markdownCodeRanges(source);
 
   for (const match of source.matchAll(MARKDOWN_IMAGE)) {
+    if (isInside(codeRanges, match.index || 0)) continue;
     addLocatedMedia(located, match.index || 0, (match.index || 0) + match[0].length, mediaFor(match[1] || match[2] || '', 'image'));
   }
 
   const pairedMedia = /<(audio|video)\b([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
   for (const match of source.matchAll(pairedMedia)) {
+    if (isInside(codeRanges, match.index || 0)) continue;
     const start = match.index || 0;
     const openAttributes = match[2] || '';
     const body = match[3] || '';
@@ -117,18 +131,21 @@ export function parseConversationContent(value: string): ConversationContentBloc
 
   const imageTags = /<img\b([^>]*)\/?\s*>/gi;
   for (const match of source.matchAll(imageTags)) {
+    if (isInside(codeRanges, match.index || 0)) continue;
     const start = match.index || 0;
     if (!isInside(located, start)) addLocatedMedia(located, start, start + match[0].length, mediaFor(attribute(match[1] || '', 'src'), 'image'));
   }
 
   const standaloneMedia = /<(audio|video)\b([^>]*)\/?\s*>/gi;
   for (const match of source.matchAll(standaloneMedia)) {
+    if (isInside(codeRanges, match.index || 0)) continue;
     const start = match.index || 0;
     if (!isInside(located, start)) addLocatedMedia(located, start, start + match[0].length, mediaFor(attribute(match[2] || '', 'src'), match[1].toLowerCase() as ConversationMediaKind));
   }
 
   const sourceTags = /<source\b([^>]*)\/?\s*>/gi;
   for (const match of source.matchAll(sourceTags)) {
+    if (isInside(codeRanges, match.index || 0)) continue;
     const start = match.index || 0;
     if (isInside(located, start)) continue;
     const attrs = match[1] || '';
@@ -136,6 +153,7 @@ export function parseConversationContent(value: string): ConversationContentBloc
   }
 
   for (const match of source.matchAll(OPAQUE_MEDIA_GLOBAL)) {
+    if (isInside(codeRanges, match.index || 0)) continue;
     const start = match.index || 0;
     if (!isInside(located, start)) addLocatedMedia(located, start, start + match[0].length, mediaFor(match[0]));
   }
