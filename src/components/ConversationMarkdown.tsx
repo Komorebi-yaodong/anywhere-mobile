@@ -212,8 +212,12 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
   }, [applyTransform]);
 
   const panResponder = useMemo(() => PanResponder.create({
+    // Android Image can otherwise become the responder before the canvas;
+    // capture both starts and moves so pinch/pan stay on this gesture surface.
     onStartShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponderCapture: () => true,
     onMoveShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponderCapture: () => true,
     onPanResponderGrant: event => {
       const touches = event.nativeEvent.touches;
       const next = gesture.current;
@@ -314,7 +318,7 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
         </View>
         <Text style={styles.imageGestureHint}>双指缩放 · 放大后拖动 · 双击复位</Text>
         <View accessibilityLabel="图片预览画布" onLayout={event => setViewport({width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height})} style={styles.imageGestureSurface} {...panResponder.panHandlers}>
-          <Animated.Image source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{translateX: pan.x}, {translateY: pan.y}, {scale}]}]} onError={onError} />
+          <Animated.Image pointerEvents="none" source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{translateX: pan.x}, {translateY: pan.y}, {scale}]}]} onError={onError} />
         </View>
       </View>
     </Modal>

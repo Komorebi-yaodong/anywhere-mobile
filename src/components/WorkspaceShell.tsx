@@ -1142,12 +1142,34 @@ export function WorkspaceShell({
                 </Text>
               </Pressable>
               {item.controlledByThisDevice ? (
-                <View style={styles.openedSessionActions}>
-                  <Action compact label="交还 Desktop" onPress={() => handoffOpenedSession(item)} disabled={item.busy} />
-                  <Action compact label="关闭会话" onPress={() => closeOpenedSession(item)} danger />
+                <View style={[styles.openedSessionControl, item.busy && styles.disabled]}>
+                  <Pressable
+                    accessibilityLabel="关闭会话"
+                    disabled={item.busy}
+                    onPress={() => closeOpenedSession(item)}
+                    style={styles.openedSessionSegment}
+                  >
+                    <Text style={styles.openedSessionSegmentText}>关闭</Text>
+                  </Pressable>
+                  <View style={styles.openedSessionDivider} />
+                  <Pressable
+                    accessibilityLabel="交还 Desktop"
+                    disabled={item.busy}
+                    onPress={() => handoffOpenedSession(item)}
+                    style={styles.openedSessionSegment}
+                  >
+                    <Text style={styles.openedSessionSegmentText}>交还 Desktop</Text>
+                  </Pressable>
                 </View>
               ) : item.mobileControlled ? null : (
-                <Action compact label="接管" onPress={() => takeoverOpenedSession(item)} disabled={item.busy} />
+                <Pressable
+                  accessibilityLabel="接管"
+                  disabled={item.busy}
+                  onPress={() => takeoverOpenedSession(item)}
+                  style={[styles.openedSessionTakeover, item.busy && styles.disabled]}
+                >
+                  <Text style={styles.openedSessionSegmentText}>接管</Text>
+                </Pressable>
               )}
             </View>
           )) : <Empty title="暂无已打开会话" text="在 Desktop 打开一个已保存的会话后，会显示在这里。" />}
@@ -2278,7 +2300,21 @@ function toggleId(values: string[], id: string): string[] {
 }
 
 function formatTime(value: string): string {
-  const time = Date.parse(value);
+  const source = value.trim();
+  // Desktop UI may persist a local sv-SE value (YYYY-MM-DD HH:mm[:ss]).
+  // Hermes does not reliably parse that non-ISO variant, so construct a local
+  // Date from the Desktop-provided fields without creating a new timestamp.
+  const local = /^(\d{4})[-/](\d{2})[-/](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(source);
+  const time = local
+    ? new Date(
+        Number(local[1]),
+        Number(local[2]) - 1,
+        Number(local[3]),
+        Number(local[4]),
+        Number(local[5]),
+        Number(local[6] || 0),
+      ).getTime()
+    : Date.parse(source);
   if (!Number.isFinite(time)) return '';
   const date = new Date(time);
   const two = (part: number) => String(part).padStart(2, '0');
@@ -2734,7 +2770,11 @@ const baseStyles = StyleSheet.create({
   },
   openedSessionCopy: {flex: 1, minWidth: 0, gap: 4, minHeight: 48, justifyContent: 'center'},
   openedSessionTitle: {color: C.text, fontSize: 14, fontWeight: '800'},
-  openedSessionActions: {alignItems: 'flex-end', gap: 7},
+  openedSessionControl: {flexDirection: 'row', alignItems: 'center', overflow: 'hidden', borderWidth: 2, borderColor: C.text, borderRadius: 14, backgroundColor: C.surface},
+  openedSessionSegment: {minHeight: 38, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12},
+  openedSessionDivider: {alignSelf: 'stretch', width: 2, backgroundColor: C.text},
+  openedSessionTakeover: {minWidth: 86, minHeight: 38, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderWidth: 2, borderColor: C.text, borderRadius: 14, backgroundColor: C.surface},
+  openedSessionSegmentText: {color: C.text, fontSize: 13, fontWeight: '800'},
 
   openedSessionMeta: {color: C.muted, fontSize: 11, lineHeight: 16},
 

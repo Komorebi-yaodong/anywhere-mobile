@@ -192,10 +192,17 @@ test('offers a close action only for a session controlled by this Mobile device'
   await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
   await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏')[0].props.onPress());
   await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话')[0].props.onPress());
-  expect(root.root.findAll(node =>
+  const close = root.root.findAll(node =>
     node.props.accessibilityLabel === '关闭会话' &&
     typeof node.props.onPress === 'function',
-  )).toHaveLength(1);
+  );
+  const handoff = root.root.findAll(node =>
+    node.props.accessibilityLabel === '交还 Desktop' &&
+    typeof node.props.onPress === 'function',
+  );
+  expect(close).toHaveLength(1);
+  expect(handoff).toHaveLength(1);
+  expect(close[0].parent?.props.style).toBe(handoff[0].parent?.props.style);
   await act(async () => root.unmount());
 });
 
@@ -268,7 +275,7 @@ test('shows the Desktop timestamp for a tool-only assistant message without a co
       content: '',
       reasoningContent: '',
       timestamp: '',
-      completedTimestamp: '2026-10-20T12:34:00.000Z',
+      completedTimestamp: '2026-10-20 12:34:00',
       toolCalls: [{id: 'tool-time-fixture', name: 'read_file', status: 'finished'}],
     },
   }];
@@ -279,7 +286,7 @@ test('shows the Desktop timestamp for a tool-only assistant message without a co
   await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Tool Time Fixture')[0].props.onPress());
   const time = root.root.findAll(node => node.props.accessibilityLabel === 'AI 回复时间');
   expect(time.length).toBeGreaterThan(0);
-  expect(time.some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)).match(/2026\/10\/20\s+\d{2}:\d{2}/))).toBe(true);
+  expect(time.some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)).match(/2026\/10\/20\s+12:34/))).toBe(true);
   expect(root.root.findAllByType(Text).some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)) === '调用 read_file')).toBe(true);
   await act(async () => root.unmount());
 });

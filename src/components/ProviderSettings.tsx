@@ -117,11 +117,6 @@ export function ProviderSettings({
   const [editor, setEditor] = useState<ProviderEditorState | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
   const [ungroupedCollapsed, setUngroupedCollapsed] = useState(false);
-  const [sortingFolderId, setSortingFolderId] = useState<string | null>(null);
-  const [sortingIds, setSortingIds] = useState<string[]>([]);
-  const [draggingSort, setDraggingSort] = useState(false);
-  const sortingFolderRef = useRef<string | null>(null);
-  const sortingIdsRef = useRef<string[]>([]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -139,39 +134,33 @@ export function ProviderSettings({
     load().catch(() => undefined);
   }, [load, refreshSignal]);
 
-  const setSortState = (folderId: string | null, ids: string[]) => {
-    sortingFolderRef.current = folderId;
-    sortingIdsRef.current = ids;
-    setSortingFolderId(folderId);
-    setSortingIds(ids);
+  const moveProvider = async (
+    folderId: string,
+    providerIds: string[],
+    providerId: string,
+    direction: -1 | 1,
+  ) => {
+    if (busy || query.trim()) return;
+    const index = providerIds.indexOf(providerId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= providerIds.length) return;
+    const next = [...providerIds];
+    [next[index], next[target]] = [next[target], next[index]];
+    setBusy(true);
+    setError('');
+    try {
+      await request(desktopId, 'workspace.provider.order.mutate', {
+        folderId,
+        providerIds: next,
+      }, 60_000);
+      await load();
+      onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '服务商排序保存失败。');
+    } finally {
+      setBusy(false);
+    }
   };
-
-
-  const groups = useMemo(() => {
-    const keyword = query.trim().toLocaleLowerCase('zh-CN');
-    const matches = (provider: WorkspaceProvider) =>
-      !keyword ||
-      provider.name.toLocaleLowerCase('zh-CN').includes(keyword) ||
-      provider.url.toLocaleLowerCase('zh-CN').includes(keyword) ||
-      provider.models.some(model => model.toLocaleLowerCase('zh-CN').includes(keyword));
-    const providers = (catalog?.providers || []).filter(matches);
-    const folders = catalog?.folders || [];
-    const folderGroups = folders
-      .map(folder => ({
-        ...folder,
-        removable: true,
-        providers: providers.filter(provider => provider.folderId === folder.id),
-      }))
-      .filter(group => !keyword || group.providers.length > 0);
-    const ungrouped = {
-      id: '',
-      name: '未分类',
-      collapsed: ungroupedCollapsed,
-      removable: false,
-      providers: providers.filter(provider => !provider.folderId || !folders.some(folder => folder.id === provider.folderId)),
-    };
-    return [...folderGroups, ungrouped];
-  }, [catalog?.folders, catalog?.providers, query, ungroupedCollapsed]);
 
   const mutateFolder = async (
     operation: 'create' | 'rename' | 'toggle' | 'delete',
@@ -195,6 +184,8 @@ export function ProviderSettings({
       setBusy(false);
     }
   };
+
+
 
   const toggleProvider = async (provider: WorkspaceProvider) => {
     setBusy(true);
@@ -220,49 +211,36 @@ export function ProviderSettings({
     }
   };
 
-  const beginSort = (folderId: string, providerIds: string[]) => {
-    if (busy || query.trim() || providerIds.length < 2) return;
-    if (sortingFolderRef.current !== folderId) setSortState(folderId, providerIds);
-  };
 
-  const moveSortedProvider = (providerId: string, direction: -1 | 1) => {
-    const current = sortingIdsRef.current;
-    const index = current.indexOf(providerId);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= current.length) return;
-    const next = [...current];
-    [next[index], next[target]] = [next[target], next[index]];
-    setSortState(sortingFolderRef.current, next);
-  };
 
-  const finishSort = async (
-    folderId = sortingFolderRef.current,
-    providerIds = sortingIdsRef.current,
-  ) => {
-    if (folderId === null || busy) return;
-    setBusy(true);
-    setError('');
-    try {
-      await request(desktopId, 'workspace.provider.order.mutate', {
-        folderId,
-        providerIds,
-      }, 60_000);
-      setSortState(null, []);
-      await load();
-      onChanged();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '服务商排序保存失败。');
-    } finally {
-      setDraggingSort(false);
-      setBusy(false);
-    }
-  };
+  const groups = useMemo(() => {
+    const keyword = query.trim().toLocaleLowerCase('zh-CN');
+    const matches = (provider: WorkspaceProvider) =>
+      !keyword ||
+      provider.name.toLocaleLowerCase('zh-CN').includes(keyword) ||
+      provider.url.toLocaleLowerCase('zh-CN').includes(keyword) ||
+      provider.models.some(model => model.toLocaleLowerCase('zh-CN').includes(keyword));
+    const providers = (catalog?.providers || []).filter(matches);
+    const folders = catalog?.folders || [];
+    const folderGroups = folders
+      .map(folder => ({
+        ...folder,
+        removable: true,
+        providers: providers.filter(provider => provider.folderId === folder.id),
+      }))
+      .filter(group => !keyword || group.providers.length > 0);
+    const ungrouped = {
+      id: '',
+      name: '未分类',
+      collapsed: ungroupedCollapsed,
+      removable: false,
+      providers: providers.filter(provider =>
+        !provider.folderId || !folders.some(folder => folder.id === provider.folderId),
+      ),
+    };
+    return [...folderGroups, ungrouped];
+  }, [catalog?.folders, catalog?.providers, query, ungroupedCollapsed]);
 
-  const cancelSort = () => {
-    if (busy) return;
-    setDraggingSort(false);
-    setSortState(null, []);
-  };
 
 
   const openProvider = async (id: string) => {
@@ -377,26 +355,25 @@ export function ProviderSettings({
         style={s.scroll}
         contentContainerStyle={s.list}
         keyboardShouldPersistTaps="handled"
-        scrollEnabled={sortingFolderId === null && !draggingSort}
       >
         {groups.map(group => (
           <ProviderGroup
             key={group.id || '__ungrouped__'}
             group={group}
             busy={busy}
-            controlsDisabled={busy || sortingFolderId !== null}
+            controlsDisabled={busy}
             searching={Boolean(query.trim())}
             onToggle={() => group.id
               ? mutateFolder('toggle', {id: group.id, collapsed: !group.collapsed})
               : setUngroupedCollapsed(current => !current)}
             onRename={() => group.id && setFolderDialog({mode: 'rename', folder: group})}
             onDelete={() => group.id && removeFolder(group)}
-            sorting={sortingFolderId === group.id}
-            sortingIds={sortingFolderId === group.id ? sortingIds : group.providers.map(provider => provider.id)}
-            onBeginSort={() => beginSort(group.id, group.providers.map(provider => provider.id))}
-            onDragStateChange={setDraggingSort}
-            onMoveSorted={moveSortedProvider}
-            onFinishSort={finishSort}
+            onMoveProvider={(providerId, direction) => moveProvider(
+              group.id,
+              group.providers.map(provider => provider.id),
+              providerId,
+              direction,
+            )}
             onOpen={openProvider}
             onSwitch={toggleProvider}
           />
@@ -409,28 +386,14 @@ export function ProviderSettings({
         ) : null}
       </ScrollView>
       <View style={s.bottomActions}>
-        {sortingFolderId !== null ? (
-          <>
-            <Pressable style={s.secondaryAction} disabled={busy} onPress={cancelSort}>
-              <Text style={s.secondaryActionText}>取消排序</Text>
-            </Pressable>
-            <Pressable style={s.primaryAction} disabled={busy} onPress={() => { finishSort().catch(() => undefined); }}>
-              <AppIcon name="✓" size={18} color="#FFFFFF" />
-              <Text style={s.primaryActionText}>{busy ? '保存中…' : '完成排序'}</Text>
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <Pressable style={s.secondaryAction} onPress={() => setFolderDialog({mode: 'create'})}>
-              <AppIcon name="▱" size={18} color={C.primary} />
-              <Text style={s.secondaryActionText}>新建目录</Text>
-            </Pressable>
-            <Pressable style={s.primaryAction} onPress={() => setEditor({creating: true, original: null, form: formForProvider()})}>
-              <AppIcon name="＋" size={19} color="#FFFFFF" />
-              <Text style={s.primaryActionText}>新增服务商</Text>
-            </Pressable>
-          </>
-        )}
+        <Pressable style={s.secondaryAction} disabled={busy} onPress={() => setFolderDialog({mode: 'create'})}>
+          <AppIcon name="▱" size={18} color={C.primary} />
+          <Text style={s.secondaryActionText}>新建目录</Text>
+        </Pressable>
+        <Pressable style={s.primaryAction} disabled={busy} onPress={() => setEditor({creating: true, original: null, form: formForProvider()})}>
+          <AppIcon name="＋" size={19} color="#FFFFFF" />
+          <Text style={s.primaryActionText}>新增服务商</Text>
+        </Pressable>
       </View>
       <FolderComposer
         state={folderDialog}
@@ -456,18 +419,13 @@ export function ProviderSettings({
 
 function ProviderGroup({
   group,
-  busy: _busy,
+  busy,
   controlsDisabled,
   searching,
   onToggle,
   onRename,
   onDelete,
-  sorting,
-  sortingIds,
-  onBeginSort,
-  onDragStateChange,
-  onMoveSorted,
-  onFinishSort,
+  onMoveProvider,
   onOpen,
   onSwitch,
 }: {
@@ -478,20 +436,12 @@ function ProviderGroup({
   onToggle: () => void;
   onRename: () => void;
   onDelete: () => void;
-  sorting: boolean;
-  sortingIds: string[];
-  onBeginSort: () => void;
-  onDragStateChange: (dragging: boolean) => void;
-  onMoveSorted: (providerId: string, direction: -1 | 1) => void;
-  onFinishSort: () => Promise<void>;
+  onMoveProvider: (providerId: string, direction: -1 | 1) => void;
   onOpen: (id: string) => void;
   onSwitch: (provider: WorkspaceProvider) => void;
 }) {
   const s = useThemedStyles(styles);
   const expanded = searching || !group.collapsed;
-  const providers = sorting
-    ? sortingIds.map(id => group.providers.find(provider => provider.id === id)).filter((provider): provider is WorkspaceProvider => Boolean(provider))
-    : group.providers;
   return (
     <View style={s.groupCard}>
       <View style={s.groupHeader}>
@@ -513,16 +463,14 @@ function ProviderGroup({
       </View>
       {expanded ? (
         <View style={s.groupProviders}>
-          {providers.map(provider => (
-            <ProviderSortRow
+          {group.providers.map((provider, index) => (
+            <ProviderOrderRow
               key={provider.id}
               provider={provider}
-              sorting={sorting}
-              busy={_busy}
-              onBeginSort={onBeginSort}
-              onDragStateChange={onDragStateChange}
-              onMove={onMoveSorted}
-              onFinish={onFinishSort}
+              busy={busy}
+              canMoveUp={!searching && index > 0}
+              canMoveDown={!searching && index < group.providers.length - 1}
+              onMove={direction => onMoveProvider(provider.id, direction)}
               onOpen={() => onOpen(provider.id)}
               onSwitch={() => onSwitch(provider)}
             />
@@ -534,95 +482,53 @@ function ProviderGroup({
   );
 }
 
-function ProviderSortRow({
+function ProviderOrderRow({
   provider,
-  sorting,
   busy,
-  onBeginSort,
-  onDragStateChange,
+  canMoveUp,
+  canMoveDown,
   onMove,
-  onFinish,
   onOpen,
   onSwitch,
 }: {
   provider: WorkspaceProvider;
-  sorting: boolean;
   busy: boolean;
-  onBeginSort: () => void;
-  onDragStateChange: (dragging: boolean) => void;
-  onMove: (providerId: string, direction: -1 | 1) => void;
-  onFinish: () => Promise<void>;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove: (direction: -1 | 1) => void;
   onOpen: () => void;
   onSwitch: () => void;
 }) {
   const s = useThemedStyles(styles);
-  const movedSteps = useRef(0);
-  const dragging = useRef(false);
-  const sortArmed = useRef(false);
-  const responder = useRef(PanResponder.create({
-    // Do not claim a normal touch: the surrounding ScrollView must keep its
-    // native scroll behavior until this particular handle has been long-pressed.
-    onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (_event, gesture) =>
-      !busy && sortArmed.current && Math.abs(gesture.dy) > 1,
-    onMoveShouldSetPanResponderCapture: (_event, gesture) =>
-      !busy && sortArmed.current && Math.abs(gesture.dy) > 1,
-    onPanResponderGrant: () => {
-      dragging.current = true;
-      movedSteps.current = 0;
-      onDragStateChange(true);
-    },
-    onPanResponderMove: (_event, gesture) => {
-      const targetSteps = Math.trunc(gesture.dy / 62);
-      if (targetSteps === 0 || targetSteps === movedSteps.current) return;
-      const direction: -1 | 1 = targetSteps > movedSteps.current ? 1 : -1;
-      onMove(provider.id, direction);
-      movedSteps.current += direction;
-    },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderRelease: () => {
-      sortArmed.current = false;
-      if (dragging.current) onFinish().catch(() => undefined);
-      dragging.current = false;
-    },
-    onPanResponderTerminate: () => {
-      sortArmed.current = false;
-      dragging.current = false;
-      onDragStateChange(false);
-    },
-  })).current;
-  const beginLongPressSort = () => {
-    if (busy) return;
-    sortArmed.current = true;
-    onDragStateChange(true);
-    onBeginSort();
-  };
   return (
-    <View style={[s.providerRow, sorting && s.providerRowSorting]}>
-      <Pressable
-        accessibilityLabel={`排序 ${provider.name}`}
-        disabled={busy}
-        onLongPress={beginLongPressSort}
-        onPressOut={() => {
-          if (dragging.current) return;
-          sortArmed.current = false;
-          onDragStateChange(false);
-        }}
-        delayLongPress={280}
-        style={[s.providerDragHandle, sorting && s.providerDragHandleActive]}
-        {...responder.panHandlers}
-      >
-        <Text style={s.providerDragText}>≡</Text>
-      </Pressable>
-      <Pressable style={s.providerCopy} disabled={sorting || busy} onPress={onOpen}>
+    <View style={s.providerRow}>
+      <Pressable style={s.providerCopy} disabled={busy} onPress={onOpen}>
         <Text numberOfLines={1} style={s.providerName}>{provider.name}</Text>
         <Text numberOfLines={1} style={s.providerMeta}>
-          {sorting ? '拖动左侧把手调整此目录内顺序' : (provider.models.length ? `${provider.models.length} 个模型` : '未配置模型')}
+          {provider.models.length ? `${provider.models.length} 个模型` : '未配置模型'}
         </Text>
       </Pressable>
+      <View style={s.providerOrderControls}>
+        <Pressable
+          accessibilityLabel={`上移服务商 ${provider.name}`}
+          disabled={busy || !canMoveUp}
+          onPress={() => onMove(-1)}
+          style={[s.providerOrderButton, (busy || !canMoveUp) && s.disabled]}
+        >
+          <AppIcon name="↑" size={16} color={C.text} />
+        </Pressable>
+        <Pressable
+          accessibilityLabel={`下移服务商 ${provider.name}`}
+          disabled={busy || !canMoveDown}
+          onPress={() => onMove(1)}
+          style={[s.providerOrderButton, (busy || !canMoveDown) && s.disabled]}
+        >
+          <AppIcon name="↓" size={16} color={C.text} />
+        </Pressable>
+      </View>
       <Switch
         value={provider.enabled}
-        disabled={busy || sorting}
+        disabled={busy}
         trackColor={{false: C.line, true: '#B9D8C3'}}
         thumbColor={provider.enabled ? C.success : C.surface}
         onValueChange={onSwitch}
@@ -630,7 +536,6 @@ function ProviderSortRow({
     </View>
   );
 }
-
 
 function FolderComposer({
   state,
@@ -1015,12 +920,10 @@ const styles = StyleSheet.create({
   groupActions: {flexDirection: 'row', gap: 2},
   iconAction: {width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surfaceMuted},
   groupProviders: {borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line, paddingVertical: 3},
-  providerRow: {minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 11},
-  providerRowSorting: {backgroundColor: '#FFF9F4'},
-  providerDragHandle: {width: 28, minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 10},
-  providerDragHandleActive: {backgroundColor: C.primarySoft},
-  providerDragText: {color: C.muted, fontSize: 20, fontWeight: '800'},
+  providerRow: {minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 11},
   providerCopy: {flex: 1, minWidth: 0, gap: 4},
+  providerOrderControls: {flexDirection: 'row', overflow: 'hidden', borderWidth: 1, borderColor: C.line, borderRadius: 10, backgroundColor: C.surface},
+  providerOrderButton: {width: 31, minHeight: 34, alignItems: 'center', justifyContent: 'center'},
   providerName: {color: C.text, fontSize: 15, fontWeight: '700'},
   providerMeta: {color: C.muted, fontSize: 12},
   emptyGroup: {color: C.muted, paddingHorizontal: 15, paddingVertical: 12, fontSize: 13},

@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
-import {Alert, ScrollView, Text, TextInput} from 'react-native';
+import {Alert, Text, TextInput} from 'react-native';
 
 import {ProviderSettings} from '../src/components/ProviderSettings';
 import type {RemoteRequest} from '../src/remote/api';
@@ -42,7 +42,7 @@ const catalog = {
   ],
 };
 
-test('long press on a provider drag handle locks parent scrolling before vertical sorting', async () => {
+test('moves a provider down with an immediate scoped order mutation', async () => {
   const request = jest.fn(async (_desktopId: string, method: string) => {
     if (method === 'workspace.provider.catalog') return catalog;
     return {ok: true};
@@ -58,15 +58,20 @@ test('long press on a provider drag handle locks parent scrolling before vertica
       />,
     );
   });
-  const handle = root.root.findAll(node => node.props.accessibilityLabel === '排序 Fixture Provider')[0];
-  await act(async () => handle.props.onLongPress());
-  const list = root.root.findAllByType(ScrollView).find(node => node.props.contentContainerStyle);
-  expect(list?.props.scrollEnabled).toBe(false);
+  const down = root.root.findAll(
+    node => node.props.accessibilityLabel === '下移服务商 Fixture Provider',
+  )[0];
+  await act(async () => { await down.props.onPress(); });
+  expect(request).toHaveBeenCalledWith(
+    'desktop-provider-fixture',
+    'workspace.provider.order.mutate',
+    {folderId: 'tools', providerIds: ['fixture-two', 'fixture']},
+    60_000,
+  );
   await act(async () => root.unmount());
 });
 
-
-test('releases the temporary scroll lock when a one-item folder cannot enter sorting', async () => {
+test('disables out-of-range provider arrows and hides sorting controls while searching', async () => {
   const request = jest.fn(async (_desktopId: string, method: string) => {
     if (method === 'workspace.provider.catalog') return catalog;
     return {ok: true};
@@ -82,13 +87,12 @@ test('releases the temporary scroll lock when a one-item folder cannot enter sor
       />,
     );
   });
-  const handle = root.root.findAll(node => node.props.accessibilityLabel === '排序 Root Provider')[0];
-  await act(async () => {
-    handle.props.onLongPress();
-    handle.props.onPressOut();
-  });
-  const list = root.root.findAllByType(ScrollView).find(node => node.props.contentContainerStyle);
-  expect(list?.props.scrollEnabled).toBe(true);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '上移服务商 Fixture Provider')[0].props.disabled).toBe(true);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '下移服务商 Fixture Provider Two')[0].props.disabled).toBe(true);
+  const input = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '搜索服务商');
+  await act(async () => input?.props.onChangeText('Fixture'));
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '上移服务商 Fixture Provider')[0].props.disabled).toBe(true);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '下移服务商 Fixture Provider')[0].props.disabled).toBe(true);
   await act(async () => root.unmount());
 });
 

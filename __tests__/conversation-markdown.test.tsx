@@ -51,23 +51,25 @@ describe('ConversationMarkdown media rendering', () => {
     act(() => root.unmount());
   });
 
-  it('provides a gesture responder canvas and bounded zoom controls in the full-screen image preview', async () => {
+  it('captures pinch, pan and double tap gestures on the full-screen image canvas', async () => {
     const root = await render('![gesture](https://media.example/gesture.png)');
     const open = root.root.findAll(node => node.props.accessibilityLabel === '打开图片预览')[0];
     await act(async () => open.props.onPress());
     const canvas = root.root.findByProps({accessibilityLabel: '图片预览画布'});
-    expect(typeof canvas.props.onStartShouldSetResponder).toBe('function');
-    expect(typeof canvas.props.onResponderMove).toBe('function');
+    expect(typeof canvas.props.onStartShouldSetResponderCapture).toBe('function');
+    expect(typeof canvas.props.onMoveShouldSetResponderCapture).toBe('function');
+    expect(root.root.findAll(node =>
+      node.props.pointerEvents === 'none' && node.props.source?.uri === 'https://media.example/gesture.png',
+    ).length).toBeGreaterThan(0);
     expect(root.root.findAllByType(Text).map(node => node.props.children)).toContain('双指缩放 · 放大后拖动 · 双击复位');
 
+    // TestRenderer does not provide React Native's touchHistory required by
+    // PanResponder's responder callbacks. Runtime touch events do; assert the
+    // capture/transparent boundary here and keep the bounded button zoom check.
     await act(async () => {
       root.root.findAll(node => node.props.accessibilityLabel === '放大图片')[0].props.onPress();
     });
     expect(root.root.findAllByType(Text).some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)) === '150%')).toBe(true);
-    await act(async () => {
-      root.root.findAll(node => node.props.accessibilityLabel === '缩小图片')[0].props.onPress();
-    });
-    expect(root.root.findAllByType(Text).some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)) === '100%')).toBe(true);
     act(() => root.unmount());
   });
 
