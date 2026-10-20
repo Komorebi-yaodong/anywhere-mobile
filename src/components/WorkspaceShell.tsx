@@ -142,11 +142,9 @@ export function filterSessionMcpServers(
   {
     query = '',
     quickFilter = 'all',
-    tagFilter = '__all__',
   }: {
     query?: string;
     quickFilter?: SessionMcpQuickFilter;
-    tagFilter?: string;
   } = {},
 ) {
   const selected = new Set(selectedIds);
@@ -155,7 +153,6 @@ export function filterSessionMcpServers(
     const tags = Array.isArray(item.tags) ? item.tags : [];
     if (quickFilter === 'selected' && !selected.has(item.id)) return false;
     if (quickFilter === 'preset' && !item.preset) return false;
-    if (tagFilter !== '__all__' && !tags.includes(tagFilter)) return false;
     if (!keyword) return true;
     return [item.name, item.id, ...tags]
       .join(' ')
@@ -281,7 +278,6 @@ export function WorkspaceShell({
   const [sessionBusy, setSessionBusy] = useState(false);
   const [mcpQuery, setMcpQuery] = useState('');
   const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
-  const [mcpTagFilter, setMcpTagFilter] = useState('__all__');
   const listRef = useRef<FlatList<RemoteMessage>>(null);
 
   const refreshWorkspace = useCallback(async () => {
@@ -552,7 +548,6 @@ export function WorkspaceShell({
     setSessionOptions(null);
     setMcpQuery('');
     setMcpQuickFilter('all');
-    setMcpTagFilter('__all__');
     if (target === 'session') setSessionTab('prompt');
     setSheet(target);
     setSessionBusy(true);
@@ -822,23 +817,13 @@ export function WorkspaceShell({
   ]);
 
 
-  const sessionMcpTags = useMemo(
-    () => [...new Set((sessionOptions?.mcpServers || []).flatMap(item => item.tags || []))]
-      .sort((left, right) => left.localeCompare(right, 'zh-CN')),
-    [sessionOptions?.mcpServers],
-  );
-  useEffect(() => {
-    if (mcpTagFilter !== '__all__' && !sessionMcpTags.includes(mcpTagFilter)) {
-      setMcpTagFilter('__all__');
-    }
-  }, [mcpTagFilter, sessionMcpTags]);
   const visibleSessionMcpServers = useMemo(
     () => filterSessionMcpServers(
       sessionOptions?.mcpServers || [],
       sessionConfig?.mcpServerIds || [],
-      {query: mcpQuery, quickFilter: mcpQuickFilter, tagFilter: mcpTagFilter},
+      {query: mcpQuery, quickFilter: mcpQuickFilter},
     ),
-    [mcpQuery, mcpQuickFilter, mcpTagFilter, sessionConfig?.mcpServerIds, sessionOptions?.mcpServers],
+    [mcpQuery, mcpQuickFilter, sessionConfig?.mcpServerIds, sessionOptions?.mcpServers],
   );
 
 
@@ -1221,7 +1206,6 @@ export function WorkspaceShell({
                   <Tag label="已选择" active={mcpQuickFilter === 'selected'} onPress={() => setMcpQuickFilter('selected')} />
                   <Tag label="预设" active={mcpQuickFilter === 'preset'} onPress={() => setMcpQuickFilter('preset')} />
                 </View>
-                {sessionMcpTags.length ? <><Text style={styles.sessionMcpFilterLabel}>标签</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sessionMcpFilterScroll}><Tag label="全部标签" active={mcpTagFilter === '__all__'} onPress={() => setMcpTagFilter('__all__')} />{sessionMcpTags.map(tag => <Tag key={tag} label={tag} active={mcpTagFilter === tag} onPress={() => setMcpTagFilter(tag)} />)}</ScrollView></> : null}
               </View>
               <View style={styles.toolSelectList}>{visibleSessionMcpServers.map(item => {
                 const active = (sessionConfig.mcpServerIds || []).includes(item.id);
@@ -2623,7 +2607,6 @@ const baseStyles = StyleSheet.create({
   sessionMcpFilters: {gap: 6},
   sessionMcpFilterLabel: {color: C.muted, fontSize: 12, fontWeight: '700'},
   sessionMcpFilterRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 7},
-  sessionMcpFilterScroll: {gap: 7, paddingVertical: 2},
   sessionMcpEmpty: {padding: 13, borderRadius: 14, backgroundColor: C.surfaceMuted},
   toolSelectList: {gap: 7},
   toolSelectRow: {minHeight: 53, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 11, borderRadius: 15, backgroundColor: C.surfaceMuted, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line},

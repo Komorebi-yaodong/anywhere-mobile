@@ -60,7 +60,6 @@ export function SimpleManagementSettings({
   const [general, setGeneral] = useState<GeneralReply | null>(null);
   const [nickname, setNickname] = useState('');
   const [query, setQuery] = useState('');
-  const [selectedTag, setSelectedTag] = useState('__all__');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -78,15 +77,7 @@ export function SimpleManagementSettings({
         setGeneral(detail);
         setNickname(detail.value?.displayName || '');
       } else {
-        const nextItems = (result as DetailsReply).items || [];
-        setItems(nextItems);
-        if (section === 'mcp') {
-          setSelectedTag(current =>
-            current !== '__all__' && !nextItems.some(item => item.tags?.includes(current))
-              ? '__all__'
-              : current,
-          );
-        }
+        setItems((result as DetailsReply).items || []);
       }
     } catch (cause) {
       setError(message(cause, '读取设置失败，请在顶部刷新后重试。'));
@@ -174,16 +165,11 @@ export function SimpleManagementSettings({
   }
 
   const title = section === 'mcp' ? 'MCP 服务' : 'Skill 服务';
-  const mcpTags = section === 'mcp'
-    ? [...new Set(items.flatMap(item => item.tags || []))].sort((left, right) => left.localeCompare(right, 'zh-CN'))
-    : [];
   const keyword = query.trim().toLocaleLowerCase('zh-CN');
   const visibleItems = items.filter(item => {
+    if (!keyword) return true;
     const tags = section === 'mcp' ? item.tags || [] : [];
     const transportTerms = section === 'mcp' ? mcpTransportSearchTerms(item.transport) : [];
-    const tagMatches = section !== 'mcp' || selectedTag === '__all__' || tags.includes(selectedTag);
-    if (!tagMatches) return false;
-    if (!keyword) return true;
     const haystack = [item.name || item.id, item.id, ...tags, ...transportTerms].join(' ').toLocaleLowerCase('zh-CN');
     return haystack.includes(keyword);
   });
@@ -191,10 +177,6 @@ export function SimpleManagementSettings({
     <View style={s.root}>
       {error ? <Text style={s.error}>{error}</Text> : null}
       <View style={s.search}><AppIcon name="search" size={17} color={C.muted} /><TextInput value={query} onChangeText={setQuery} placeholder={section === 'mcp' ? '搜索 MCP 名称、ID 或标签' : '搜索 Skill 名称'} placeholderTextColor={C.muted} style={s.searchInput} /></View>
-      {section === 'mcp' && mcpTags.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.tagFilters}>
-        <Pressable accessibilityLabel="筛选全部 MCP 标签" style={[s.tagFilter, selectedTag === '__all__' && s.tagFilterActive]} onPress={() => setSelectedTag('__all__')}><Text style={[s.tagFilterText, selectedTag === '__all__' && s.tagFilterTextActive]}>全部标签</Text></Pressable>
-        {mcpTags.map(tag => <Pressable key={tag} accessibilityLabel={`筛选 MCP 标签 ${tag}`} style={[s.tagFilter, selectedTag === tag && s.tagFilterActive]} onPress={() => setSelectedTag(tag)}><Text style={[s.tagFilterText, selectedTag === tag && s.tagFilterTextActive]}>{tag}</Text></Pressable>)}
-      </ScrollView> : null}
       {busy && !items.length ? <ActivityIndicator color={C.primary} /> : null}
       <ScrollView style={s.scroll} contentContainerStyle={s.list} keyboardShouldPersistTaps="handled">
         {visibleItems.map(item => (
@@ -224,11 +206,6 @@ const styles = StyleSheet.create({
   error: {paddingHorizontal: 18, paddingTop: 8, color: C.danger, fontSize: 13},
   search: {minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginTop: 8, paddingHorizontal: 13, borderRadius: 16, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
   searchInput: {flex: 1, minWidth: 0, paddingVertical: 8, color: C.text, fontSize: 14},
-  tagFilters: {gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 2},
-  tagFilter: {paddingHorizontal: 11, paddingVertical: 7, borderRadius: 99, backgroundColor: C.surfaceMuted},
-  tagFilterActive: {backgroundColor: C.primarySoft},
-  tagFilterText: {color: C.muted, fontSize: 12, fontWeight: '700'},
-  tagFilterTextActive: {color: C.primary},
   scroll: {flex: 1, minHeight: 0},
   list: {padding: 16, paddingTop: 8, paddingBottom: 22, gap: 10},
   itemCard: {minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 13, borderRadius: 18, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},

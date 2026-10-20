@@ -54,23 +54,19 @@ test('filters global MCP services by visible configuration tags and keywords onl
     );
   });
 
-  expect(hasText(root, '全部标签')).toBe(true);
+  expect(hasText(root, '全部标签')).toBe(false);
   expect(hasText(root, 'Research')).toBe(true);
   expect(hasText(root, '研究 MCP')).toBe(true);
   expect(hasText(root, '文件 MCP')).toBe(true);
   expect(hasText(root, '工作区工具 MCP')).toBe(true);
   expect(hasText(root, '内置')).toBe(true);
 
-  await act(async () => {
-    root.root.findByProps({accessibilityLabel: '筛选 MCP 标签 Research'}).props.onPress();
-  });
+  await act(async () => root.root.findByType(TextInput).props.onChangeText('Research'));
   expect(hasText(root, '研究 MCP')).toBe(true);
   expect(hasText(root, '文件 MCP')).toBe(false);
+  expect(hasText(root, '工作区工具 MCP')).toBe(false);
 
-  await act(async () => {
-    root.root.findByProps({accessibilityLabel: '筛选全部 MCP 标签'}).props.onPress();
-    root.root.findByType(TextInput).props.onChangeText('文件');
-  });
+  await act(async () => root.root.findByType(TextInput).props.onChangeText('文件'));
   expect(hasText(root, '研究 MCP')).toBe(false);
   expect(hasText(root, '文件 MCP')).toBe(true);
 
