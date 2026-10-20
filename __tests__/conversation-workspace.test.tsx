@@ -180,6 +180,26 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
   });
 
+  it('creates and updates a live tool-only assistant turn before any content delta', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let send!: Promise<void>;
+    await act(async () => { send = f.state.sendMessage('tool only fixture'); });
+    await act(async () => {
+      f.emit('assistant.delta', 1, {segmentId: 'assistant-tool-segment', toolCalls: [{id: 'tool-live-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}]});
+    });
+    expect(f.state.activeTurn).toMatchObject({text: '', reasoning: '', segmentId: 'assistant-tool-segment'});
+    expect(f.state.activeTurn?.toolCalls).toEqual([{id: 'tool-live-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}]);
+    await act(async () => {
+      f.emit('assistant.delta', 2, {segmentId: 'assistant-tool-segment', toolCalls: [{id: 'tool-live-fixture', name: 'safe_tool', status: 'finished', arguments: '[参数已隐藏]'}]});
+    });
+    expect(f.state.activeTurn?.toolCalls?.[0]).toMatchObject({status: 'finished', arguments: '[参数已隐藏]'});
+    await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
+  });
+
+
+
   it('resets live reasoning when a tool loop starts a new Assistant segment', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;

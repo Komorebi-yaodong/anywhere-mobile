@@ -22,6 +22,7 @@ export type ActiveConversationTurn = {
   submittedText: string;
   text: string;
   reasoning: string;
+  toolCalls?: RemoteMessage['payload']['toolCalls'];
   event: string;
   eventSequence: number;
   terminal: boolean;
@@ -487,6 +488,7 @@ export function useConversationWorkspace({
             submittedText: '',
             text: state.text,
             reasoning: state.reasoning,
+            toolCalls: state.toolCalls,
             segmentId: state.segmentId || undefined,
             event: state.event,
             eventSequence: state.eventSequence,
@@ -526,6 +528,7 @@ export function useConversationWorkspace({
             submittedText: queued.text,
             text: state.text,
             reasoning: state.reasoning,
+            toolCalls: state.toolCalls,
             segmentId: state.segmentId || undefined,
             event: state.event,
             eventSequence: state.eventSequence,
@@ -627,6 +630,9 @@ export function useConversationWorkspace({
               : current.reasoning,
           segmentId: nextSegmentId,
           historyLoaded: segmentChanged ? false : current.historyLoaded,
+          toolCalls: event.event === 'assistant.delta' && Array.isArray(payload.toolCalls)
+            ? payload.toolCalls as RemoteMessage['payload']['toolCalls']
+            : (segmentChanged ? [] : current.toolCalls),
           event: event.event,
           eventSequence: Math.max(current.eventSequence, sequence),
           terminal,

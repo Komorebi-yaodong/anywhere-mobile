@@ -4,6 +4,7 @@ import {Image, Text, TextInput, StyleSheet} from 'react-native';
 import {
   filterSessionMcpServers,
   filterSessionSkills,
+  keyboardFrameNeedsComposerScroll,
   hasMessageBubble,
   reconcileLiveAssistantSegment,
   shouldRenderMessage,
@@ -24,6 +25,7 @@ let mockOpenedSessions: Array<Record<string, unknown>> = [];
 let mockWorkspaceMessages: Array<Record<string, any>> = [];
 let mockConversationModel = '';
 let mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
+let mockActiveTurn: any = null;
 let mockOnCapture: ((capture: unknown) => Promise<unknown>) | undefined;
 jest.mock('../src/services/avatarResourceCache', () => ({
   ensureAvatarResource: jest.fn(async ({resource}: {resource?: {code?: string; version?: string}}) => resource ? ({
@@ -48,7 +50,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     configured: true,
     catalog: [],
     messages: mockWorkspaceMessages,
-    activeTurn: null,
+    activeTurn: mockActiveTurn,
     queuedSends: [],
     selectedConversationId: 'conversation-shell-fixture',
     selectedConversation: { title: 'Fixture Chat' },
@@ -111,6 +113,7 @@ beforeEach(() => {
   mockWorkspaceMessages = [];
   mockConversationModel = '';
   mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
+  mockActiveTurn = null;
   mockSelectConversation.mockClear();
   mockTakeoverConversation.mockClear();
   mockHandoffConversation.mockClear();
@@ -163,6 +166,14 @@ test('filters session Skill options by safe display name only', () => {
   expect(filterSessionSkills(skills, 'missing')).toEqual([]);
 });
 
+test('only scrolls to the composer while a visible keyboard moves upward, never while it closes', () => {
+  expect(keyboardFrameNeedsComposerScroll(null, 480, 320)).toBe(true);
+  expect(keyboardFrameNeedsComposerScroll(480, 430, 370)).toBe(true);
+  expect(keyboardFrameNeedsComposerScroll(430, 480, 320)).toBe(false);
+  expect(keyboardFrameNeedsComposerScroll(430, 800, 0)).toBe(false);
+});
+
+
 test('reconciles a persisted live Assistant segment instead of appending a duplicate card', () => {
   const messages = [{
     messageId: 'assistant-storage-fixture',
@@ -179,6 +190,19 @@ test('reconciles a persisted live Assistant segment instead of appending a dupli
   expect(reconciled.messages[0].uiMessageId).toBe('assistant-ui-fixture');
   expect(reconciled.messages[0].payload.reasoningContent).toBe('live thinking');
   expect(reconciled.messages[0].payload.toolCalls).toHaveLength(1);
+});
+
+
+test('renders a live tool-only Assistant card before normal assistant text arrives', async () => {
+  mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: false, controlledByThisDevice: true, mobileControlled: true}];
+  mockActiveTurn = {requestId: 'request-tool-live', conversationId: 'conversation-shell-fixture', submittedText: '', text: '', reasoning: '', segmentId: 'tool-live-card', toolCalls: [{id: 'tool-live-card-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}], event: 'assistant.delta', eventSequence: 1, terminal: false, truncated: false};
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
+  await enterFixtureChat(root);
+  const renderedText = root.root.findAllByType(Text).map(node => Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children || ''));
+  expect(renderedText).toContain('调用 safe_tool');
+  expect(renderedText).toContain('executing');
+  await act(async () => root.unmount());
 });
 
 
@@ -370,8 +394,13 @@ test('keeps model settings open as read-only while Desktop is busy', async () =>
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
   await enterFixtureChat(root);
-  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '选择模型')[0].props.onPress());
-  expect(button(root, 'Fixture').props.disabled).toBe(true);
+  await act(async () => {
+    root.root.findAll(node => node.props.accessibilityLabel === '选择模型')[0].props.onPress();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+  });
+  expect(props.tracked).toHaveBeenCalledWith(expect.any(String), 'conversation.config.get', {conversationId: 'conversation-shell-fixture'}, 30_000);
+  const modelRows = root.root.findAll(node => node.props.disabled === true && node.props.style && node.findAll(child => child.props.children === 'Fixture').length > 0);
+  expect(modelRows).toHaveLength(1);
   expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('本轮处理中'))).toBe(true);
   await act(async () => root.unmount());
 });

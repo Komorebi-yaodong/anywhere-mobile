@@ -345,6 +345,7 @@ export type ConversationRequestState = {
   text: string;
   reasoning: string;
   segmentId?: string;
+  toolCalls?: RemoteMessagePayload['toolCalls'];
   truncated: boolean;
   updatedAt: string;
   result?: Record<string, unknown>;
@@ -360,6 +361,7 @@ export type ConversationStreamEvent = RemoteEventMessage & {
     reasoningDelta?: string;
     segmentId?: string;
     status?: string;
+    toolCalls?: RemoteMessagePayload['toolCalls'];
     code?: string;
     revision?: number;
     [key: string]: unknown;

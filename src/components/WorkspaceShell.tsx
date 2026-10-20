@@ -166,10 +166,17 @@ export function filterSessionMcpServers(
   });
 }
 
+export function keyboardFrameNeedsComposerScroll(previousTop: number | null, screenY: number, height: number): boolean {
+  return Number.isFinite(screenY) && Number.isFinite(height) && height > 0 &&
+    (previousTop == null || screenY < previousTop);
+}
+
+
 type LiveAssistantSegment = {
   segmentId?: string;
   text: string;
   reasoning: string;
+  toolCalls?: RemoteMessage['payload']['toolCalls'];
   terminal?: boolean;
 } | null | undefined;
 
@@ -192,6 +199,7 @@ export function reconcileLiveAssistantSegment(
               content: activeTurn.text || message.payload.content,
               reasoningContent:
                 activeTurn.reasoning || message.payload.reasoningContent,
+              toolCalls: activeTurn.toolCalls?.length ? activeTurn.toolCalls : message.payload.toolCalls,
             },
           }
         : message,
@@ -1565,13 +1573,29 @@ const ChatPage = React.forwardRef<
 
     useEffect(() => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const scrollToComposer = () => {
+      let keyboardTop: number | null = null;
+      const cancelScheduledScroll = () => {
         if (timer) clearTimeout(timer);
+        timer = undefined;
+      };
+      const scheduleScrollToComposer = () => {
+        cancelScheduledScroll();
         timer = setTimeout(() => (ref as React.RefObject<FlatList<RemoteMessage> | null>)?.current?.scrollToEnd({animated: true}), 100);
       };
-      const show = Keyboard.addListener('keyboardDidShow', scrollToComposer);
-      const change = Keyboard.addListener('keyboardDidChangeFrame', scrollToComposer);
-      return () => { show.remove(); change.remove(); if (timer) clearTimeout(timer); };
+      const show = Keyboard.addListener('keyboardDidShow', event => {
+        keyboardTop = event.endCoordinates.screenY;
+        if (event.endCoordinates.height > 0) scheduleScrollToComposer();
+      });
+      const change = Keyboard.addListener('keyboardDidChangeFrame', event => {
+        if (keyboardFrameNeedsComposerScroll(keyboardTop, event.endCoordinates.screenY, event.endCoordinates.height)) scheduleScrollToComposer();
+        keyboardTop = event.endCoordinates.height > 0 ? event.endCoordinates.screenY : null;
+      });
+      const hide = Keyboard.addListener('keyboardDidHide', () => {
+        // Keep the user's reading position when the composer is dismissed.
+        keyboardTop = null;
+        cancelScheduledScroll();
+      });
+      return () => { show.remove(); change.remove(); hide.remove(); cancelScheduledScroll(); };
     }, [ref]);
     const lastAssistant = [...messages]
       .reverse()
@@ -1586,7 +1610,7 @@ const ChatPage = React.forwardRef<
       ...(activeTurn &&
       !activeTurn.terminal &&
       !hasPersistedLiveSegment &&
-      (activeTurn.text || activeTurn.reasoning)
+      (activeTurn.text || activeTurn.reasoning || activeTurn.toolCalls?.length)
         ? [{
             messageId: '__live__',
             uiMessageId: '__live__',
@@ -1602,7 +1626,7 @@ const ChatPage = React.forwardRef<
               aiName: assistantName,
               voiceName: '',
               status: '',
-              toolCalls: [],
+              toolCalls: activeTurn.toolCalls || [],
             },
           } as RemoteMessage]
         : []),
