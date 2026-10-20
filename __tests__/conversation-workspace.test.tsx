@@ -244,6 +244,21 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('retains loaded messages offline and forbids a duplicate send while disconnected', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    const previous = f.state.messages;
+    await act(async () => { root.update(<f.Harness status="离线" />); });
+    expect(f.state.messages).toEqual(previous);
+    await expect(f.state.sendMessage('must not send')).rejects.toThrow('连接正在恢复');
+    expect(f.tracked).not.toHaveBeenCalled();
+    await act(async () => { root.update(<f.Harness status="在线" />); });
+    expect(f.state.messages).toEqual(previous);
+    await act(async () => root.unmount());
+  });
+
+
   it('rejects stale history pages after switching conversations', async () => {
     const f = fixture();
     const stale = deferred<unknown>();

@@ -7,6 +7,8 @@ jest.mock('react-native-safe-area-context', () => {
   return {SafeAreaProvider:({children}:{children:React.ReactNode})=>R.createElement(Native.View,null,children),SafeAreaView:({children,...props}:{children:React.ReactNode})=>R.createElement(Native.View,props,children)};
 });
 
+let mockStatus = '在线';
+const mockReconnect = jest.fn(async () => undefined);
 const mockMounted = jest.fn(),
   mockUnmounted = jest.fn();
 jest.mock('../src/components/WorkspaceShell', () => ({
@@ -30,12 +32,13 @@ jest.mock('../src/hooks/useDesktops', () => ({
       {
         id: 'desktop-home-fixture',
         name: 'Fixture',
-        status: '在线',
+        status: mockStatus,
         tlsMode: 'pinned',
         certificateFingerprint: '',
       },
     ],
     remove: jest.fn(),
+    reconnect: mockReconnect,
     pair: jest.fn(),
     rename: jest.fn(async () => undefined),
     updateProfile: jest.fn(async () => undefined),
@@ -57,6 +60,18 @@ function enter(root: TestRenderer.ReactTestRenderer) {
   while (node && typeof node.props.onPress !== 'function') node = node.parent;
   node!.props.onPress();
 }
+test.each(['打开或重连 Fixture', '立即重连 Fixture'])('Home offline action %s triggers manual reconnect without restarting the app', async label => {
+  mockStatus = '离线'; mockReconnect.mockClear();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<App />); });
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0].props.onPress());
+  expect(mockReconnect).toHaveBeenCalledTimes(1);
+  expect(mockReconnect).toHaveBeenCalledWith('desktop-home-fixture');
+  await act(async () => root.unmount());
+  mockStatus = '在线';
+});
+
+
 test('Home navigation retains the same Workspace instance and generation state', async () => {
   mockMounted.mockClear();
   mockUnmounted.mockClear();

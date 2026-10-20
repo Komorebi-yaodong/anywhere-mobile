@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import {Image, Text} from 'react-native';
+import {Image, Text, TextInput, StyleSheet} from 'react-native';
 import {
   filterSessionMcpServers,
   filterSessionSkills,
@@ -169,7 +169,7 @@ test('reconciles a persisted live Assistant segment instead of appending a dupli
     uiMessageId: 'assistant-ui-fixture',
     role: 'assistant' as const,
     order: 1,
-    payload: {content: '', reasoningContent: 'saved thinking', toolCalls: [{id: 'tool-fixture', name: 'get_file'}]},
+    payload: {content: '', reasoningContent: 'saved thinking', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-fixture', name: 'get_file', status: '', arguments: {}, result: ''}]},
   }];
   const reconciled = reconcileLiveAssistantSegment(messages, {
     segmentId: 'assistant-storage-fixture', text: '', reasoning: 'live thinking', terminal: false,
@@ -203,6 +203,7 @@ test('offers a close action only for a session controlled by this Mobile device'
   expect(close).toHaveLength(1);
   expect(handoff).toHaveLength(1);
   expect(close[0].parent?.props.style).toBe(handoff[0].parent?.props.style);
+  expect(StyleSheet.flatten(close[0].parent?.props.style).borderWidth).toBe(1);
   await act(async () => root.unmount());
 });
 
@@ -288,6 +289,115 @@ test('shows the Desktop timestamp for a tool-only assistant message without a co
   expect(time.length).toBeGreaterThan(0);
   expect(time.some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)).match(/2026\/10\/20\s+12:34/))).toBe(true);
   expect(root.root.findAllByType(Text).some(node => (Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children)) === '调用 read_file')).toBe(true);
+  await act(async () => root.unmount());
+});
+
+
+function configFixture(busy = false) {
+  const config = {model: 'fixture|model', reasoningEffort: 'default', voice: '', mcpServerIds: [], skillIds: [], systemPrompt: '', compact: {autoCompactEnabled: true, contextLength: 32768, contextLengthSource: 'default', triggerRatio: 0.9, keepRecentRounds: 3, compactPrompt: ''}};
+  let lastMethod = '';
+  const base = workspaceProps();
+  const tracked = jest.fn((_id, method) => {
+    lastMethod = method;
+    return {requestId: 'request-ui-config-fixture', response: Promise.resolve({ok: true})};
+  });
+  const request = jest.fn(async (id, method, params) => {
+    if (method === 'conversation.request.get') return {
+      terminal: true, event: 'conversation.config.result',
+      result: {busy, config: lastMethod === 'conversation.context.refresh' ? {...config, compact: {...config.compact, contextLength: 131072, contextLengthSource: 'api'}} : config, options: {models: [{value: 'fixture|model', label: 'Fixture'}], mcpServers: [], skills: [], reasoningEfforts: [], voices: []}},
+    };
+    return base.request(id, method, params);
+  });
+  return {...base, request: request as RemoteRequest, requestTracked: tracked as RemoteTrackedRequest, tracked};
+}
+
+async function enterFixtureChat(root: TestRenderer.ReactTestRenderer) {
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture')[0].props.onPress());
+}
+
+function openConfigSession() {
+  mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: false, controlledByThisDevice: true, mobileControlled: true}];
+}
+
+test('saves a manually edited context length and fetches context using the Desktop command', async () => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => button(root, '上下文').props.onPress());
+  const input = () => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '会话上下文长度')!;
+  expect(input().props.value).toBe('32768');
+  await act(async () => input().props.onChangeText('65536'));
+  await act(async () => button(root, '保存').props.onPress());
+  expect(props.tracked).toHaveBeenCalledWith(expect.any(String), 'conversation.config.patch', expect.objectContaining({patch: expect.objectContaining({compact: expect.objectContaining({contextLength: 65536})})}), 30_000);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => button(root, '上下文').props.onPress());
+  await act(async () => button(root, '一键获取上下文长度').props.onPress());
+  expect(input().props.value).toBe('131072');
+  expect(props.tracked).toHaveBeenCalledWith(expect.any(String), 'conversation.context.refresh', {conversationId: 'conversation-shell-fixture'}, 30_000);
+  await act(async () => root.unmount());
+});
+
+test('keeps session inputs inside a keyboard-avoiding scrollable sheet and reveals focus', async () => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  const panel = root.root.findAll(node => node.props.accessibilityLabel === '键盘避让面板 会话设置' && node.props.behavior)[0];
+  expect(panel.props.behavior).toMatch(/height|padding/);
+  const prompt = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!;
+  expect(typeof prompt.props.onFocus).toBe('function');
+  await act(async () => { prompt.props.onFocus({nativeEvent: {target: 101}}); await new Promise<void>(resolve => setTimeout(resolve, 150)); });
+  for (const tab of ['MCP', 'Skill']) {
+    await act(async () => button(root, tab).props.onPress());
+    const search = root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === `搜索会话 ${tab}`)!;
+    expect(typeof search.props.onFocus).toBe('function');
+    await act(async () => { search.props.onFocus({nativeEvent: {target: 102}}); await new Promise<void>(resolve => setTimeout(resolve, 150)); });
+  }
+  await act(async () => root.unmount());
+});
+
+
+test('keeps model settings open as read-only while Desktop is busy', async () => {
+  openConfigSession();
+  const props = configFixture(true);
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '选择模型')[0].props.onPress());
+  expect(button(root, 'Fixture').props.disabled).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('本轮处理中'))).toBe(true);
+  await act(async () => root.unmount());
+});
+
+test('forces reconnect from the workspace refresh button while offline', async () => {
+  const onReconnect = jest.fn(async () => undefined);
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} onReconnect={onReconnect} desktop={{...workspaceProps().desktop, status: '离线'}} />); });
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '刷新' && node.props.onPress)[0].props.onPress());
+  expect(onReconnect).toHaveBeenCalledTimes(1);
+  await act(async () => root.unmount());
+});
+
+
+test('retains chat and draft during a transport reconnect, with sending disabled', async () => {
+  openConfigSession();
+  const props = workspaceProps();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  const composer = () => root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入消息与 AI 聊天')!;
+  await act(async () => composer().props.onChangeText('unsent fixture draft'));
+  await act(async () => root.update(<WorkspaceShell {...props} desktop={{...props.desktop, status: '离线', detail: '正在恢复连接…'}} />));
+  expect(composer().props.value).toBe('unsent fixture draft');
+  expect(composer().props.editable).toBe(false);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '连接恢复状态').length).toBeGreaterThan(0);
   await act(async () => root.unmount());
 });
 

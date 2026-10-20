@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {Platform} from 'react-native';
+import {AppState, Platform} from 'react-native';
 
 import {
   orderedPairedEndpoints,
@@ -43,6 +43,8 @@ export function useDesktops() {
   const [desktops, setDesktops] = useState<DesktopRuntime[]>([]);
   const desktopsRef = useRef<DesktopRuntime[]>([]);
   const clients = useRef(new Map<string, RemoteClient>());
+  const appState = useRef(AppState.currentState === 'background' || AppState.currentState === 'inactive' ? AppState.currentState : 'active');
+  const resumeEpoch = useRef(0);
 
   const connectGenerations = useRef(new Map<string, number>());
   const connecting = useRef(new Map<string, Promise<void>>());
@@ -94,6 +96,10 @@ export function useDesktops() {
     (desktop: PairedDesktop) => {
       if (!desktopsRef.current.some(item => item.id === desktop.id)) return;
       if (reconnectTimers.current.has(desktop.id)) return;
+      if (appState.current !== 'active') {
+        update(desktop.id, {status: '离线', detail: '回到前台后恢复连接。'});
+        return;
+      }
       const attempt = retryCount.current.get(desktop.id) ?? 0;
       const delay = reconnectDelayMs(attempt);
       retryCount.current.set(desktop.id, attempt + 1);
@@ -114,6 +120,7 @@ export function useDesktops() {
 
   const connect = useCallback(
     async (desktop: PairedDesktop) => {
+      if (appState.current !== 'active') return;
       const existing = connecting.current.get(desktop.id);
       if (existing) return existing;
       clearReconnect(desktop.id);
@@ -127,6 +134,7 @@ export function useDesktops() {
           loadDesktopCredential(desktop.id),
           loadOrCreateDeviceIdentity(),
         ]);
+        if (connectGenerations.current.get(desktop.id) !== generation) return;
         if (!credential) {
           update(desktop.id, {
             status: '错误',
@@ -137,7 +145,7 @@ export function useDesktops() {
         const candidates = orderedPairedEndpoints(desktop);
         let lastError: unknown = null;
         for (const endpoint of candidates) {
-          if (connectGenerations.current.get(desktop.id) !== generation) return;
+          if (connectGenerations.current.get(desktop.id) !== generation || appState.current !== 'active') return;
           const candidate = withDesktopEndpoint(desktop, endpoint);
           let becameOnline = false;
           let onlineSince: number | undefined;
@@ -164,7 +172,12 @@ export function useDesktops() {
                   retryCount.current.set(desktop.id, 0);
                 }
                 lastFailures.current.set(desktop.id, describeConnectionFailure(detail));
-                if (becameOnline) scheduleReconnect(candidate);
+                if (becameOnline) {
+                  // A closed socket cannot keep initialization's Promise as the
+                  // deduplication owner; otherwise its next retry may be a no-op.
+                  connecting.current.delete(desktop.id);
+                  scheduleReconnect(candidate);
+                }
               }
             },
             onEvent: event => {
@@ -184,6 +197,7 @@ export function useDesktops() {
               deviceModel: deviceModel(),
               appVersion: '0.0.1',
             }).catch(() => undefined);
+            if (connectGenerations.current.get(desktop.id) !== generation || clients.current.get(desktop.id) !== client) return;
             if (candidate.endpoint !== desktop.endpoint) {
               const next = desktopsRef.current.map(item => item.id === desktop.id
                 ? {...item, endpoint: candidate.endpoint, endpoints: candidate.endpoints, tlsMode: candidate.tlsMode}
@@ -221,6 +235,75 @@ export function useDesktops() {
     [clearReconnect, persist, replaceDesktops, scheduleReconnect, update],
   );
   connectRef.current = connect;
+
+  const reconnect = useCallback(async (desktopId: string) => {
+    const desktop = desktopsRef.current.find(item => item.id === desktopId);
+    if (!desktop || appState.current !== 'active') return;
+    clearReconnect(desktopId);
+    retryCount.current.set(desktopId, 0);
+    lastFailures.current.delete(desktopId);
+    // Invalidate every callback before cancelling a potentially stalled native
+    // handshake. A new attempt must never await the old connect Promise.
+    connectGenerations.current.set(desktopId, (connectGenerations.current.get(desktopId) || 0) + 1);
+    connecting.current.delete(desktopId);
+    const previous = clients.current.get(desktopId);
+    clients.current.delete(desktopId);
+    previous?.close().catch(() => undefined);
+    update(desktopId, {status: '连接中', detail: '正在重新连接…'});
+    await connectRef.current(desktop);
+  }, [clearReconnect, update]);
+
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      const previousState = appState.current;
+      if (previousState === nextState) return;
+      appState.current = nextState;
+      const epoch = ++resumeEpoch.current;
+      if (nextState !== 'active') {
+        // Do not close a healthy native socket just because JS is backgrounded.
+        for (const id of reconnectTimers.current.keys()) clearReconnect(id);
+        return;
+      }
+      if (previousState === 'active') return;
+      for (const desktop of desktopsRef.current) {
+        clearReconnect(desktop.id);
+        const client = clients.current.get(desktop.id);
+        const generation = connectGenerations.current.get(desktop.id);
+        const current = () => resumeEpoch.current === epoch &&
+          appState.current === 'active' &&
+          desktopsRef.current.some(item => item.id === desktop.id) &&
+          connectGenerations.current.get(desktop.id) === generation;
+        const restore = async () => {
+          if (desktop.status === '在线' && client) {
+            update(desktop.id, {status: '连接中', detail: '正在检查连接…'});
+
+            try {
+              // Only the explicit foreground probe can replace a stale socket;
+              // an ordinary periodic ping failure still cannot force reconnect.
+              await client.request('remote.ping', {}, 4_000);
+              if (current() && clients.current.get(desktop.id) === client) {
+                update(desktop.id, {status: '在线', detail: undefined});
+              }
+              return;
+            } catch { /* Resume on a fresh authenticated session below. */ }
+          }
+          if (!current()) return;
+          retryCount.current.set(desktop.id, 0);
+          lastFailures.current.delete(desktop.id);
+          clearReconnect(desktop.id);
+          update(desktop.id, {status: '连接中', detail: '正在恢复连接…'});
+          await reconnect(desktop.id).catch(() => undefined);
+        };
+        restore().catch(() => undefined);
+      }
+    });
+    return () => {
+      resumeEpoch.current += 1;
+      subscription.remove();
+    };
+  }, [clearReconnect, reconnect, update]);
+
 
   useEffect(() => {
     let disposed = false;
@@ -265,6 +348,7 @@ export function useDesktops() {
 
   useEffect(() => {
     const timer = setInterval(() => {
+      if (appState.current !== 'active') return;
       for (const desktop of desktopsRef.current) {
         if (desktop.status !== '在线') {
           continue;
@@ -441,6 +525,7 @@ export function useDesktops() {
     updateProfile,
     updateAvatarCache,
     remove,
+    reconnect,
     request,
     requestTracked,
     subscribeEvents,

@@ -59,9 +59,9 @@ describe('ConversationMarkdown media rendering', () => {
     expect(typeof canvas.props.onStartShouldSetResponderCapture).toBe('function');
     expect(typeof canvas.props.onMoveShouldSetResponderCapture).toBe('function');
     expect(root.root.findAll(node =>
-      node.props.pointerEvents === 'none' && node.props.source?.uri === 'https://media.example/gesture.png',
+      node.props.pointerEvents === 'none' && node.findAll(child => child.props.source?.uri === 'https://media.example/gesture.png').length > 0,
     ).length).toBeGreaterThan(0);
-    expect(root.root.findAllByType(Text).map(node => node.props.children)).toContain('双指缩放 · 放大后拖动 · 双击复位');
+    expect(root.root.findAllByType(Text).map(node => node.props.children)).toContain('按钮缩放 · 放大后拖动 · 双击复位');
 
     // TestRenderer does not provide React Native's touchHistory required by
     // PanResponder's responder callbacks. Runtime touch events do; assert the

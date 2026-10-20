@@ -257,7 +257,7 @@ export function useConversationWorkspace({
         });
       } catch (cause) {
         if (isCurrent()) {
-          setMessages([]);
+          // A transient transport failure must not erase the loaded transcript.
           setError(errorMessage(cause));
         }
       } finally {
@@ -647,10 +647,13 @@ export function useConversationWorkspace({
           // been persisted by its Renderer lease holder.
           loadMessages(conversationId).catch(() => undefined);
         }
-        if (becameTerminal) refreshCatalog().catch(() => undefined);
+        if (becameTerminal) {
+          refreshCatalog().catch(() => undefined);
+          refreshOpenedSessions().catch(() => undefined);
+        }
       }
     },
-    [commitQueue, commitTurn, loadMessages, refreshCatalog],
+    [commitQueue, commitTurn, loadMessages, refreshCatalog, refreshOpenedSessions],
   );
 
   useEffect(() => {
@@ -696,7 +699,9 @@ export function useConversationWorkspace({
     if (selectedConversationId && desktopStatus === '在线') {
       loadMessages(selectedConversationId).catch(() => undefined);
     } else {
-      setMessages([]);
+      messageEpoch.current += 1;
+      setMessagesLoading(false);
+      if (!selectedConversationId) setMessages([]);
     }
   }, [desktopStatus, loadMessages, selectedConversationId]);
 
@@ -707,9 +712,10 @@ export function useConversationWorkspace({
   }, [desktopStatus, recoverActiveTurn]);
 
   const assertControl = useCallback((conversationId: string) => {
+    if (desktopStatus !== '在线') throw new Error('连接正在恢复，暂时无法操作；已保留当前会话。');
     if (controlledConversationIds.includes(conversationId)) return;
     throw new Error('该会话正在由 Desktop 控制，请先点击“接管会话”。');
-  }, [controlledConversationIds]);
+  }, [controlledConversationIds, desktopStatus]);
 
 
   const sendMessage = useCallback(

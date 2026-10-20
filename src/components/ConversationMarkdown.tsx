@@ -316,9 +316,11 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
           <Pressable accessibilityLabel="保存当前图片" style={styles.saveButton} onPress={save}><Text style={styles.saveButtonText}>{saving ? '保存中' : '保存'}</Text></Pressable>
           <Pressable accessibilityLabel="关闭图片预览" style={styles.closeButton} onPress={close}><Text style={styles.closeButtonText}>关闭</Text></Pressable>
         </View>
-        <Text style={styles.imageGestureHint}>双指缩放 · 放大后拖动 · 双击复位</Text>
+        <Text style={styles.imageGestureHint}>按钮缩放 · 放大后拖动 · 双击复位</Text>
         <View accessibilityLabel="图片预览画布" onLayout={event => setViewport({width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height})} style={styles.imageGestureSurface} {...panResponder.panHandlers}>
-          <Animated.Image pointerEvents="none" source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{translateX: pan.x}, {translateY: pan.y}, {scale}]}]} onError={onError} />
+          <View pointerEvents="none" style={styles.imageFullscreen}>
+            <Animated.Image source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{translateX: pan.x}, {translateY: pan.y}, {scale}]}]} onError={onError} />
+          </View>
         </View>
       </View>
     </Modal>

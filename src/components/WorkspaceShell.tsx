@@ -114,6 +114,7 @@ type Props = {
     profile: Pick<DesktopRuntime, 'profileName' | 'avatarCache'>,
   ) => Promise<void>;
   onHome: () => void;
+  onReconnect?: () => Promise<void>;
   visible?: boolean;
 };
 
@@ -129,6 +130,9 @@ function workspaceNotice(error: unknown, fallback: string): string {
 
     remote_response_too_large: 'Desktop 返回的数据过大，当前请求未完成；连接仍保留。',
     remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
+    remote_conversation_busy: '会话正在生成或执行工具，请等待本轮结束，或先停止生成后再操作。',
+    remote_context_resolve_failed: '未能获取当前模型的上下文长度，已保留原值；可以手动填写。',
+    remote_context_resolve_unavailable: '当前 Desktop 尚不支持上下文检索，请更新并重启 Desktop。',
     remote_all_paired_endpoints_unreachable: '已配对的连接地址暂不可用，请确认 Desktop 远程服务仍在运行。',
   };
   return messages[code] || (error instanceof Error ? error.message : fallback);
@@ -213,6 +217,7 @@ export function WorkspaceShell({
   subscribeEvents,
   updateProfile,
   onHome,
+  onReconnect,
   visible = true,
 }: Props) {
   const styles = useThemedStyles(baseStyles);
@@ -320,6 +325,10 @@ export function WorkspaceShell({
     'prompt' | 'mcp' | 'skill' | 'compact'
   >('prompt');
   const [sessionBusy, setSessionBusy] = useState(false);
+  const [configExecutionBusy, setConfigExecutionBusy] = useState(false);
+  const [sessionReadError, setSessionReadError] = useState('');
+  const [contextLengthDraft, setContextLengthDraft] = useState('');
+  const [contextLengthEdited, setContextLengthEdited] = useState(false);
   const [mcpQuery, setMcpQuery] = useState('');
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
@@ -577,8 +586,20 @@ export function WorkspaceShell({
     setDrawerOpen(false);
   };
 
+  const connected = desktop.status === '在线';
   const controlledByMobile = workspace.canControlConversation(workspace.selectedConversationId);
+  const selectedOpenedSession = workspace.openedSessions.find(item => item.conversationId === workspace.selectedConversationId);
+  const selectedTurn = workspace.activeTurn?.conversationId === workspace.selectedConversationId ? workspace.activeTurn : null;
+  const executionBusy = Boolean((selectedTurn && !selectedTurn.terminal) || configExecutionBusy || (!selectedTurn?.terminal && selectedOpenedSession?.busy));
+  const canEditSession = connected && controlledByMobile && !executionBusy && !sessionBusy;
+  useEffect(() => {
+    setConfigExecutionBusy(selectedOpenedSession?.busy === true);
+    if (workspace.activeTurn?.conversationId === workspace.selectedConversationId && workspace.activeTurn.terminal) {
+      setConfigExecutionBusy(false);
+    }
+  }, [selectedOpenedSession, workspace.activeTurn, workspace.selectedConversationId]);
   const requireControl = () => {
+    if (!connected) { setNotice('连接正在恢复，已保留当前页面；请连接成功后再操作。'); return false; }
     if (controlledByMobile) return true;
     setNotice('该会话正在由 Desktop 控制，请先点击“接管会话”。');
     return false;
@@ -587,8 +608,11 @@ export function WorkspaceShell({
   const openSessionSettings = async (
     target: 'session' | 'model' | 'reasoning' | 'voice' = 'session',
   ) => {
-    if (!workspace.selectedConversationId) return;
-    sessionScope.current = workspace.selectedConversationId;
+    if (!workspace.selectedConversationId || !connected) return;
+    const requestedConversation = workspace.selectedConversationId;
+    sessionScope.current = requestedConversation;
+    setSessionReadError('');
+    setContextLengthEdited(false);
     setSessionConfig(null);
     setSessionOptions(null);
     setMcpQuery('');
@@ -609,19 +633,21 @@ export function WorkspaceShell({
       const state = await receipt.completion;
       const result = state.result as ConversationConfigResult | undefined;
       if (result?.config) {
+        if (sessionScope.current !== requestedConversation) return;
         setSessionConfig(result.config);
         setSessionOptions(result.options);
+        setConfigExecutionBusy(result.busy === true);
+        setContextLengthDraft(String(result.config.compact?.contextLength || ''));
       }
     } catch (error) {
-      setNotice(workspaceNotice(error, '无法读取会话设置。'));
-      setSheet(null);
+      setSessionReadError(workspaceNotice(error, '无法读取会话设置，请稍后重试。'));
     } finally {
       setSessionBusy(false);
     }
   };
 
   const compactNow = async () => {
-    if (!requireControl() || sessionBusy || !workspace.selectedConversationId) return;
+    if (!requireControl() || !canEditSession || !workspace.selectedConversationId) return;
     setSessionBusy(true);
     try {
       const receipt = startCommand({
@@ -643,7 +669,7 @@ export function WorkspaceShell({
   };
 
   const saveSessionPatch = async (patch: Record<string, unknown>, closeAfterSave = true) => {
-    if (!requireControl() ||
+    if (!requireControl() || !canEditSession ||
       !workspace.selectedConversationId ||
       sessionScope.current !== workspace.selectedConversationId ||
       !sessionConfig ||
@@ -675,6 +701,11 @@ export function WorkspaceShell({
 
   const saveSessionSettings = async () => {
     if (!sessionConfig) return;
+    const contextLength = Number(contextLengthDraft);
+    if (sessionTab === 'compact' && contextLengthEdited && (!Number.isInteger(contextLength) || contextLength < 4096 || contextLength > 10_000_000)) {
+      setNotice('上下文长度请输入 4096–10000000 之间的整数。');
+      return;
+    }
     const patch = sessionTab === 'prompt'
       ? {systemPrompt: sessionConfig.systemPrompt || ''}
       : sessionTab === 'mcp'
@@ -684,6 +715,7 @@ export function WorkspaceShell({
           : {
               compact: {
                 autoCompactEnabled: sessionConfig.compact?.autoCompactEnabled !== false,
+                ...(contextLengthEdited ? {contextLength} : {}),
                 triggerRatio: Number(sessionConfig.compact?.triggerRatio) || 0.9,
                 keepRecentRounds: Number(sessionConfig.compact?.keepRecentRounds) || 0,
                 compactPrompt: sessionConfig.compact?.compactPrompt || '',
@@ -691,6 +723,30 @@ export function WorkspaceShell({
             };
     await saveSessionPatch(patch);
   };
+
+  const refreshContextLength = async () => {
+    if (!canEditSession || !sessionConfig || !requireControl()) return;
+    const conversationId = workspace.selectedConversationId;
+    setSessionBusy(true);
+    try {
+      const receipt = startCommand({
+        desktopId: desktop.id, method: 'conversation.context.refresh',
+        params: {conversationId}, request, requestTracked, timeoutMs: 60_000,
+      });
+      const state = await receipt.completion;
+      if (sessionScope.current !== conversationId) return;
+      const result = state.result as ConversationConfigResult;
+      if (result?.config?.compact) {
+        setSessionConfig((current: any) => current ? {...current, compact: {...current.compact, contextLength: result.config.compact.contextLength, contextLengthSource: result.config.compact.contextLengthSource, contextLengthManual: false}} : current);
+        setContextLengthDraft(String(result.config.compact.contextLength));
+        setContextLengthEdited(false);
+        setNotice('已获取并保存当前模型的上下文长度。');
+      }
+    } catch (error) {
+      setNotice(workspaceNotice(error, '上下文检索失败，已保留原值。'));
+    } finally { setSessionBusy(false); }
+  };
+
 
   const pickPhoto = async () => {
     if (!requireControl()) return;
@@ -767,7 +823,8 @@ export function WorkspaceShell({
   };
 
   const takeoverSelectedConversation = async () => {
-    if (!workspace.selectedConversationId) return;
+    if (!workspace.selectedConversationId || !connected) return;
+    if (executionBusy) { setNotice('当前会话仍在处理，待本轮结束后可接管。'); return; }
     try {
       await workspace.takeoverConversation(workspace.selectedConversationId);
       setNotice('已接管会话，Desktop 将实时观察更新。');
@@ -776,7 +833,8 @@ export function WorkspaceShell({
     }
   };
   const handoffSelectedConversation = async () => {
-    if (!workspace.selectedConversationId) return;
+    if (!workspace.selectedConversationId || !connected) return;
+    if (executionBusy) { setNotice('本轮仍在生成或执行工具，结束后可交还；也可以先停止生成。'); return; }
     if (recording || attachments.busy) {
       setNotice('请先完成或取消录音、附件上传，再交还 Desktop。');
       return;
@@ -790,6 +848,7 @@ export function WorkspaceShell({
   };
 
   const closeOpenedSession = (item: OpenedConversationSession) => {
+    if (!connected) return;
     const title = item.title || '未命名会话';
     Alert.alert(
       `关闭“${title}”？`,
@@ -818,6 +877,7 @@ export function WorkspaceShell({
 
 
   const takeoverOpenedSession = async (item: OpenedConversationSession) => {
+    if (!connected) return;
     try {
       await workspace.takeoverConversation(item.conversationId);
       setNotice(`已接管“${item.title || '未命名会话'}”，Desktop 将实时观察更新。`);
@@ -826,6 +886,7 @@ export function WorkspaceShell({
     }
   };
   const handoffOpenedSession = async (item: OpenedConversationSession) => {
+    if (!connected) return;
     try {
       await workspace.handoffConversation(item.conversationId);
       setNotice(`已将“${item.title || '未命名会话'}”交还 Desktop。`);
@@ -954,6 +1015,10 @@ export function WorkspaceShell({
           icon="↻"
           label="刷新"
           onPress={() => {
+            if (!connected) {
+              onReconnect?.().catch(error => setNotice(workspaceNotice(error, '重连失败，请稍后重试。')));
+              return;
+            }
             if (mode === 'chat') workspace.refreshMessages();
             else if (mode === 'settings') setSettingsRefreshSignal(current => current + 1);
             else refreshWorkspace();
@@ -991,7 +1056,9 @@ export function WorkspaceShell({
           <Text style={styles.noticeText}>{notice}</Text>
         </Pressable>
       ) : null}
-      {desktop.status !== '在线' ? (
+      {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在恢复连接…'} · 已保留当前页面，连接后继续同步。</Text></View> : null}
+      <View style={styles.retainedWorkspace} pointerEvents={!connected && mode !== 'chat' ? 'none' : 'auto'}>
+      {!connected && !bootstrap && mode !== 'chat' && mode !== 'settings' ? (
         <Empty
           title="正在连接 Desktop"
           text={desktop.detail || '请确认远程服务仍在运行。'}
@@ -1050,7 +1117,8 @@ export function WorkspaceShell({
             if (!requireControl()) return;
             setMessageAction({method: 'conversation.message.delete', uiMessageId: message.uiMessageId});
           }}
-          writable={controlledByMobile}
+          writable={connected && controlledByMobile}
+          connected={connected}
           onTakeover={takeoverSelectedConversation}
           onHandoff={handoffSelectedConversation}
           attachments={attachments}
@@ -1071,6 +1139,7 @@ export function WorkspaceShell({
           onStop={() => workspace.cancelActiveTurn().catch(() => undefined)}
         />
       )}
+      </View>
 
       {messageAction ? (
         <ConversationActions
@@ -1147,16 +1216,16 @@ export function WorkspaceShell({
                     accessibilityLabel="关闭会话"
                     disabled={item.busy}
                     onPress={() => closeOpenedSession(item)}
-                    style={styles.openedSessionSegment}
+                    style={({pressed}) => [styles.openedSessionSegment, pressed && {backgroundColor: C.primarySoft}]}
                   >
-                    <Text style={styles.openedSessionSegmentText}>关闭</Text>
+                    <Text style={styles.openedSessionCloseText}>关闭</Text>
                   </Pressable>
                   <View style={styles.openedSessionDivider} />
                   <Pressable
                     accessibilityLabel="交还 Desktop"
                     disabled={item.busy}
                     onPress={() => handoffOpenedSession(item)}
-                    style={styles.openedSessionSegment}
+                    style={({pressed}) => [styles.openedSessionSegment, pressed && {backgroundColor: C.primarySoft}]}
                   >
                     <Text style={styles.openedSessionSegmentText}>交还 Desktop</Text>
                   </Pressable>
@@ -1289,6 +1358,8 @@ export function WorkspaceShell({
         onClose={() => setSheet(null)}
         title="会话设置"
       >
+        {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>正在生成或执行工具，设置可查看；本轮结束或停止生成后可修改。</Text> : null}
         {sessionBusy && !sessionConfig ? (
           <ActivityIndicator color={C.primary} />
         ) : sessionConfig ? (
@@ -1301,10 +1372,10 @@ export function WorkspaceShell({
             </ScrollView>
             {!controlledByMobile ? <Text style={styles.sessionHint}>当前由 Desktop 控制。设置可查看，接管会话后才可修改。</Text> : null}
             {sessionTab === 'prompt' ? <View style={styles.sessionSection}>
-              <TextInput value={sessionConfig.systemPrompt || ''} editable={controlledByMobile} onChangeText={systemPrompt => setSessionConfig({...sessionConfig, systemPrompt})} multiline style={[styles.input, styles.systemPromptInput]} placeholder="输入本次会话的系统提示词" placeholderTextColor={C.muted} textAlignVertical="top" />
+              <SheetTextInput value={sessionConfig.systemPrompt || ''} editable={canEditSession} onChangeText={systemPrompt => setSessionConfig({...sessionConfig, systemPrompt})} multiline style={[styles.input, styles.systemPromptInput]} placeholder="输入本次会话的系统提示词" placeholderTextColor={C.muted} textAlignVertical="top" />
             </View> : null}
             {sessionTab === 'mcp' ? <View style={styles.sessionSection}>
-              <View style={styles.sessionMcpSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput accessibilityLabel="搜索会话 MCP" value={mcpQuery} onChangeText={setMcpQuery} placeholder="搜索名称、ID 或标签" placeholderTextColor={C.muted} style={styles.sessionMcpSearchInput} /></View>
+              <View style={styles.sessionMcpSearch}><AppIcon name="search" size={17} color={C.muted} /><SheetTextInput accessibilityLabel="搜索会话 MCP" value={mcpQuery} onChangeText={setMcpQuery} placeholder="搜索名称、ID 或标签" placeholderTextColor={C.muted} style={styles.sessionMcpSearchInput} /></View>
               <View style={styles.sessionMcpFilters}>
                 <Text style={styles.sessionMcpFilterLabel}>快速筛选</Text>
                 <View style={styles.sessionMcpFilterRow}>
@@ -1316,37 +1387,45 @@ export function WorkspaceShell({
               <View style={styles.toolSelectList}>{visibleSessionMcpServers.map(item => {
                 const active = (sessionConfig.mcpServerIds || []).includes(item.id);
                 const tags = Array.isArray(item.tags) ? item.tags : [];
-                return <Pressable key={item.id} accessibilityLabel={`选择会话 MCP ${item.name || item.id}`} disabled={!controlledByMobile} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, mcpServerIds: toggleId(sessionConfig.mcpServerIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="mcp" size={17} color={active ? C.primary : C.muted} /></View><View style={styles.toolSelectCopy}><Text numberOfLines={1} style={styles.toolSelectName}>{item.name || item.id}</Text>{(item.preset || tags.length) ? <View style={styles.toolSelectTagRow}>{item.preset ? <Chip label="预设" /> : null}{tags.map(tag => <Chip key={tag} label={tag} />)}</View> : null}</View><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
+                return <Pressable key={item.id} accessibilityLabel={`选择会话 MCP ${item.name || item.id}`} disabled={!canEditSession} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, mcpServerIds: toggleId(sessionConfig.mcpServerIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="mcp" size={17} color={active ? C.primary : C.muted} /></View><View style={styles.toolSelectCopy}><Text numberOfLines={1} style={styles.toolSelectName}>{item.name || item.id}</Text>{(item.preset || tags.length) ? <View style={styles.toolSelectTagRow}>{item.preset ? <Chip label="预设" /> : null}{tags.map(tag => <Chip key={tag} label={tag} />)}</View> : null}</View><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
               })}</View>
               {!visibleSessionMcpServers.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 MCP 服务。</Text></View> : null}
             </View> : null}
             {sessionTab === 'skill' ? <View style={styles.sessionSection}>
-              <View style={styles.sessionMcpSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput accessibilityLabel="搜索会话 Skill" value={skillQuery} onChangeText={setSkillQuery} placeholder="搜索 Skill 名称" placeholderTextColor={C.muted} style={styles.sessionMcpSearchInput} /></View>
+              <View style={styles.sessionMcpSearch}><AppIcon name="search" size={17} color={C.muted} /><SheetTextInput accessibilityLabel="搜索会话 Skill" value={skillQuery} onChangeText={setSkillQuery} placeholder="搜索 Skill 名称" placeholderTextColor={C.muted} style={styles.sessionMcpSearchInput} /></View>
               <View style={styles.toolSelectList}>{visibleSessionSkills.map(item => {
                 const active = (sessionConfig.skillIds || []).includes(item.id);
-                return <Pressable key={item.id} accessibilityLabel={`选择会话 Skill ${item.name}`} disabled={!controlledByMobile} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, skillIds: toggleId(sessionConfig.skillIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="skills" size={17} color={active ? C.primary : C.muted} /></View><Text numberOfLines={1} style={styles.toolSelectName}>{item.name}</Text><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
+                return <Pressable key={item.id} accessibilityLabel={`选择会话 Skill ${item.name}`} disabled={!canEditSession} style={[styles.toolSelectRow, active && styles.toolSelectRowActive]} onPress={() => setSessionConfig({...sessionConfig, skillIds: toggleId(sessionConfig.skillIds || [], item.id)})}><View style={styles.toolSelectIcon}><AppIcon name="skills" size={17} color={active ? C.primary : C.muted} /></View><Text numberOfLines={1} style={styles.toolSelectName}>{item.name}</Text><Text style={styles.toolSelectCheck}>{active ? '✓' : ''}</Text></Pressable>;
               })}</View>
               {!visibleSessionSkills.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 Skill。</Text></View> : null}
             </View> : null}
             {sessionTab === 'compact' ? <View style={styles.sessionSection}>
-              <View style={styles.compactAction}><Text style={styles.sessionSectionTitle}>上下文</Text><Action compact label="立即压缩" onPress={compactNow} disabled={!controlledByMobile || sessionBusy} /></View>
-              <View style={styles.contextInfo}><Text style={styles.contextInfoLabel}>上下文长度</Text><Text style={styles.contextInfoValue}>{formatContextLength(sessionConfig.compact?.contextLength)}{sessionConfig.compact?.contextLengthSource ? ` · ${contextSourceLabel(sessionConfig.compact.contextLengthSource)}` : ''}</Text></View>
-              <ToggleRow label="自动压缩" disabled={!controlledByMobile} value={sessionConfig.compact?.autoCompactEnabled !== false} onChange={autoCompactEnabled => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, autoCompactEnabled}})} />
-              <View style={styles.sessionGrid}><Field label="触发比例 (0.1–0.99)" editable={controlledByMobile} value={String(sessionConfig.compact?.triggerRatio ?? 0.9)} onChange={raw => { const triggerRatio = Number(raw); if (Number.isFinite(triggerRatio)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, triggerRatio}}); }} /><Field label="保留轮数" editable={controlledByMobile} value={String(sessionConfig.compact?.keepRecentRounds ?? 0)} onChange={raw => { const keepRecentRounds = Number(raw); if (Number.isFinite(keepRecentRounds)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, keepRecentRounds}}); }} /></View>
-              <View style={styles.field}><Text style={styles.fieldLabel}>压缩提示词</Text><TextInput value={sessionConfig.compact?.compactPrompt || ''} editable={controlledByMobile} onChangeText={compactPrompt => setSessionConfig({...sessionConfig, compact: {...sessionConfig, compactPrompt}})} multiline style={[styles.input, styles.textarea]} placeholder="留空使用默认提示词" placeholderTextColor={C.muted} /></View>
+              <View style={styles.compactAction}><Text style={styles.sessionSectionTitle}>上下文</Text><Action compact label="立即压缩" onPress={compactNow} disabled={!canEditSession} /></View>
+              <View style={styles.contextInfo}><Text style={styles.contextInfoLabel}>上下文长度</Text><Text style={styles.contextInfoValue}>{formatContextLength(sessionConfig.compact?.contextLength)} · {contextLengthEdited ? '手动（待保存）' : contextSourceLabel(sessionConfig.compact?.contextLengthSource)}</Text></View>
+              <SheetTextInput accessibilityLabel="会话上下文长度" keyboardType="number-pad" value={contextLengthDraft} editable={canEditSession} onChangeText={value => { setContextLengthDraft(value); setContextLengthEdited(true); }} style={styles.input} placeholder="输入 4096–10000000" placeholderTextColor={C.muted} />
+              <Action label={sessionBusy ? '正在获取…' : '一键获取上下文长度'} onPress={refreshContextLength} disabled={!canEditSession} />
+              <ToggleRow label="自动压缩" disabled={!canEditSession} value={sessionConfig.compact?.autoCompactEnabled !== false} onChange={autoCompactEnabled => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, autoCompactEnabled}})} />
+              <View style={styles.sessionGrid}><Field label="触发比例 (0.1–0.99)" editable={canEditSession} value={String(sessionConfig.compact?.triggerRatio ?? 0.9)} onChange={raw => { const triggerRatio = Number(raw); if (Number.isFinite(triggerRatio)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, triggerRatio}}); }} /><Field label="保留轮数" editable={canEditSession} value={String(sessionConfig.compact?.keepRecentRounds ?? 0)} onChange={raw => { const keepRecentRounds = Number(raw); if (Number.isFinite(keepRecentRounds)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, keepRecentRounds}}); }} /></View>
+              <View style={styles.field}><Text style={styles.fieldLabel}>压缩提示词</Text><SheetTextInput value={sessionConfig.compact?.compactPrompt || ''} editable={canEditSession} onChangeText={compactPrompt => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, compactPrompt}})} multiline style={[styles.input, styles.textarea]} placeholder="留空使用默认提示词" placeholderTextColor={C.muted} /></View>
             </View> : null}
-            <Action label={sessionBusy ? '正在保存…' : '保存'} onPress={saveSessionSettings} disabled={!controlledByMobile || sessionBusy} />
+            <Action label={sessionBusy ? '正在保存…' : '保存'} onPress={saveSessionSettings} disabled={!canEditSession} />
           </>
         ) : null}
       </Sheet>
       <Sheet visible={sheet === 'model'} onClose={() => setSheet(null)} title="选择模型">
-        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!controlledByMobile || sessionBusy} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
+        {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
+        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'reasoning'} onClose={() => setSheet(null)} title="思维深度">
-        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.reasoningEfforts || []).map(value => <Pressable key={value} style={[styles.sessionSelectRow, sessionConfig?.reasoningEffort === value && styles.sessionSelectRowActive]} disabled={!controlledByMobile || sessionBusy} onPress={() => { setSessionConfig({...sessionConfig, reasoningEffort: value}); saveSessionPatch({reasoningEffort: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{reasoningLabel(value)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.reasoningEffort === value ? '✓' : ''}</Text></Pressable>)}</View>}
+        {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
+        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.reasoningEfforts || []).map(value => <Pressable key={value} style={[styles.sessionSelectRow, sessionConfig?.reasoningEffort === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, reasoningEffort: value}); saveSessionPatch({reasoningEffort: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{reasoningLabel(value)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.reasoningEffort === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'voice'} onClose={() => setSheet(null)} title="语音">
-        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!controlledByMobile || sessionBusy} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '默认语音'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
+        {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
+        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '默认语音'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
     </SafeAreaView>
   );
@@ -1420,6 +1499,7 @@ const ChatPage = React.forwardRef<
     onEdit: (message: RemoteMessage) => void;
     onDelete: (message: RemoteMessage) => void;
     writable: boolean;
+    connected?: boolean;
     onTakeover: () => void;
     onHandoff: () => void;
     attachments: any;
@@ -1454,6 +1534,7 @@ const ChatPage = React.forwardRef<
       onEdit,
       onDelete,
       writable,
+      connected = true,
       onTakeover,
       onHandoff,
       attachments,
@@ -1601,7 +1682,7 @@ const ChatPage = React.forwardRef<
             </Pressable>
           </View>
         ))}
-        {!writable ? (
+        {connected && !writable ? (
           <View style={styles.observerBanner}>
             <Text style={styles.observerText}>Desktop 正在控制此会话；内容会实时同步。</Text>
           </View>
@@ -1684,7 +1765,8 @@ const ChatPage = React.forwardRef<
           </View>
         </View>
         <Pressable
-          style={styles.conversationControl}
+          style={[styles.conversationControl, !connected && styles.disabled]}
+          disabled={!connected}
           onPress={writable ? onHandoff : onTakeover}
           accessibilityLabel={writable ? '交还 Desktop' : '接管会话'}
         >
@@ -1908,7 +1990,7 @@ function Field({
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
+      <SheetTextInput
         value={value || ''}
         editable={editable}
         onChangeText={onChange}
@@ -2048,7 +2130,7 @@ function MessageCard({
   const editableMessage = message.role === 'user' || message.role === 'assistant';
   const content = renderText(message.payload.content);
   const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
-  const timestamp = message.payload.completedTimestamp || message.payload.timestamp;
+  const timestamp = message.payload.timestamp || message.payload.completedTimestamp;
   const formattedTimestamp = formatTime(timestamp);
   const toolOnly = !isUser && !hasMessageBubble(message) && !String(message.payload.reasoningContent || '').trim() && Boolean(message.payload.toolCalls?.length);
   const copyText = content || (message.payload.toolCalls || []).map(tool => `调用 ${tool.name || '工具'}`).join('\n');
@@ -2190,6 +2272,16 @@ function Action({
     </Pressable>
   );
 }
+const SheetFocusContext = React.createContext<((target: number | null) => void) | null>(null);
+
+function SheetTextInput(props: React.ComponentProps<typeof TextInput>) {
+  const reveal = React.useContext(SheetFocusContext);
+  return <TextInput {...props} onFocus={event => {
+    props.onFocus?.(event);
+    reveal?.(event.nativeEvent.target);
+  }} onBlur={event => { props.onBlur?.(event); reveal?.(null); }} />;
+}
+
 function Sheet({
   visible,
   title,
@@ -2202,6 +2294,28 @@ function Sheet({
   onClose: () => void;
 }) {
   const styles = useThemedStyles(baseStyles);
+  const scroll = useRef<ScrollView>(null);
+  const focusedTarget = useRef<number | null>(null);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const revealInput = useCallback((target: number | null) => {
+    focusedTarget.current = target;
+    if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    if (target == null) return;
+    scrollTimer.current = setTimeout(() => {
+      scroll.current?.scrollResponderScrollNativeHandleToKeyboard?.(target, 24, true);
+      scrollTimer.current = null;
+    }, 120);
+  }, []);
+  useEffect(() => {
+    if (!visible) { focusedTarget.current = null; return; }
+    const show = Keyboard.addListener('keyboardDidShow', () => {
+      if (focusedTarget.current != null) revealInput(focusedTarget.current);
+    });
+    return () => {
+      show.remove();
+      if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    };
+  }, [visible, revealInput]);
   return (
     <Modal
       visible={visible}
@@ -2209,7 +2323,7 @@ function Sheet({
       animationType="slide"
       onRequestClose={onClose}
     >
-      <View style={styles.sheetOverlay}>
+      <KeyboardAvoidingView accessibilityLabel={`键盘避让面板 ${title}`} style={styles.sheetOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.sheet}>
           <View style={styles.sheetHandle} />
@@ -2220,13 +2334,17 @@ function Sheet({
             </Pressable>
           </View>
           <ScrollView
+            ref={scroll}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            automaticallyAdjustKeyboardInsets={false}
             style={styles.sheetScroll}
+            contentContainerStyle={styles.sheetScrollContent}
           >
-            {children}
+            <SheetFocusContext.Provider value={revealInput}>{children}</SheetFocusContext.Provider>
           </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -2321,7 +2439,8 @@ function formatTime(value: string): string {
   return `${date.getFullYear()}/${two(date.getMonth() + 1)}/${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`;
 }
 const baseStyles = StyleSheet.create({
-  sheetScroll: { maxHeight: 520 },
+  sheetScroll: {maxHeight: 520, flexShrink: 1},
+  sheetScrollContent: {paddingBottom: 24},
   fullDrawer: { width: '100%', maxWidth: 340 },
   safe: { flex: 1, backgroundColor: C.background },
   topbar: {
@@ -2678,6 +2797,8 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.overlay,
   },
   sheet: {
+    maxHeight: '92%',
+    flexShrink: 1,
     backgroundColor: C.background,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
@@ -2770,11 +2891,15 @@ const baseStyles = StyleSheet.create({
   },
   openedSessionCopy: {flex: 1, minWidth: 0, gap: 4, minHeight: 48, justifyContent: 'center'},
   openedSessionTitle: {color: C.text, fontSize: 14, fontWeight: '800'},
-  openedSessionControl: {flexDirection: 'row', alignItems: 'center', overflow: 'hidden', borderWidth: 2, borderColor: C.text, borderRadius: 14, backgroundColor: C.surface},
-  openedSessionSegment: {minHeight: 38, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12},
-  openedSessionDivider: {alignSelf: 'stretch', width: 2, backgroundColor: C.text},
-  openedSessionTakeover: {minWidth: 86, minHeight: 38, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderWidth: 2, borderColor: C.text, borderRadius: 14, backgroundColor: C.surface},
-  openedSessionSegmentText: {color: C.text, fontSize: 13, fontWeight: '800'},
+  openedSessionControl: {flexDirection: 'row', alignItems: 'center', overflow: 'hidden', borderWidth: 1, borderColor: '#E5CFC0', borderRadius: 12, backgroundColor: C.surface},
+  openedSessionSegment: {minHeight: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 11},
+  openedSessionDivider: {height: 18, width: StyleSheet.hairlineWidth, backgroundColor: '#E5CFC0'},
+  openedSessionTakeover: {minWidth: 72, minHeight: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderWidth: 1, borderColor: '#E5CFC0', borderRadius: 12, backgroundColor: C.primarySoft},
+  openedSessionSegmentText: {color: C.primary, fontSize: 12, fontWeight: '700'},
+  openedSessionCloseText: {color: C.danger, fontSize: 12, fontWeight: '600'},
+  retainedWorkspace: {flex: 1, minHeight: 0},
+  connectionBanner: {paddingHorizontal: 16, paddingVertical: 10, backgroundColor: C.surfaceMuted},
+  connectionBannerText: {color: C.muted, fontSize: 12, lineHeight: 18},
 
   openedSessionMeta: {color: C.muted, fontSize: 11, lineHeight: 16},
 

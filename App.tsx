@@ -41,6 +41,7 @@ function App() {
     rename,
     updateProfile,
     remove,
+    reconnect,
     request,
     requestTracked,
     subscribeEvents,
@@ -188,6 +189,7 @@ function App() {
         subscribeEvents={subscribeEvents}
         updateProfile={updateProfile}
         visible={!showHome}
+        onReconnect={() => reconnect(activeDesktop.id)}
         onHome={() => setShowHome(true)}
       />
     </View>
@@ -237,7 +239,11 @@ function App() {
                 : '';
               const avatarLabel = desktop.profileName || desktop.name || 'A';
               return (
-                <View style={styles.desktopCard} key={desktop.id}>
+                <Pressable accessibilityLabel={`打开或重连 ${desktop.name}`} style={styles.desktopCard} key={desktop.id} onPress={() => {
+                  setActiveDesktopId(desktop.id);
+                  setShowHome(false);
+                  if (!canEnter) reconnect(desktop.id).catch(() => undefined);
+                }}>
                   <DesktopAvatar uri={avatarUri} label={avatarLabel} />
                   <View style={styles.desktopCardMiddle}>
                     <View style={styles.desktopNameLine}>
@@ -246,7 +252,8 @@ function App() {
                         accessibilityRole="button"
                         accessibilityLabel={`修改 ${desktop.name} 的连接名称`}
                         style={styles.renameButton}
-                        onPress={() => {
+                        onPress={event => {
+                          event?.stopPropagation();
                           setRenamingDesktop(desktop);
                           setNextDesktopName(desktop.name);
                         }}
@@ -256,26 +263,27 @@ function App() {
                     </View>
                     <View style={styles.desktopMetaLine}>
                       <Text style={styles.desktopStatus}>{desktop.status}</Text>
-                      <Pressable onPress={() => removeDesktop(desktop)}>
+                      <Pressable onPress={event => { event?.stopPropagation(); removeDesktop(desktop); }}>
                         <Text style={styles.removeText}>移除</Text>
                       </Pressable>
                     </View>
                   </View>
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{disabled: !canEnter}}
-                    disabled={!canEnter}
+                    accessibilityLabel={canEnter ? '进入桌面' : `立即重连 ${desktop.name}`}
                     style={[styles.enterDesktopButton, canEnter ? styles.enterOnline : styles.enterOffline]}
-                    onPress={() => {
+                    onPress={event => {
+                      event?.stopPropagation();
                       setActiveDesktopId(desktop.id);
                       setShowHome(false);
+                      if (!canEnter) reconnect(desktop.id).catch(() => undefined);
                     }}
                   >
                     <Text style={[styles.enterDesktopText, !canEnter && styles.enterOfflineText]}>
-                      进入桌面
+                      {canEnter ? '进入桌面' : '立即重连'}
                     </Text>
                   </Pressable>
-                </View>
+                </Pressable>
               );
             })
           )}

@@ -94,6 +94,8 @@ export type CompactConfig = {
   autoCompactEnabled: boolean;
   triggerRatio: number;
   contextLength: number;
+  contextLengthSource?: 'api' | 'manual' | 'default';
+  contextLengthManual?: boolean;
   keepRecentRounds: number;
   hideCompactedMessages: boolean;
   compactPrompt: string;
@@ -111,6 +113,7 @@ export type ConversationConfig = {
 
 export type ConversationConfigResult = {
   revision: number;
+  busy?: boolean;
   patched: string[];
   config: ConversationConfig;
   options: {
