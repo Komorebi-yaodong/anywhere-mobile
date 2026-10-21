@@ -14,6 +14,7 @@ import {
 import {Dirs, FileSystem} from 'react-native-file-access';
 import Video, {type VideoRef} from 'react-native-video';
 import {NativeMarkdown} from './NativeMarkdown';
+import {extractedFileNotice} from './conversationFileNotice';
 
 import type {RemoteRequest} from '../remote/api';
 import {getConversationMediaCache} from '../services/conversationMediaCache';
@@ -374,7 +375,9 @@ function MediaPreview({media, desktopId, conversationId, request}: {media: Conve
 
 /** Render constrained Markdown/HTML media. Direct media is HTTPS-only; local Desktop media must use opaque IDs. */
 export function ConversationMarkdown({value, desktopId, conversationId, request, color}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string}) {
-  const blocks = useMemo(() => parseConversationContent(value), [value]);
+  const file = extractedFileNotice(value);
+  const blocks = useMemo(() => file ? [] : parseConversationContent(value), [file, value]);
+  if (file) return <View style={styles.root}><Text selectable style={{color: color || C.text}}>{file}</Text></View>;
   return <View style={styles.root}>{blocks.map(block => block.kind === 'text'
     ? <NativeMarkdown key={`text-${block.value.slice(0, 32)}-${blocks.indexOf(block)}`} value={block.value} color={color} />
     : <MediaPreview key={block.media.key} media={block.media} desktopId={desktopId} conversationId={conversationId} request={request} />,

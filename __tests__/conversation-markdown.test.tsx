@@ -94,6 +94,17 @@ describe('ConversationMarkdown media rendering', () => {
   });
 
 
+  it('shows only a document notice for a large legacy extracted file, without mounting media', async () => {
+    const root = await render(`file name:fixture.docx\nfile content:\n${'SYNTHETIC_DOCUMENT_BODY'.repeat(30000)}\nfile end`);
+    expect(root.root.findAllByType(Image)).toHaveLength(0);
+    expect(root.root.findAll(node => node.props.controls === false && node.props.source?.uri)).toHaveLength(0);
+    const texts = root.root.findAllByType(Text).map(node => String(node.props.children));
+    expect(texts.some(text => text.includes('fixture.docx'))).toBe(true);
+    expect(texts.some(text => text.includes('SYNTHETIC_DOCUMENT_BODY'))).toBe(false);
+    act(() => root.unmount());
+  });
+
+
   it('does not render a native player for a direct local file path', async () => {
     const root = await render('<audio src="file:///C:/fixture.mp3"></audio>');
     expect(root.root.findAllByType(Image)).toHaveLength(0);

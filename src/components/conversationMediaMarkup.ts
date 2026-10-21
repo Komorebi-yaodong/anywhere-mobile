@@ -74,6 +74,10 @@ function mediaFor(source: string, preferredKind?: ConversationMediaKind | null):
   }
   const uri = safeHttpsUri(normalized);
   if (!uri) return null;
+  // A misleading <img>/<video> tag is not permission to preview Office/PDF or
+  // binary downloads. Extensionless HTTPS image services remain supported.
+  const pathname = new URL(uri).pathname;
+  if (/\.(?:docx?|xlsx?|pptx?|pdf|csv|txt|zip|rar|7z|exe)(?:$|\/)/i.test(pathname)) return null;
   const kind = preferredKind || kindForUri(uri);
   return kind ? {kind, uri, opaque: false} : null;
 }

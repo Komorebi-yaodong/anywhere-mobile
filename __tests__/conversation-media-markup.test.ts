@@ -37,6 +37,17 @@ describe('conversation media markup', () => {
     }
   });
 
+  it('keeps quoted local document paths as text and never turns Office or PDF tags into media', () => {
+    const text = '`E:\\Synthetic\\论文.docx`\n`E:\\Synthetic\\结果.xlsx`\n我正在写论文';
+    expect(parseConversationContent(text)).toEqual([{kind: 'text', value: text}]);
+    for (const extension of ['docx', 'xlsx', 'pdf', 'pptx', 'zip']) {
+      for (const markup of [`![file](https://media.example/fixture.${extension})`, `<video src="https://media.example/fixture.${extension}"></video>`, `<img src="file:///E:/Synthetic/file.${extension}">`]) {
+        expect(parseConversationContent(markup).some(block => block.kind === 'media')).toBe(false);
+      }
+    }
+  });
+
+
   it('treats media-only content as renderable, preventing an empty message bubble', () => {
     expect(hasRenderableConversationContent('<audio><source src="https://media.example/fixture.mp3"></audio>')).toBe(true);
     expect(hasRenderableConversationContent('<audio src="file:///C:/fixture.mp3"></audio>')).toBe(false);

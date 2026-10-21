@@ -140,6 +140,25 @@ function workspaceProps() {
   };
 }
 
+test('renders document cards separately and edits only prose, never file labels or extracted content', async () => {
+  openConfigSession();
+  const props = workspaceProps();
+  mockWorkspaceMessages = [{messageId: 'mixed-files', uiMessageId: 'ui-mixed-files', role: 'user', order: 1,
+    payload: {content: [{type: 'text', text: '我正在写论文'}, {type: 'file', name: 'fixture.docx', previewable: false}, {type: 'text', text: 'file name:fixture.xlsx\nfile content:\nSYNTHETIC_XLSX_BODY\nfile end'}], reasoningContent: '', timestamp: '', completedTimestamp: '', toolCalls: []}}];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '消息文件附件').length).toBeGreaterThan(0);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === 'fixture.docx')).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === 'fixture.xlsx')).toBe(true);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '编辑消息' && typeof node.props.onPress === 'function')[0].props.onPress());
+  const editor = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入消息内容')!;
+  expect(editor.props.value).toBe('我正在写论文');
+  expect(editor.props.value).not.toContain('fixture');
+  await act(async () => root.unmount());
+});
+
+
 test('filters session MCP options by quick filter and keyword, including configuration tags', () => {
   const servers = [
     {id: 'mcp-research-preset', name: '研究 MCP', tags: ['Research', '知识库'], preset: true},

@@ -64,6 +64,8 @@ import { SlidingDrawer } from './SlidingDrawer';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { uploadAudioCapture } from '../services/mediaAttachment';
 import {ConversationMarkdown, hasRenderableConversationContent} from './ConversationMarkdown';
+
+import {extractedFileNotice, fileNotice, conversationFiles, editableConversationText, withoutConversationFiles} from './conversationFileNotice';
 import {ConversationTaskSheet} from './ConversationTaskSheet';
 import {cacheRemoteHttpsResource, cacheRemoteImage} from '../services/remoteImageCache';
 import {
@@ -1106,7 +1108,7 @@ export function WorkspaceShell({
             setMessageAction({
               method: 'conversation.message.edit',
               uiMessageId: message.uiMessageId,
-              content: renderText(message.payload.content),
+              content: editableConversationText(message.payload.content),
             });
           }}
           onDelete={message => {
@@ -2033,7 +2035,7 @@ export function shouldRenderMessage(message: RemoteMessage): boolean {
 }
 
 export function hasMessageBubble(message: RemoteMessage): boolean {
-  return hasRenderableConversationContent(renderText(message.payload.content));
+  return hasRenderableConversationContent(renderText(withoutConversationFiles(message.payload.content)));
 }
 
 
@@ -2132,7 +2134,8 @@ const MessageCard = React.memo(function MessageCardView({
   const styles = useThemedStyles(baseStyles);
   const isUser = message.role === 'user';
   const editableMessage = message.role === 'user' || message.role === 'assistant';
-  const content = renderText(message.payload.content);
+  const files = conversationFiles(message.payload.content);
+  const content = renderText(withoutConversationFiles(message.payload.content));
   const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
   const timestamp = message.payload.timestamp || message.payload.completedTimestamp;
   const formattedTimestamp = formatTime(timestamp || '');
@@ -2152,6 +2155,8 @@ const MessageCard = React.memo(function MessageCardView({
       {hasMessageBubble(message) ? <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
         <ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} />
       </View> : null}
+      {files.length ? <View accessibilityLabel="消息文件附件" style={styles.toolList}>{files.map((file, index) => <View key={`${index}-${file.name}`} style={styles.toolCard}><View style={styles.toolHeaderCopy}><AppIcon name="▤" size={17} color={C.primary} /><Text numberOfLines={2} selectable style={styles.toolName}>{file.name || '文件'}</Text></View><Text style={styles.sessionHint}>文件内容已保留在 Desktop，编辑正文不会修改附件</Text></View>)}</View> : null}
+
       {message.payload.toolCalls?.length ? <View style={[styles.toolList, toolOnly && styles.toolListFullWidth]}>{message.payload.toolCalls.map(tool => <ToolCallCard key={tool.id || tool.name} tool={tool} pending={pendingChoices[tool.id]} writable={choiceWritable ?? writable} onSubmit={onSubmitChoice} />)}</View> : null}
       <View style={[styles.messageTools, isUser && styles.messageToolsRight]}>
         <Pressable accessibilityLabel="复制消息" onPress={() => Clipboard.setString(copyText)}><AppIcon name="copy" size={17} /></Pressable>
@@ -2376,16 +2381,19 @@ function Empty({ title, text }: { title: string; text: string }) {
   );
 }
 function renderText(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return extractedFileNotice(value) || value;
   if (Array.isArray(value)) return value.map(item => renderBlock(item)).filter(Boolean).join('\n');
-  return renderBlock(value) || '[内容]';
+  return renderBlock(value);
 }
 
 function renderBlock(value: unknown): string {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return extractedFileNotice(value) || value;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
   const item = value as Record<string, any>;
-  if (typeof item.text === 'string') return item.text;
+  if (['file', 'document', 'input_file'].includes(item.type)) {
+    return fileNotice(item.name || item.file?.filename || item.filename);
+  }
+  if (typeof item.text === 'string') return extractedFileNotice(item.text) || item.text;
   // Deterministic image shapes from the Desktop DTO: either an opaque media
   // URL that Mobile can download, or an attachment reference it can describe.
   const type = typeof item.type === 'string' ? item.type : '';
