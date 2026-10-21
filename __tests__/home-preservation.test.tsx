@@ -91,6 +91,10 @@ test('Home navigation retains the same Workspace instance and generation state',
       .props.onPress(),
   );
   expect(mockUnmounted).not.toHaveBeenCalled();
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '外观设置' && node.props.onPress)[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '外观 深色' && node.props.onPress)[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '关闭外观设置' && node.props.onPress)[0].props.onPress());
+  expect(mockUnmounted).not.toHaveBeenCalled();
   await act(async () => enter(root));
   expect(mockMounted).toHaveBeenCalledTimes(1);
   await act(async () => root.unmount());

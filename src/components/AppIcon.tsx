@@ -34,8 +34,14 @@ import {
   Send,
   Square,
   Check,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-react-native';
+import {useTheme} from './theme';
 const icons: Record<string, typeof Home> = {
+
+  sun: Sun, moon: Moon, system: Monitor,
   '⌂': Home,
   '☰': Menu,
   '↻': RefreshCw,
@@ -84,6 +90,7 @@ export function AppIcon({
   size?: number;
   color?: string;
 }) {
+  const theme = useTheme();
   const Icon = icons[name] || Bot;
-  return <Icon size={size} color={color} strokeWidth={1.8} />;
+  return <Icon size={size} color={theme.color(color)} strokeWidth={1.7} />;
 }

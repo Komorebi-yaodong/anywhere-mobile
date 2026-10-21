@@ -1,3 +1,4 @@
+import {TextInput, ActivityIndicator} from './ThemedNative';
 import React, {
   useCallback,
   useEffect,
@@ -6,7 +7,6 @@ import React, {
   useState,
 } from 'react';
 import {
-  ActivityIndicator,
   BackHandler,
   Alert,
   Keyboard,
@@ -18,7 +18,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -1728,13 +1728,13 @@ const ChatPage = React.forwardRef<
               </Text>
             </Pressable>
             <View style={styles.statusPills}>
-              <Pressable accessibilityLabel="选择模型" disabled={!writable} onPress={writable ? onModelSettings : undefined}>
+              <Pressable style={styles.composerConfigButton} accessibilityLabel="选择模型" disabled={!writable} onPress={writable ? onModelSettings : undefined}>
                 <AppIcon name="模型" />
               </Pressable>
-              <Pressable accessibilityLabel="思维深度" disabled={!writable} onPress={writable ? onReasoningSettings : undefined}>
+              <Pressable style={styles.composerConfigButton} accessibilityLabel="思维深度" disabled={!writable} onPress={writable ? onReasoningSettings : undefined}>
                 <AppIcon name="思维" />
               </Pressable>
-              <Pressable accessibilityLabel="语音配置" disabled={!writable} onPress={writable ? onVoiceSettings : undefined}>
+              <Pressable style={styles.composerConfigButton} accessibilityLabel="语音配置" disabled={!writable} onPress={writable ? onVoiceSettings : undefined}>
                 <AppIcon name="语音" />
               </Pressable>
             </View>
@@ -2277,6 +2277,7 @@ function Action({
     <Pressable
       accessibilityLabel={label}
       disabled={disabled}
+      accessibilityRole="button"
       onPress={onPress}
       style={[
         styles.action,
@@ -2285,7 +2286,7 @@ function Action({
         disabled && styles.disabled,
       ]}
     >
-      <Text style={styles.actionText}>{label}</Text>
+      {compact && ['发送', '排队', '停止'].includes(label) ? <AppIcon name={label === '停止' ? 'stop' : 'send'} size={18} color="#FFFFFF" /> : <Text style={styles.actionText}>{label}</Text>}
     </Pressable>
   );
 }
@@ -2480,15 +2481,15 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.background,
   },
   topIcon: {
-    width: 34,
-    height: 34,
+    width: 40,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 17,
   },
-  topIconText: { fontSize: 22, color: C.icon, fontWeight: '600' },
+  topIconText: { fontSize: 18, color: C.icon, fontWeight: '600' },
   titlePress: { flex: 1, alignItems: 'center', minWidth: 0 },
-  title: { fontSize: 16, color: C.text, fontWeight: '800' },
+  title: { fontSize: 16, color: C.text, fontWeight: '600' },
   subtitle: { fontSize: 10, color: C.muted, marginTop: 1 },
   notice: {
     backgroundColor: C.primarySoft,
@@ -2498,34 +2499,34 @@ const baseStyles = StyleSheet.create({
   noticeText: { color: '#8C432F', fontSize: 12 },
   page: { padding: 18, paddingBottom: 42, gap: 14 },
   hero: { gap: 6, paddingVertical: 12 },
-  heroTitle: { fontSize: 25, fontWeight: '800', color: C.text },
+  heroTitle: { fontSize: 22, fontWeight: '600', color: C.text },
   heroText: { fontSize: 14, lineHeight: 21, color: C.muted },
   assistantGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   assistantCard: {
     width: '47%',
     borderRadius: 22,
-    padding: 14,
+    padding: 12,
     backgroundColor: C.surface,
     borderWidth: 1,
     borderColor: C.line,
     gap: 7,
   },
   avatar: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: C.surfaceMuted,
   },
   avatarFallback: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: C.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { color: C.primary, fontSize: 20, fontWeight: '800' },
-  assistantName: { fontSize: 15, color: C.text, fontWeight: '800' },
+  avatarText: { color: C.primary, fontSize: 17, fontWeight: '600' },
+  assistantName: { fontSize: 15, color: C.text, fontWeight: '600' },
   assistantMeta: { fontSize: 12, color: C.muted },
   chipRow: { flexDirection: 'row', gap: 4, flexWrap: 'wrap' },
   chip: {
@@ -2534,9 +2535,9 @@ const baseStyles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 99,
   },
-  chipText: { fontSize: 10, color: C.muted, fontWeight: '700' },
+  chipText: { fontSize: 10, color: C.muted, fontWeight: '600' },
   ghostButton: { alignItems: 'center', padding: 12 },
-  ghostText: { color: C.primary, fontWeight: '700' },
+  ghostText: { color: C.primary, fontWeight: '600' },
   empty: {
     margin: 24,
     padding: 22,
@@ -2544,15 +2545,15 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.surfaceMuted,
     gap: 8,
   },
-  emptyTitle: { fontSize: 18, color: C.text, fontWeight: '800' },
+  emptyTitle: { fontSize: 16, color: C.text, fontWeight: '600' },
   emptyText: { fontSize: 14, color: C.muted, lineHeight: 21 },
   drawerOverlay: { flex: 1, backgroundColor: C.overlay, flexDirection: 'row' },
   drawer: {
     width: '82%',
     maxWidth: 340,
     backgroundColor: C.background,
-    padding: 18,
-    gap: 16,
+    padding: 14,
+    gap: 12,
   },
   profile: {
     flexDirection: 'row',
@@ -2562,7 +2563,7 @@ const baseStyles = StyleSheet.create({
   },
   profileCopy: { flex: 1, minWidth: 0 },
 
-  profileName: { fontSize: 21, fontWeight: '800', color: C.text },
+  profileName: { fontSize: 18, fontWeight: '600', color: C.text },
   profileGreeting: { fontSize: 13, color: C.muted, marginTop: 4 },
   drawerActions: {flexDirection: 'row', gap: 10},
   drawerAction: {
@@ -2578,7 +2579,7 @@ const baseStyles = StyleSheet.create({
     borderColor: C.line,
     gap: 8,
   },
-  drawerActionText: {color: C.text, fontWeight: '700', fontSize: 14},
+  drawerActionText: {color: C.text, fontWeight: '600', fontSize: 14},
   searchBox: {
     minHeight: 46,
     flexDirection: 'row',
@@ -2607,7 +2608,7 @@ const baseStyles = StyleSheet.create({
     borderColor: C.line,
     backgroundColor: C.surface,
   },
-  openedSessionsEntryText: {minWidth: 0, color: C.primary, fontSize: 12, fontWeight: '800'},
+  openedSessionsEntryText: {minWidth: 0, color: C.primary, fontSize: 12, fontWeight: '600'},
 
   drawerScroll: {flex: 1, marginTop: 3},
   projectCard: {
@@ -2626,8 +2627,8 @@ const baseStyles = StyleSheet.create({
     gap: 7,
   },
   projectToggle: {flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10},
-  projectTitle: {flex: 1, color: C.text, fontSize: 16, fontWeight: '800'},
-  projectCount: {color: C.muted, fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums']},
+  projectTitle: {flex: 1, color: C.text, fontSize: 16, fontWeight: '600'},
+  projectCount: {color: C.muted, fontSize: 15, fontWeight: '600', fontVariant: ['tabular-nums']},
   projectIconButton: {
     width: 32,
     height: 32,
@@ -2660,7 +2661,7 @@ const baseStyles = StyleSheet.create({
   },
   taskTopAction: {position: 'relative'},
   taskBadge: {position: 'absolute', top: 1, right: 0, minWidth: 15, height: 15, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primary},
-  taskBadgeText: {fontSize: 9, color: '#fff', fontWeight: '900'},
+  taskBadgeText: {fontSize: 9, color: '#fff', fontWeight: '600'},
 
   chatViewport: {flex: 1, minHeight: 0, position: 'relative'},
   chatMessages: {flex: 1, minHeight: 0},
@@ -2685,7 +2686,7 @@ const baseStyles = StyleSheet.create({
   messageIdentityCopyRight: {alignItems: 'flex-end'},
   messageNameLine: {flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 280},
   messageNameLineRight: {justifyContent: 'flex-end'},
-  messageRole: {fontSize: 13, color: C.text, fontWeight: '800'},
+  messageRole: {fontSize: 13, color: C.text, fontWeight: '600'},
   messageModel: {maxWidth: 150, color: C.muted, fontSize: 10},
   messageTime: {fontSize: 10, color: C.muted, fontVariant: ['tabular-nums']},
   messageTimeRight: {textAlign: 'right'},
@@ -2694,33 +2695,33 @@ const baseStyles = StyleSheet.create({
   assistantBubble: {backgroundColor: C.surface, borderTopLeftRadius: 6},
   foldCard: {borderRadius: 14, overflow: 'hidden', backgroundColor: C.surfaceMuted},
   foldHeader: {minHeight: 35, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 11},
-  foldTitle: {color: C.text, fontSize: 12, fontWeight: '800'},
-  foldChevron: {color: C.primary, fontSize: 11, fontWeight: '700'},
+  foldTitle: {color: C.text, fontSize: 12, fontWeight: '600'},
+  foldChevron: {color: C.primary, fontSize: 11, fontWeight: '600'},
   foldText: {paddingHorizontal: 11, paddingBottom: 11, color: C.muted, fontSize: 12, lineHeight: 18},
   toolList: {gap: 7},
   toolCard: {borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, borderRadius: 15, overflow: 'hidden', backgroundColor: C.surfaceMuted},
   toolHeader: {minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 11},
   toolHeaderCopy: {flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 7},
-  toolName: {flex: 1, color: C.text, fontSize: 12, fontWeight: '800'},
+  toolName: {flex: 1, color: C.text, fontSize: 12, fontWeight: '600'},
   toolState: {color: C.muted, fontSize: 10},
   toolBody: {padding: 11, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line, backgroundColor: C.surface},
   toolDetailScroll: {height: 184, flexGrow: 0, borderRadius: 10, backgroundColor: C.surfaceMuted},
   toolDetailContent: {gap: 7, padding: 9},
-  toolLabel: {color: C.muted, fontSize: 10, fontWeight: '800'},
+  toolLabel: {color: C.muted, fontSize: 10, fontWeight: '600'},
   toolCode: {color: C.text, fontFamily: 'monospace', fontSize: 11, lineHeight: 16, flexShrink: 0},
   toolPending: {color: C.muted, fontSize: 12, lineHeight: 18, paddingTop: 4},
   toolError: {color: C.danger, fontSize: 12},
   choiceWrap: {gap: 10, paddingTop: 3},
   choiceQuestion: {gap: 6},
   choiceHeading: {flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap'},
-  choiceTag: {paddingHorizontal: 6, paddingVertical: 2, borderRadius: 7, overflow: 'hidden', backgroundColor: C.primarySoft, color: C.primary, fontSize: 10, fontWeight: '800'},
-  choiceText: {flex: 1, color: C.text, fontSize: 13, lineHeight: 19, fontWeight: '700'},
+  choiceTag: {paddingHorizontal: 6, paddingVertical: 2, borderRadius: 7, overflow: 'hidden', backgroundColor: C.primarySoft, color: C.primary, fontSize: 10, fontWeight: '600'},
+  choiceText: {flex: 1, color: C.text, fontSize: 13, lineHeight: 19, fontWeight: '600'},
   choiceOption: {flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 9, borderRadius: 11, backgroundColor: C.surfaceMuted, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line},
   choiceOptionActive: {backgroundColor: C.primarySoft, borderColor: C.primary},
   choiceRadio: {width: 17, height: 17, marginTop: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 9, borderWidth: 1.5, borderColor: C.muted},
   choiceRadioDot: {width: 8, height: 8, borderRadius: 4, backgroundColor: C.primary},
   choiceOptionCopy: {flex: 1, minWidth: 0, gap: 2},
-  choiceOptionLabel: {color: C.text, fontSize: 13, fontWeight: '700'},
+  choiceOptionLabel: {color: C.text, fontSize: 13, fontWeight: '600'},
   choiceOptionDesc: {color: C.muted, fontSize: 11, lineHeight: 16},
   messageTools: {flexDirection: 'row', gap: 12, paddingHorizontal: 4},
   messageToolsRight: {justifyContent: 'flex-end'},
@@ -2764,26 +2765,27 @@ const baseStyles = StyleSheet.create({
     shadowOffset: {width: 0, height: 3},
     elevation: 4,
   },
-  conversationControlText: {color: C.primary, fontSize: 12, fontWeight: '800'},
+  conversationControlText: {color: C.primary, fontSize: 12, fontWeight: '600'},
 
   composerInput: {
     minHeight: 46,
     maxHeight: 110,
     color: C.text,
-    fontSize: 16,
+    fontSize: 15,
     textAlignVertical: 'top',
     paddingHorizontal: 6,
   },
+  composerConfigButton: {minWidth: 36, minHeight: 40, alignItems: 'center', justifyContent: 'center'},
   composerActions: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   iconAction: {
-    width: 36,
-    height: 36,
+    width: 40,
+    height: 40,
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: C.primarySoft,
   },
-  iconActionText: { fontSize: 23, color: C.primary },
+  iconActionText: { fontSize: 20, color: C.primary },
   iconActionActive: { backgroundColor: '#F6DADD' },
   recordingPanel: {
     minHeight: 46,
@@ -2792,8 +2794,8 @@ const baseStyles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: C.primarySoft,
   },
-  recordingText: { color: '#8C432F', fontWeight: '700' },
-  statusPills: { flex: 1, flexDirection: 'row', gap: 4, overflow: 'hidden' },
+  recordingText: { color: '#8C432F', fontWeight: '600' },
+  statusPills: { flex: 1, flexDirection: 'row', gap: 2, overflow: 'hidden', alignItems: 'center' },
   action: {
     backgroundColor: C.primary,
     minHeight: 46,
@@ -2802,9 +2804,9 @@ const baseStyles = StyleSheet.create({
     borderRadius: 16,
     paddingHorizontal: 18,
   },
-  actionCompact: { minHeight: 36, borderRadius: 18, paddingHorizontal: 14 },
+  actionCompact: { minHeight: 40, borderRadius: 20, paddingHorizontal: 12 },
   actionDanger: { backgroundColor: C.danger },
-  actionText: { color: '#fff', fontWeight: '800' },
+  actionText: { color: '#fff', fontWeight: '600' },
   attachment: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2826,7 +2828,7 @@ const baseStyles = StyleSheet.create({
     gap: 8,
   },
   queueText: { color: '#8C432F', fontSize: 12, flex: 1 },
-  link: { color: C.primary, fontWeight: '700' },
+  link: { color: C.primary, fontWeight: '600' },
   sheetOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -2838,9 +2840,9 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.background,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
-    padding: 20,
-    paddingBottom: 32,
-    gap: 14,
+    padding: 16,
+    paddingBottom: 28,
+    gap: 12,
   },
   sheetHandle: {
     width: 46,
@@ -2854,7 +2856,7 @@ const baseStyles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  sheetTitle: { fontSize: 22, fontWeight: '800', color: C.text },
+  sheetTitle: { fontSize: 18, fontWeight: '600', color: C.text },
   sheetText: { color: C.muted, fontSize: 14, lineHeight: 21 },
   input: {
     borderWidth: 1,
@@ -2872,14 +2874,14 @@ const baseStyles = StyleSheet.create({
   routerSearchInput: {flex: 1, minWidth: 0, color: C.text, fontSize: 14, paddingVertical: 8},
   assistantCardTop: {flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between'},
   assistantCardCode: {maxWidth: 74, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 8, backgroundColor: C.surfaceMuted},
-  assistantCodeText: {color: C.muted, fontSize: 9, fontWeight: '700'},
+  assistantCodeText: {color: C.muted, fontSize: 9, fontWeight: '600'},
   sessionIntro: {padding: 13, borderRadius: 16, backgroundColor: C.primarySoft, gap: 3},
-  sessionIntroTitle: {color: '#8C432F', fontSize: 15, fontWeight: '800'},
+  sessionIntroTitle: {color: '#8C432F', fontSize: 15, fontWeight: '600'},
   sessionIntroText: {color: '#8C432F', fontSize: 12, lineHeight: 18},
   sessionTabs: {gap: 7, paddingVertical: 2},
   sessionSection: {gap: 11, paddingVertical: 4},
-  sessionSectionTitle: {color: C.text, fontSize: 16, fontWeight: '800'},
-  sessionLabel: {color: C.muted, fontSize: 12, fontWeight: '700'},
+  sessionSectionTitle: {color: C.text, fontSize: 16, fontWeight: '600'},
+  sessionLabel: {color: C.muted, fontSize: 12, fontWeight: '600'},
   sessionHint: {color: C.muted, fontSize: 12, lineHeight: 18},
   modelGroups: {gap: 10},
   modelGroup: {gap: 6, padding: 11, borderRadius: 15, backgroundColor: C.surfaceMuted},
@@ -2888,12 +2890,12 @@ const baseStyles = StyleSheet.create({
   reasoningDot: {width: 10, height: 10, borderRadius: 5, backgroundColor: '#A9A197'},
   reasoningDotActive: {backgroundColor: C.primary, transform: [{scale: 1.35}]},
   reasoningLabel: {fontSize: 9, color: C.muted, textAlign: 'center'},
-  reasoningLabelActive: {color: C.primary, fontWeight: '800'},
+  reasoningLabelActive: {color: C.primary, fontWeight: '600'},
   toolTabs: {flexDirection: 'row', gap: 7},
   sessionMcpSearch: {minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 13, borderRadius: 16, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
   sessionMcpSearchInput: {flex: 1, minWidth: 0, paddingVertical: 8, color: C.text, fontSize: 14},
   sessionMcpFilters: {gap: 6},
-  sessionMcpFilterLabel: {color: C.muted, fontSize: 12, fontWeight: '700'},
+  sessionMcpFilterLabel: {color: C.muted, fontSize: 12, fontWeight: '600'},
   sessionMcpFilterRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 7},
   sessionMcpEmpty: {padding: 13, borderRadius: 14, backgroundColor: C.surfaceMuted},
   toolSelectList: {gap: 7},
@@ -2901,18 +2903,18 @@ const baseStyles = StyleSheet.create({
   toolSelectRowActive: {backgroundColor: C.primarySoft, borderColor: C.primary},
   toolSelectIcon: {width: 29, height: 29, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surface},
   toolSelectCopy: {flex: 1, minWidth: 0, gap: 4},
-  toolSelectName: {minWidth: 0, color: C.text, fontSize: 14, fontWeight: '700'},
+  toolSelectName: {minWidth: 0, color: C.text, fontSize: 14, fontWeight: '600'},
   toolSelectTagRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 4},
-  toolSelectCheck: {width: 18, color: C.primary, fontSize: 17, fontWeight: '900', textAlign: 'right'},
+  toolSelectCheck: {width: 18, color: C.primary, fontSize: 17, fontWeight: '600', textAlign: 'right'},
   compactAction: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10},
 
   contextInfo: {minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13, borderRadius: 15, backgroundColor: C.surfaceMuted},
-  contextInfoLabel: {color: C.text, fontSize: 14, fontWeight: '800'},
+  contextInfoLabel: {color: C.text, fontSize: 14, fontWeight: '600'},
   contextInfoValue: {color: C.muted, fontSize: 13},
   sessionSelectList: {gap: 8},
   sessionSelectRow: {minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingHorizontal: 13, borderRadius: 15, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, backgroundColor: C.surfaceMuted},
   sessionSelectRowActive: {borderColor: C.primary, backgroundColor: C.primarySoft},
-  sessionSelectTitle: {flex: 1, minWidth: 0, color: C.text, fontSize: 14, fontWeight: '700'},
+  sessionSelectTitle: {flex: 1, minWidth: 0, color: C.text, fontSize: 14, fontWeight: '600'},
   openedSessionList: {gap: 9},
   openedSessionCard: {
     minHeight: 74,
@@ -2926,12 +2928,12 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.surfaceMuted,
   },
   openedSessionCopy: {flex: 1, minWidth: 0, gap: 4, minHeight: 48, justifyContent: 'center'},
-  openedSessionTitle: {color: C.text, fontSize: 14, fontWeight: '800'},
+  openedSessionTitle: {color: C.text, fontSize: 14, fontWeight: '600'},
   openedSessionControl: {flexDirection: 'row', alignItems: 'center', overflow: 'hidden', borderWidth: 1, borderColor: '#E5CFC0', borderRadius: 12, backgroundColor: C.surface},
   openedSessionSegment: {minHeight: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 11},
   openedSessionDivider: {height: 18, width: StyleSheet.hairlineWidth, backgroundColor: '#E5CFC0'},
   openedSessionTakeover: {minWidth: 72, minHeight: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14, borderWidth: 1, borderColor: '#E5CFC0', borderRadius: 12, backgroundColor: C.primarySoft},
-  openedSessionSegmentText: {color: C.primary, fontSize: 12, fontWeight: '700'},
+  openedSessionSegmentText: {color: C.primary, fontSize: 12, fontWeight: '600'},
   openedSessionCloseText: {color: C.danger, fontSize: 12, fontWeight: '600'},
   retainedWorkspace: {flex: 1, minHeight: 0},
   connectionBanner: {paddingHorizontal: 16, paddingVertical: 10, backgroundColor: C.surfaceMuted},
@@ -2942,13 +2944,13 @@ const baseStyles = StyleSheet.create({
   liveChoiceCard: {marginHorizontal: 16, marginBottom: 10, gap: 12, padding: 13, borderRadius: 19, borderWidth: 1, borderColor: C.primary, backgroundColor: C.surface},
   liveChoiceQuestion: {gap: 8},
   choiceBadge: {width: 24, height: 24, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: C.surfaceMuted},
-  choiceBadgeText: {color: C.text, fontSize: 12, fontWeight: '900'},
+  choiceBadgeText: {color: C.text, fontSize: 12, fontWeight: '600'},
   choiceCustom: {gap: 7, padding: 11, borderRadius: 13, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, backgroundColor: C.surfaceMuted},
   choiceCustomActive: {borderColor: C.primary, backgroundColor: C.primarySoft},
-  choiceCustomTitle: {color: C.text, fontSize: 13, fontWeight: '800'},
+  choiceCustomTitle: {color: C.text, fontSize: 13, fontWeight: '600'},
   choiceCustomInput: {minHeight: 42, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10, borderWidth: 1, borderColor: C.primary, backgroundColor: C.surface, color: C.text, textAlignVertical: 'top'},
   choiceDiscuss: {minHeight: 42, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 13, backgroundColor: C.surfaceMuted},
-  choiceDiscussText: {color: C.text, fontSize: 13, fontWeight: '700'},
+  choiceDiscussText: {color: C.text, fontSize: 13, fontWeight: '600'},
   sessionGrid: {gap: 9},
   systemPromptInput: {minHeight: 190, textAlignVertical: 'top'},
 
@@ -2961,7 +2963,7 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.surfaceMuted,
   },
   tagActive: { backgroundColor: C.primarySoft },
-  tagText: { color: C.muted, fontWeight: '700' },
+  tagText: { color: C.muted, fontWeight: '600' },
   tagTextActive: { color: C.primary },
   settingsCard: {
     backgroundColor: C.surface,
@@ -2971,7 +2973,7 @@ const baseStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.line,
   },
-  settingsHeading: { fontSize: 19, color: C.text, fontWeight: '800' },
+  settingsHeading: { fontSize: 17, color: C.text, fontWeight: '600' },
   infoRow: {
     gap: 3,
     paddingVertical: 9,
@@ -2989,9 +2991,9 @@ const baseStyles = StyleSheet.create({
     borderColor: C.line,
   },
   settingsListText: { flex: 1, gap: 3 },
-  settingsListTitle: { fontSize: 15, color: C.text, fontWeight: '700' },
+  settingsListTitle: { fontSize: 15, color: C.text, fontWeight: '600' },
   settingsListMeta: { fontSize: 12, color: C.muted },
-  chevron: { fontSize: 24, color: C.muted },
+  chevron: { fontSize: 21, color: C.muted },
   managementRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3019,7 +3021,7 @@ const baseStyles = StyleSheet.create({
   },
   mediaChoiceIcon: { fontSize: 26, color: C.primary },
   field: { gap: 6 },
-  fieldLabel: { fontSize: 13, color: C.text, fontWeight: '700' },
+  fieldLabel: { fontSize: 13, color: C.text, fontWeight: '600' },
   textarea: { minHeight: 110, textAlignVertical: 'top' },
   toggleRow: {
     flexDirection: 'row',

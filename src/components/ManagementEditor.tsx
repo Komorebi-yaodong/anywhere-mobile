@@ -1,3 +1,5 @@
+import {useThemedStyles} from './theme';
+import {TextInput, Switch} from './ThemedNative';
 import React, { useState } from 'react';
 import {
   Alert,
@@ -5,9 +7,9 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
+
   Text,
-  TextInput,
+
   View,
 } from 'react-native';
 import type { RemoteRequest } from '../remote/api';
@@ -30,6 +32,7 @@ export function ManagementEditor({
   onClose,
   onSaved,
 }: Props) {
+  const s = useThemedStyles(baseStyles);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -190,7 +193,7 @@ export function ManagementEditor({
     </Modal>
   );
 }
-const s = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -204,7 +207,7 @@ const s = StyleSheet.create({
     gap: 14,
   },
   field: { gap: 6 },
-  title: { fontSize: 22, color: '#292724', fontWeight: '800' },
+  title: { fontSize: 18, color: '#292724', fontWeight: '600' },
   label: { color: '#504B43', fontSize: 14 },
   input: {
     backgroundColor: '#fff',
@@ -224,7 +227,7 @@ const s = StyleSheet.create({
     padding: 14,
     alignItems: 'center',
   },
-  saveText: { color: '#fff', fontWeight: '800' },
+  saveText: { color: '#fff', fontWeight: '600' },
   close: { color: '#79746C', padding: 10, textAlign: 'center' },
   error: { color: '#B84E52' },
 });

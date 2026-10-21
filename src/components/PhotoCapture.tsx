@@ -1,6 +1,8 @@
+import {ActivityIndicator} from './ThemedNative';
+
+import {useThemedStyles} from './theme';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Pressable,
   StyleSheet,
@@ -20,6 +22,7 @@ export function PhotoCapture({
   onCaptured: (path: string) => void;
   onCancel: () => void;
 }) {
+  const themed = useThemedStyles(styles);
   const camera = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -40,8 +43,8 @@ export function PhotoCapture({
   };
   if (!hasPermission || !device)
     return (
-      <View style={styles.center}>
-        <Text style={styles.text}>
+      <View style={themed.center}>
+        <Text style={themed.text}>
           {hasPermission ? '未检测到后置相机。' : '正在请求相机权限…'}
         </Text>
         <Pressable style={styles.button} onPress={onCancel}>

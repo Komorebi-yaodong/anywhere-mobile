@@ -1,15 +1,15 @@
+import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Modal,
   Linking,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
+
   Text,
-  TextInput,
+
   View,
 } from 'react-native';
 import type { RemoteRequest } from '../remote/api';
@@ -468,7 +468,7 @@ const baseStyles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   flex: { flex: 1 },
-  title: { fontSize: 22, fontWeight: '800', color: '#292724' },
+  title: { fontSize: 18, fontWeight: '600', color: '#292724' },
   text: { color: '#292724' },
   label: { color: '#504B43', fontWeight: '700' },
   name: { color: '#292724', fontSize: 17, fontWeight: '700' },

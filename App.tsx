@@ -1,3 +1,4 @@
+import {TextInput} from './src/components/ThemedNative';
 import {useEffect, useRef, useState} from 'react';
 import {
   Alert,
@@ -11,7 +12,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TextInput,
+
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -19,7 +20,9 @@ import {MathJaxRenderer, MathRenderer, type MathJaxRendererRef} from 'react-nati
 
 import { QrScanner } from './src/components/QrScanner';
 import { WorkspaceShell } from './src/components/WorkspaceShell';
-import { useThemedStyles } from './src/components/theme';
+import {ThemeProvider, useTheme, useThemedStyles} from './src/components/theme';
+import {AppearanceSettings} from './src/components/AppearanceSettings';
+import {AppIcon} from './src/components/AppIcon';
 import {
   ensureAvatarResource,
   isAvatarCacheValid,
@@ -35,6 +38,12 @@ import type {WorkspaceBootstrap} from './src/remote/api';
 import { useDesktops } from './src/hooks/useDesktops';
 
 function App() {
+  return <ThemeProvider><AppContent /></ThemeProvider>;
+}
+
+function AppContent() {
+  const theme = useTheme();
+  const [showAppearance, setShowAppearance] = useState(false);
   const {
     desktops,
     pair,
@@ -195,31 +204,33 @@ function App() {
     </View>
   ) : null;
   if (activeDesktop && !showHome) {
-    return <SafeAreaProvider><MathJaxRenderer ref={mathJaxRef} maxCacheSize={120} />{retainedWorkspace}</SafeAreaProvider>;
+    return <SafeAreaProvider><StatusBar barStyle={theme.dark ? 'light-content' : 'dark-content'} /><MathJaxRenderer ref={mathJaxRef} maxCacheSize={120} />{retainedWorkspace}</SafeAreaProvider>;
   }
 
   return (
     <SafeAreaProvider>
       <MathJaxRenderer ref={mathJaxRef} maxCacheSize={120} />
+      <AppearanceSettings visible={showAppearance} onClose={() => setShowAppearance(false)} />
+
       {retainedWorkspace}
       <SafeAreaView style={styles.safe}>
-        <StatusBar barStyle="dark-content" />
+        <StatusBar barStyle={theme.dark ? 'light-content' : 'dark-content'} />
         <ScrollView contentContainerStyle={styles.page}>
-          <Text style={styles.brand}>你的Anywhere空间</Text>
+          <View style={styles.homeHeader}><View style={styles.homeHeaderCopy}><Text style={styles.brand}>你的Anywhere空间</Text></View><Pressable accessibilityLabel="外观设置" style={styles.appearanceButton} onPress={() => setShowAppearance(true)}><AppIcon name={theme.dark ? 'moon' : 'sun'} size={21} color={theme.colors.text} /></Pressable></View>
           <Text style={styles.subtitle}>连接你的Anywhere，随时随地使用Agent</Text>
 
           <View style={styles.actions}>
             <Pressable
-              style={styles.primaryButton}
+              style={[styles.primaryButton, styles.connectionAction]}
               onPress={() => setShowScanner(true)}
             >
-              <Text style={styles.primaryText}>＋ 扫描桌面二维码</Text>
+              <AppIcon name="◉" size={19} color="#FFFFFF" /><Text style={styles.primaryText}>扫描配对</Text>
             </Pressable>
             <Pressable
-              style={styles.secondaryButton}
+              style={[styles.secondaryButton, styles.connectionAction]}
               onPress={() => setShowPaste(true)}
             >
-              <Text style={styles.secondaryText}>粘贴二维码内容</Text>
+              <AppIcon name="copy" size={18} /><Text style={styles.secondaryText}>粘贴配对</Text>
             </Pressable>
           </View>
 
@@ -523,18 +534,23 @@ function PairingConfirmation({
   );
 }
 const baseStyles = StyleSheet.create({
+
+  homeHeader: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10},
+  homeHeaderCopy: {flex: 1, minWidth: 0},
+  appearanceButton: {width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F2F0E9'},
+  connectionAction: {flex: 1, minWidth: 0, marginTop: 0, flexDirection: 'row', gap: 7},
   hidden: { display: 'none' },
   workspace: { flex: 1 },
   safe: { flex: 1, backgroundColor: '#FAF8F3' },
-  page: { padding: 22, paddingBottom: 48 },
+  page: { padding: 18, paddingBottom: 40 },
   brand: {
     color: '#292724',
-    fontSize: 32,
-    fontWeight: '800',
+    fontSize: 23,
+    fontWeight: '600',
     letterSpacing: -1,
   },
   subtitle: { color: '#79746C', fontSize: 16, marginTop: 5 },
-  actions: { gap: 10, marginTop: 28 },
+  actions: { flexDirection: 'row', alignItems: 'stretch', gap: 10, marginTop: 22 },
   primaryButton: {
     backgroundColor: '#C96849',
     minHeight: 50,
@@ -544,7 +560,7 @@ const baseStyles = StyleSheet.create({
     paddingHorizontal: 14,
     marginTop: 10,
   },
-  primaryText: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  primaryText: { color: '#fff', fontWeight: '600', fontSize: 16 },
   secondaryButton: {
     backgroundColor: '#F2F0E9',
     minHeight: 46,
@@ -554,18 +570,18 @@ const baseStyles = StyleSheet.create({
     paddingHorizontal: 14,
     marginTop: 10,
   },
-  secondaryText: { color: '#504B43', fontWeight: '700' },
+  secondaryText: { color: '#504B43', fontWeight: '600' },
   sectionTitle: {
     color: '#292724',
-    fontSize: 21,
-    fontWeight: '800',
-    marginTop: 32,
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 24,
     marginBottom: 12,
   },
   empty: { padding: 20, backgroundColor: '#F2F0E9', borderRadius: 20 },
   emptyText: { color: '#79746C', lineHeight: 21 },
   desktopCard: {
-    minHeight: 104,
+    minHeight: 86,
     flexDirection: 'row',
     alignItems: 'stretch',
     overflow: 'hidden',
@@ -575,35 +591,35 @@ const baseStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E7E1D8',
   },
-  desktopAvatar: {width: 64, height: 64, borderRadius: 32, margin: 16},
+  desktopAvatar: {width: 46, height: 46, borderRadius: 23, margin: 12},
   desktopAvatarFallback: {
-    width: 64,
-    height: 64,
-    margin: 16,
-    borderRadius: 32,
+    width: 46,
+    height: 46,
+    margin: 12,
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#F9E5DB',
   },
-  desktopAvatarText: {color: '#C96849', fontSize: 27, fontWeight: '800'},
+  desktopAvatarText: {color: '#C96849', fontSize: 21, fontWeight: '600'},
   desktopCardMiddle: {
     flex: 1,
     minWidth: 0,
     justifyContent: 'center',
-    paddingVertical: 16,
+    paddingVertical: 12,
     paddingRight: 10,
     gap: 8,
   },
   desktopNameLine: {flexDirection: 'row', alignItems: 'center', gap: 5},
-  desktopName: {flex: 1, color: '#292724', fontWeight: '800', fontSize: 16},
+  desktopName: {flex: 1, color: '#292724', fontWeight: '600', fontSize: 16},
   renameButton: {paddingVertical: 3, paddingHorizontal: 4},
-  renameText: {color: '#79746C', fontSize: 12, fontWeight: '700'},
+  renameText: {color: '#79746C', fontSize: 12, fontWeight: '600'},
   desktopMetaLine: {flexDirection: 'row', alignItems: 'center', gap: 12},
   desktopStatus: {color: '#79746C', fontSize: 13},
   detail: {color: '#79746C', fontSize: 11},
-  removeText: {color: '#79746C', fontSize: 12, fontWeight: '700'},
+  removeText: {color: '#79746C', fontSize: 12, fontWeight: '600'},
   enterDesktopButton: {
-    width: 106,
+    width: 84,
     alignItems: 'center',
     justifyContent: 'center',
     borderLeftWidth: 1,
@@ -612,7 +628,7 @@ const baseStyles = StyleSheet.create({
   },
   enterOnline: {backgroundColor: '#478561'},
   enterOffline: {backgroundColor: '#F2F0E9'},
-  enterDesktopText: {color: '#FFFFFF', fontSize: 15, fontWeight: '800'},
+  enterDesktopText: {color: '#FFFFFF', fontSize: 15, fontWeight: '600'},
   enterOfflineText: {color: '#9A958D'},
   modalBackdrop: {
     flex: 1,
@@ -635,8 +651,8 @@ const baseStyles = StyleSheet.create({
   },
   modalTitle: {
     color: '#292724',
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 18,
+    fontWeight: '600',
     marginBottom: 12,
   },
   input: {
@@ -649,20 +665,20 @@ const baseStyles = StyleSheet.create({
     minHeight: 46,
   },
   multiline: { minHeight: 110, textAlignVertical: 'top', paddingTop: 12 },
-  codeInput: { fontSize: 24, letterSpacing: 8, textAlign: 'center' },
+  codeInput: { fontSize: 21, letterSpacing: 8, textAlign: 'center' },
   disabled: { opacity: 0.5 },
   keyboardSheetScroll: {flex: 1},
   keyboardSheetContent: {flexGrow: 1, justifyContent: 'flex-end'},
   deviceName: {
     color: '#292724',
-    fontSize: 20,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
     marginTop: 16,
     marginBottom: 6,
   },
 
   confirmText: { color: '#504B43', lineHeight: 21 },
-  confirmLabel: { color: '#79746C', fontWeight: '800', marginTop: 17 },
+  confirmLabel: { color: '#79746C', fontWeight: '600', marginTop: 17 },
   confirmValue: { color: '#292724', marginTop: 5, lineHeight: 20 },
   row: { gap: 8 },
   choice: {

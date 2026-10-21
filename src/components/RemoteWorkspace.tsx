@@ -1,13 +1,14 @@
+import {TextInput, ActivityIndicator} from './ThemedNative';
 import {useMemo, useState} from 'react';
 import {
-  ActivityIndicator,
+
   Alert,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+
   View,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';

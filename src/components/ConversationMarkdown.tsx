@@ -1,6 +1,7 @@
+import {useThemedStyles, useTheme} from './theme';
+import {ActivityIndicator} from './ThemedNative';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   Image,
@@ -112,6 +113,7 @@ function touchDistance(touches: ReadonlyArray<{pageX: number; pageY: number}>): 
 }
 
 function ImagePreview({state, onError}: {state: MediaState; onError: () => void}) {
+  const styles = useThemedStyles(baseStyles);
   const [open, setOpen] = useState(false);
   const [zoom, setZoom] = useState(minPreviewScale);
   const [saving, setSaving] = useState(false);
@@ -272,6 +274,7 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
 }
 
 function AudioPlayer({state, opaque, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
+  const styles = useThemedStyles(baseStyles);
   const ref = useRef<VideoRef>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -313,6 +316,7 @@ function AudioPlayer({state, opaque, onError}: {state: MediaState; opaque: boole
 }
 
 function VideoPlayer({state, opaque, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
+  const styles = useThemedStyles(baseStyles);
   const ref = useRef<VideoRef>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -349,6 +353,7 @@ function VideoPlayer({state, opaque, onError}: {state: MediaState; opaque: boole
 }
 
 function MediaPreview({media, desktopId, conversationId, request}: {media: ConversationMedia; desktopId: string; conversationId: string; request: RemoteRequest}) {
+  const styles = useThemedStyles(baseStyles);
   const [state, setState] = useState<MediaState | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -375,6 +380,9 @@ function MediaPreview({media, desktopId, conversationId, request}: {media: Conve
 
 /** Render constrained Markdown/HTML media. Direct media is HTTPS-only; local Desktop media must use opaque IDs. */
 export function ConversationMarkdown({value, desktopId, conversationId, request, color}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string}) {
+  const styles = useThemedStyles(baseStyles);
+  const theme = useTheme();
+  color = color ? theme.color(color) : theme.colors.text;
   const file = extractedFileNotice(value);
   const blocks = useMemo(() => file ? [] : parseConversationContent(value), [file, value]);
   if (file) return <View style={styles.root}><Text selectable style={{color: color || C.text}}>{file}</Text></View>;
@@ -384,7 +392,7 @@ export function ConversationMarkdown({value, desktopId, conversationId, request,
   )}</View>;
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   root: {gap: 9, minWidth: 0, maxWidth: '100%', flexShrink: 1},
   mediaPlaceholder: {minHeight: 68, alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 14, backgroundColor: C.mutedSurface},
   mediaHint: {fontSize: 12, color: C.muted},

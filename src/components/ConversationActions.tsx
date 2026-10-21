@@ -1,5 +1,7 @@
+import {useThemedStyles} from './theme';
+import {TextInput} from './ThemedNative';
 import {useEffect, useRef, useState} from 'react';
-import {Alert, Modal, Pressable, StyleSheet, Text, TextInput, View} from 'react-native';
+import {Alert, Modal, Pressable, StyleSheet, Text, View} from 'react-native';
 import type {ConversationRequestState, RemoteRequest, RemoteTrackedRequest} from '../remote/api';
 import {RemoteCommandPendingError, startCommand, waitForCommand} from '../remote/commands';
 
@@ -18,6 +20,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
   onClose: () => void;
   onCompleted: (state: ConversationRequestState) => void;
 }) {
+  const styles = useThemedStyles(baseStyles);
   const [draft, setDraft] = useState(action.method === 'conversation.rename' ? action.title : action.method === 'conversation.message.edit' ? action.content : '');
   const [pendingId, setPendingId] = useState('');
   const [busy, setBusy] = useState(false);
@@ -111,10 +114,10 @@ export function ConversationActions({desktopId, conversationId, action, request,
     </View>
   </Modal>;
 }
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   backdrop: {flex: 1, backgroundColor: 'rgba(41,39,36,0.42)', justifyContent: 'center', alignItems: 'center', padding: 24},
   panel: {width: '100%', maxWidth: 340, paddingHorizontal: 20, paddingTop: 22, paddingBottom: 18, backgroundColor: '#FFFFFF', borderRadius: 22, borderWidth: 1, borderColor: '#E7E1D8', gap: 12},
-  title: {color: '#292724', fontSize: 18, fontWeight: '800', textAlign: 'center'},
+  title: {color: '#292724', fontSize: 16, fontWeight: '600', textAlign: 'center'},
   subtitle: {color: '#79746C', fontSize: 14, lineHeight: 20, textAlign: 'center'},
   input: {color: '#292724', backgroundColor: '#F2F0E9', minHeight: 76, maxHeight: 260, padding: 12, textAlignVertical: 'top', borderRadius: 14, fontSize: 15},
   notice: {color: '#79746C', fontSize: 12, lineHeight: 18, textAlign: 'center'},
@@ -122,7 +125,7 @@ const styles = StyleSheet.create({
   button: {flex: 1, minHeight: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 15},
   primaryButton: {backgroundColor: '#C96849'},
   secondaryButton: {backgroundColor: '#F2F0E9'},
-  primaryText: {color: '#FFFFFF', fontSize: 15, fontWeight: '800'},
-  secondaryText: {color: '#504B43', fontSize: 15, fontWeight: '700'},
+  primaryText: {color: '#FFFFFF', fontSize: 15, fontWeight: '600'},
+  secondaryText: {color: '#504B43', fontSize: 15, fontWeight: '600'},
   disabled: {opacity: 0.45},
 });

@@ -1,12 +1,12 @@
+import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
 import React, {useCallback, useEffect, useState} from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
+
   Text,
-  TextInput,
+
   View,
 } from 'react-native';
 
@@ -14,6 +14,7 @@ import type {RemoteRequest} from '../remote/api';
 import {AppIcon} from './AppIcon';
 import {mcpTransportLabel, mcpTransportSearchTerms} from './mcpPresentation';
 import {useThemedStyles} from './theme';
+import {AppearanceSettings} from './AppearanceSettings';
 
 type ToggleSection = 'mcp' | 'skills';
 type ToggleItem = {id: string; name: string; enabled: boolean; revision: string; tags?: string[]; transport?: string};
@@ -56,6 +57,8 @@ export function SimpleManagementSettings({
   refreshSignal: number;
 }) {
   const s = useThemedStyles(styles);
+
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [items, setItems] = useState<ToggleItem[]>([]);
   const [general, setGeneral] = useState<GeneralReply | null>(null);
   const [nickname, setNickname] = useState('');
@@ -147,6 +150,9 @@ export function SimpleManagementSettings({
     return (
       <View style={s.root}>
         {error ? <Text style={s.error}>{error}</Text> : null}
+        <AppearanceSettings visible={appearanceOpen} onClose={() => setAppearanceOpen(false)} />
+        <Pressable accessibilityLabel="外观设置" style={s.itemCard} onPress={() => setAppearanceOpen(true)}><AppIcon name="sun" size={20} /><View style={s.itemCopy}><Text style={s.itemName}>外观</Text><Text style={s.profileMeta}>跟随系统 · 浅色 · 深色</Text></View><AppIcon name="›" size={18} /></Pressable>
+
         {!general && busy ? <ActivityIndicator color={C.primary} /> : null}
         {general ? (
           <View style={s.generalPage}>
@@ -211,21 +217,21 @@ const styles = StyleSheet.create({
   itemCard: {minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 13, borderRadius: 18, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
   itemIcon: {width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primarySoft},
   itemCopy: {flex: 1, minWidth: 0, gap: 5},
-  itemName: {minWidth: 0, color: C.text, fontSize: 15, fontWeight: '800'},
+  itemName: {minWidth: 0, color: C.text, fontSize: 15, fontWeight: '600'},
   itemTags: {flexDirection: 'row', flexWrap: 'wrap', gap: 4},
   itemType: {paddingHorizontal: 6, paddingVertical: 2, borderRadius: 7, backgroundColor: C.primarySoft},
-  itemTypeText: {color: C.primary, fontSize: 10, fontWeight: '800'},
+  itemTypeText: {color: C.primary, fontSize: 10, fontWeight: '600'},
 
   itemTag: {paddingHorizontal: 6, paddingVertical: 2, borderRadius: 7, backgroundColor: C.surfaceMuted},
-  itemTagText: {color: C.muted, fontSize: 10, fontWeight: '700'},
+  itemTagText: {color: C.muted, fontSize: 10, fontWeight: '600'},
   empty: {marginTop: 8, padding: 22, alignItems: 'center', borderRadius: 18, backgroundColor: C.surfaceMuted},
   emptyTitle: {color: C.muted, fontSize: 14},
   generalPage: {padding: 18, gap: 16},
   profileCard: {flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 20, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
   avatar: {width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primarySoft},
-  avatarText: {fontSize: 21, fontWeight: '800', color: C.primary},
-  profileCopy: {flex: 1, gap: 3}, profileTitle: {fontSize: 16, fontWeight: '800', color: C.text}, profileMeta: {fontSize: 12, color: C.muted},
-  field: {gap: 7}, fieldLabel: {color: C.text, fontSize: 14, fontWeight: '800'},
+  avatarText: {fontSize: 18, fontWeight: '600', color: C.primary},
+  profileCopy: {flex: 1, gap: 3}, profileTitle: {fontSize: 16, fontWeight: '600', color: C.text}, profileMeta: {fontSize: 12, color: C.muted},
+  field: {gap: 7}, fieldLabel: {color: C.text, fontSize: 14, fontWeight: '600'},
   input: {minHeight: 49, paddingHorizontal: 13, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface, color: C.text},
-  save: {minHeight: 51, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: C.primary}, saveText: {color: '#fff', fontWeight: '800'}, disabled: {opacity: 0.45},
+  save: {minHeight: 51, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: C.primary}, saveText: {color: '#fff', fontWeight: '600'}, disabled: {opacity: 0.45},
 });

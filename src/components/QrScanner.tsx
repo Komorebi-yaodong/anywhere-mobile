@@ -1,5 +1,6 @@
+import {ActivityIndicator} from './ThemedNative';
 import {useEffect, useRef} from 'react';
-import {ActivityIndicator, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Pressable, StyleSheet, Text, View} from 'react-native';
 import {Camera, useCameraDevice, useCameraPermission, useCodeScanner} from 'react-native-vision-camera';
 
 type Props = {

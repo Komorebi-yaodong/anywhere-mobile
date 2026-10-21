@@ -4,7 +4,7 @@
 jest.mock('@react-native-clipboard/clipboard', () => ({__esModule:true,default:{setString:jest.fn(),getString:jest.fn(async()=> '')}}));
 jest.mock('react-native-image-picker', () => ({launchImageLibrary:jest.fn(async()=>({didCancel:true}))}));
 jest.mock('react-native-file-access', () => ({
-  Dirs: {CacheDir: '/cache'},
+  Dirs: {CacheDir: '/cache', DocumentDir: '/documents'},
   FileSystem: {
     exists: jest.fn(async () => false),
     ls: jest.fn(async () => []),

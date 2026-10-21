@@ -1,5 +1,6 @@
+import {TextInput, Switch} from './ThemedNative';
 import {useEffect, useRef, useState} from 'react';
-import {Alert, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
+import {Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import type {RemoteRequest, RemoteTrackedRequest} from '../remote/api';
 import {
   BusinessConfigSection, BusinessSection, ConversationConfig,

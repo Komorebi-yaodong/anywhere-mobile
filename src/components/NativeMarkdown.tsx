@@ -1,3 +1,4 @@
+import {useThemedStyles, useTheme} from './theme';
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Linking, ScrollView, StyleSheet, Text, View, type TextStyle} from 'react-native';
 import {MathRenderer, MathText, type RenderResult} from 'react-native-latex-text';
@@ -7,6 +8,7 @@ import {parseMarkdown, safeMarkdownLink, type MarkdownNode} from './markdownPars
 const C = {text: '#292724', muted: '#79746C', line: '#DDD6CB', code: '#EAE5DC', primary: '#C96849', header: '#EDE8DE'};
 
 function InlineNodes({nodes}: {nodes: MarkdownNode[]}) {
+  const styles = useThemedStyles(baseStyles);
   return <>{nodes.map((node, index) => {
     const key = `${node.type}-${index}`;
     const children = <InlineNodes nodes={node.children} />;
@@ -39,6 +41,7 @@ function mathSource(nodes: MarkdownNode[]): string {
   }).join('');
 }
 function Paragraph({nodes, color, style}: {nodes: MarkdownNode[]; color: string; style?: TextStyle}) {
+  const styles = useThemedStyles(baseStyles);
   // Preserve the existing MathText engine for mixed prose/formulas. Fences and
   // inline code have separate tokens and can never activate this path alone.
   if (hasMath(nodes)) return <MathText content={mathSource(nodes)} textColor={color} fontSize={style?.fontSize || 15} baseMathSize={10} lineHeight={1.5} viewStyle={styles.math} />;
@@ -71,6 +74,7 @@ export function fitDisplayMath(result: Pick<RenderResult, 'width' | 'height'>, a
 }
 
 function AdaptiveMathBlock({content, color}: {content: string; color: string}) {
+  const styles = useThemedStyles(baseStyles);
   const latex = displayMathLatex(content);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [rendered, setRendered] = useState<RenderResult | null>(null);
@@ -106,6 +110,7 @@ function AdaptiveMathBlock({content, color}: {content: string; color: string}) {
 
 
 function Table({node, color}: {node: MarkdownNode; color: string}) {
+  const styles = useThemedStyles(baseStyles);
   const [available, setAvailable] = useState(280);
   const rows = tableRows(node);
   const columns = Math.max(1, ...rows.map(row => row.children.length));
@@ -129,6 +134,7 @@ function Table({node, color}: {node: MarkdownNode; color: string}) {
 }
 
 function Blocks({nodes, color}: {nodes: MarkdownNode[]; color: string}) {
+  const styles = useThemedStyles(baseStyles);
   return <>{nodes.map((node, index) => {
     const key = `${node.type}-${index}`;
     switch (node.type) {
@@ -146,10 +152,13 @@ function Blocks({nodes, color}: {nodes: MarkdownNode[]; color: string}) {
   })}</>;
 }
 export function NativeMarkdown({value, color = C.text}: {value: string; color?: string}) {
+  const styles = useThemedStyles(baseStyles);
+  const theme = useTheme();
+  color = theme.color(color);
   const nodes = useMemo(() => parseMarkdown(value), [value]);
   return <View style={styles.root}><Blocks nodes={nodes} color={color} /></View>;
 }
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   root: {gap: 9, minWidth: 0, maxWidth: '100%', flexShrink: 1},
   text: {fontSize: 15, lineHeight: 23, flexShrink: 1},
   bold: {fontWeight: '800'}, italic: {fontStyle: 'italic'}, strike: {textDecorationLine: 'line-through'},
