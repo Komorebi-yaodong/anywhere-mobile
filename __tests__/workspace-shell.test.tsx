@@ -382,6 +382,20 @@ test('offers a close action only for a session controlled by this Mobile device'
 });
 
 
+test('asks Desktop to arbitrate takeover even when Mobile still caches an old busy turn', async () => {
+  openConfigSession();
+  mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: true, mobileControlled: false, controlledByThisDevice: false}];
+  mockActiveTurn = {conversationId: 'conversation-shell-fixture', requestId: 'old-stale-request', terminal: false};
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '接管会话' && typeof node.props.onPress === 'function')[0].props.onPress());
+  expect(mockTakeoverConversation).toHaveBeenCalledWith('conversation-shell-fixture');
+  expect(root.root.findAllByType(Text).some(node => node.props.children === '当前会话仍在处理，待本轮结束后可接管。')).toBe(false);
+  await act(async () => root.unmount());
+});
+
+
 test('opens an opened Desktop session without automatically taking it over', async () => {
   mockOpenedSessions = [{
     conversationId: 'conversation-opened-shell-fixture-0001',

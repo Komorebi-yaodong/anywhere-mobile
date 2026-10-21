@@ -141,6 +141,8 @@ export function useConversationWorkspace({
     [],
   );
   const activeTurnRef = useRef<ActiveConversationTurn | null>(null);
+
+  const awaitingSendReceipts = useRef(new Set<string>());
   const [creatingConversation, setCreatingConversation] = useState(false);
   const creatingRef = useRef(false);
 
@@ -336,10 +338,13 @@ export function useConversationWorkspace({
     }
   }, [api, desktopId, messagePage, messagesLoading, selectedConversationId]);
 
+  const openedEpoch = useRef(0);
   const refreshOpenedSessions = useCallback(async () => {
     if (desktopStatus !== '在线') return;
+    const epoch = ++openedEpoch.current;
     try {
       const result = await api.listOpenedSessions();
+      if (epoch !== openedEpoch.current || scopeRef.current.desktopId !== desktopId) return;
       setOpenedSessions(result.sessions || []);
       setControlledConversationIds((result.sessions || [])
         .filter(item => item.controlledByThisDevice)
@@ -347,14 +352,18 @@ export function useConversationWorkspace({
     } catch {
       // Window ownership is advisory UI state; message reads remain available.
     }
-  }, [api, desktopStatus]);
+  }, [api, desktopId, desktopStatus]);
 
   const takeoverConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
+    const previous = activeTurnRef.current;
     await api.takeover(conversationId);
+    // Successful Desktop takeover confirms the writer is idle. Never retire a
+    // newer request submitted while this RPC was in flight.
+    commitTurn(current => current?.requestId === previous?.requestId && current?.conversationId === conversationId ? null : current);
     await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
     if (scopeRef.current.selectedConversationId === conversationId) await loadMessages(conversationId);
-  }, [api, loadMessages, refreshCatalog, refreshOpenedSessions]);
+  }, [api, commitTurn, loadMessages, refreshCatalog, refreshOpenedSessions]);
 
   const handoffConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
@@ -455,7 +464,7 @@ export function useConversationWorkspace({
   const applyRequestState = useCallback(
     (state: ConversationRequestState) => {
       commitTurn(current => {
-        if (!current || current.requestId !== state.requestId) return current;
+        if (!current || current.requestId !== state.requestId || current.terminal) return current;
         if (state.eventSequence < current.eventSequence) return current;
         return {
           ...current,
@@ -486,15 +495,34 @@ export function useConversationWorkspace({
     [commitTurn, loadMessages, refreshCatalog],
   );
 
+  const recoveryInFlight = useRef(false);
   const recoverActiveTurn = useCallback(async () => {
     const active = activeTurnRef.current;
-    if (!active || active.terminal || desktopStatus !== '在线') return;
+    if (!active || active.terminal || desktopStatus !== '在线' || recoveryInFlight.current || awaitingSendReceipts.current.has(active.requestId)) return;
+    recoveryInFlight.current = true;
+    const isCurrent = () => scopeRef.current.desktopId === desktopId &&
+      activeTurnRef.current?.requestId === active.requestId && !activeTurnRef.current.terminal;
     try {
-      applyRequestState(await api.getRequest(active.requestId));
+      const state = await api.getRequest(active.requestId);
+      if (isCurrent()) applyRequestState(state);
     } catch (cause) {
-      setError(`无法恢复生成状态：${errorMessage(cause)}`);
-    }
-  }, [api, applyRequestState, desktopStatus]);
+      if (!isCurrent()) return;
+      if (errorCode(cause) === 'remote_request_not_found') {
+        // Explicit absence is authoritative after gateway restart/record expiry.
+        // Do not retry the send or pretend it completed successfully.
+        commitTurn(current => current?.requestId === active.requestId ? {
+          ...current, terminal: true, event: 'assistant.failed', errorCode: 'remote_request_not_found',
+        } : current);
+        setError('Desktop 已无此远程请求，已结束旧生成状态并重新读取会话；不会自动重发。');
+        await Promise.all([
+          scopeRef.current.selectedConversationId === active.conversationId ? loadMessages(active.conversationId) : Promise.resolve(),
+          refreshOpenedSessions(),
+        ]);
+      } else {
+        setError(`无法恢复生成状态：${errorMessage(cause)}`);
+      }
+    } finally { recoveryInFlight.current = false; }
+  }, [api, applyRequestState, commitTurn, desktopId, desktopStatus, loadMessages, refreshOpenedSessions]);
 
   useEffect(() => {
     if (desktopStatus !== '在线' || !selectedConversationId) return;
@@ -709,10 +737,13 @@ export function useConversationWorkspace({
       if (event.event === 'conversation.windows.changed') {
         refreshCatalog().catch(() => undefined);
         refreshOpenedSessions().catch(() => undefined);
+        const selected = scopeRef.current.selectedConversationId;
+        if (selected) loadMessages(selected).catch(() => undefined);
+        recoverActiveTurn().catch(() => undefined);
       }
       handleStreamEvent(event as ConversationStreamEvent);
     });
-  }, [desktopId, handleStreamEvent, refreshCatalog, refreshOpenedSessions, subscribeEvents]);
+  }, [desktopId, handleStreamEvent, loadMessages, recoverActiveTurn, refreshCatalog, refreshOpenedSessions, subscribeEvents]);
 
   useEffect(() => {
     return () => {
@@ -754,9 +785,10 @@ export function useConversationWorkspace({
   }, [desktopStatus, loadMessages, selectedConversationId]);
 
   useEffect(() => {
-    if (desktopStatus === '在线') {
-      recoverActiveTurn().catch(() => undefined);
-    }
+    if (desktopStatus !== '在线') return;
+    recoverActiveTurn().catch(() => undefined);
+    const timer = setInterval(() => { recoverActiveTurn().catch(() => undefined); }, 2500);
+    return () => clearInterval(timer);
   }, [desktopStatus, recoverActiveTurn]);
 
   const assertControl = useCallback((conversationId: string) => {
@@ -798,6 +830,8 @@ export function useConversationWorkspace({
             30_000,
           )
         : api.send(selectedConversationId, body, uploadIds);
+
+      awaitingSendReceipts.current.add(tracked.requestId);
       if (shouldQueue)
         commitQueue(current => [
           ...current,
@@ -911,7 +945,7 @@ export function useConversationWorkspace({
           );
           throw cause;
         }
-      }
+      } finally { awaitingSendReceipts.current.delete(tracked.requestId); }
     },
     [
       api,
@@ -991,8 +1025,14 @@ export function useConversationWorkspace({
     const active = activeTurnRef.current;
     if (!active || active.terminal) return;
     assertControl(active.conversationId);
-    await api.cancel(active.conversationId);
-  }, [api, assertControl]);
+    try { await api.cancel(active.conversationId); }
+    catch (cause) {
+      if (errorCode(cause) !== 'remote_conversation_not_generating') throw cause;
+      // The cancel target may already have finished or disappeared. Reconcile
+      // its original request instead of leaving a permanently spinning stop UI.
+      await recoverActiveTurn();
+    }
+  }, [api, assertControl, recoverActiveTurn]);
 
   const closeConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;

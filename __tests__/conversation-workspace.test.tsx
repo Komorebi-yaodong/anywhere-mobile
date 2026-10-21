@@ -89,6 +89,128 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it.each(['missing', 'completed', 'timeout'])('periodically reconciles %s requests without retransmitting or masking uncertain work', async kind => {
+    jest.useFakeTimers();
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => {
+      if (method === 'conversation.request.get') {
+        if (kind !== 'completed') return Promise.reject(Object.assign(new Error(kind), {code: kind === 'missing' ? 'remote_request_not_found' : 'remote_request_timeout'}));
+        return Promise.resolve({requestId: 'request-workspace-fixture-0001', conversationId: A, text: '', reasoning: '', terminal: true, event: 'assistant.completed', eventSequence: 9});
+      }
+      return base(id, method, params);
+    });
+    let root!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => {f.response.resolve({ok: true}); await f.state.sendMessage('only once');});
+      expect(f.state.activeTurn?.terminal).toBe(false);
+      await act(async () => {jest.advanceTimersByTime(2500);});
+      expect(f.state.activeTurn?.terminal).toBe(kind !== 'timeout');
+      if (kind === 'missing') expect(f.state.activeTurn?.errorCode).toBe('remote_request_not_found');
+      expect(f.tracked).toHaveBeenCalledTimes(1);
+    } finally {await act(async () => root?.unmount()); jest.useRealTimers();}
+  });
+
+  it('does not query or retire an original send before its receipt settles', async () => {
+    jest.useFakeTimers();
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get'
+      ? Promise.reject(Object.assign(new Error('not accepted yet'), {code: 'remote_request_not_found'})) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    let send!: Promise<void>;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => {send = f.state.sendMessage('slow receipt'); jest.advanceTimersByTime(5000);});
+      expect(f.rpc.mock.calls.some(call => call[1] === 'conversation.request.get')).toBe(false);
+      expect(f.state.activeTurn?.terminal).toBe(false);
+      await act(async () => {f.response.resolve({ok: true}); await send; jest.advanceTimersByTime(2500);});
+      expect(f.state.activeTurn?.terminal).toBe(true);
+      expect(f.tracked).toHaveBeenCalledTimes(1);
+    } finally {await act(async () => root?.unmount()); jest.useRealTimers();}
+  });
+
+
+  it('ignores a late missing-request response after takeover and a new send', async () => {
+    jest.useFakeTimers();
+    const f = fixture();
+    const recovery = deferred<unknown>();
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? recovery.promise : base(id, method, params));
+    let count = 0;
+    (f.tracked as jest.Mock).mockImplementation(() => ({requestId: `race-request-${++count}`, response: Promise.resolve({ok: true})}));
+    let root!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => {await f.state.sendMessage('old'); jest.advanceTimersByTime(2500);});
+      await act(async () => {await f.state.takeoverConversation(A); await f.state.sendMessage('new');});
+      await act(async () => recovery.reject(Object.assign(new Error('missing'), {code: 'remote_request_not_found'})));
+      expect(f.state.activeTurn).toMatchObject({requestId: 'race-request-2', terminal: false});
+      expect(f.tracked).toHaveBeenCalledTimes(2);
+    } finally {await act(async () => root?.unmount()); jest.useRealTimers();}
+  });
+
+
+  it('reconciles stop when Desktop explicitly has no active request', async () => {
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => {
+      if (method === 'conversation.cancel' || method === 'conversation.request.get') return Promise.reject(Object.assign(new Error('gone'), {code: method === 'conversation.cancel' ? 'remote_conversation_not_generating' : 'remote_request_not_found'}));
+      return base(id, method, params);
+    });
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {f.response.resolve({ok: true}); await f.state.sendMessage('old');});
+    await act(async () => {await f.state.cancelActiveTurn();});
+    expect(f.state.activeTurn).toMatchObject({terminal: true, errorCode: 'remote_request_not_found'});
+    expect(f.tracked).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+  });
+
+
+  it('only retires stale progress after a successful authoritative takeover', async () => {
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    let rejectTakeover = true;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.takeover'
+      ? rejectTakeover ? Promise.reject(Object.assign(new Error('busy'), {code: 'remote_conversation_busy'})) : Promise.resolve({ok: true})
+      : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {f.response.resolve({ok: true}); await f.state.sendMessage('old turn');});
+    await act(async () => {await expect(f.state.takeoverConversation(A)).rejects.toThrow('busy');});
+    expect(f.state.activeTurn?.terminal).toBe(false);
+    rejectTakeover = false;
+    await act(async () => {await f.state.takeoverConversation(A);});
+    expect(f.state.activeTurn).toBeNull();
+    expect(f.tracked).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+  });
+
+  it('refreshes Desktop-observed content on window updates and ignores stale ownership responses', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    const stale = deferred<unknown>();
+    const base = f.rpc.getMockImplementation()!;
+    let old = true;
+    f.rpc.mockImplementation((id, method, params) => {
+      if (method === 'conversation.opened.list') {
+        if (old) {old = false; return stale.promise;}
+        return Promise.resolve({sessions: [{conversationId: A, controlledByThisDevice: false, mobileControlled: false}]});
+      }
+      return method === 'conversation.messages.list' ? Promise.resolve(page(A, 'Desktop continued')) : base(id, method, params);
+    });
+    let first!: Promise<void>;
+    await act(async () => {first = f.state.refreshOpenedSessions(); f.emit('conversation.windows.changed', 1);});
+    await act(async () => {stale.resolve({sessions: [{conversationId: A, controlledByThisDevice: true}]}); await first;});
+    expect(f.state.canControlConversation(A)).toBe(false);
+    expect(f.state.messages[0].payload.content).toBe('Desktop continued');
+    await act(async () => root.unmount());
+  });
+
+
   it('becomes read-only after Desktop control changes without releasing or reopening the Writer', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;

@@ -138,6 +138,8 @@ function workspaceNotice(error: unknown, fallback: string): string {
     remote_response_too_large: 'Desktop 返回的数据过大，当前请求未完成；连接仍保留。',
     remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
     remote_conversation_busy: '此操作需要会话空闲，请等待本轮结束后再操作；普通配置可在生成中保存。',
+    remote_mobile_takeover_timeout: 'Desktop 尚未确认接管，控制权未变更；请稍后重试。',
+    remote_mobile_takeover_failed: 'Desktop 未完成接管，控制权未变更；请刷新后重试。',
     remote_desktop_takeover_in_progress: 'Desktop 正在接管该会话，Mobile 即将切为只读。',
     remote_conversation_takeover_required: '该会话已由 Desktop 控制，Mobile 当前只读；请先接管后再修改。',
     remote_context_resolve_failed: '未能获取当前模型的上下文长度，已保留原值；可以手动填写。',
@@ -821,9 +823,11 @@ export function WorkspaceShell({
 
   const takeoverSelectedConversation = async () => {
     if (!workspace.selectedConversationId || !connected) return;
-    if (executionBusy) { setNotice('当前会话仍在处理，待本轮结束后可接管。'); return; }
+    // Cached progress may outlive a Desktop request/window. The Desktop writer
+    // remains responsible for rejecting takeover while real work is running.
     try {
       await workspace.takeoverConversation(workspace.selectedConversationId);
+      setConfigExecutionBusy(false);
       setNotice('已接管会话，Desktop 将实时观察更新。');
     } catch (error) {
       setNotice(workspaceNotice(error, '暂时无法接管会话。'));
