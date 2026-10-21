@@ -114,6 +114,7 @@ export type ConversationConfig = {
 export type ConversationConfigResult = {
   revision: number;
   busy?: boolean;
+  deferred?: boolean;
   patched: string[];
   config: ConversationConfig;
   options: {

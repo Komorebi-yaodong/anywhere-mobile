@@ -89,6 +89,23 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it('becomes read-only after Desktop control changes without releasing or reopening the Writer', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    expect(f.state.canControlConversation(A)).toBe(true);
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.opened.list'
+      ? Promise.resolve({ok: true, sessions: [{conversationId: A, controlledByThisDevice: false, mobileControlled: false, visible: true}]})
+      : base(id, method, params));
+    await act(async () => f.emit('conversation.windows.changed', 1));
+    expect(f.state.canControlConversation(A)).toBe(false);
+    await expect(f.state.sendMessage('blocked after takeover')).rejects.toThrow();
+    expect(f.tracked).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+
   it('promotes queued early stream events before ACK and never overwrites its text', async () => {
     const f=fixture();
     let sequence=0;

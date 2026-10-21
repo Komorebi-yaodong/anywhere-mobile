@@ -75,7 +75,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     tasks: [],
     pendingChoices: {},
     openedSessions: mockOpenedSessions,
-    canControlConversation: () => true,
+    canControlConversation: () => !mockOpenedSessions.length || mockOpenedSessions.some(item => item.controlledByThisDevice),
     selectConversation: mockSelectConversation,
     takeoverConversation: mockTakeoverConversation,
     handoffConversation: mockHandoffConversation,
@@ -537,7 +537,7 @@ test('save failure keeps the draft and reports the error inside the session shee
   await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0].props.onPress());
   expect(prompt().props.value).toBe('keep draft');
   const status = root.root.findAll(node => node.props.accessibilityLabel === '会话设置操作结果')[0];
-  expect(status.props.children).toContain('会话正在生成或执行工具');
+  expect(status.props.children).toContain('普通配置可在生成中保存');
   await act(async () => root.unmount());
 });
 
@@ -594,6 +594,7 @@ test('does not patch unchanged settings and names the read-only header action cl
   await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0].props.onPress());
   expect(props.tracked.mock.calls.filter(([, method]) => method === 'conversation.config.patch')).toHaveLength(0);
   await act(async () => root.unmount());
+  mockOpenedSessions = mockOpenedSessions.map(item => ({...item, controlledByThisDevice: false, mobileControlled: false}));
   const readOnly = configFixture(true);
   await act(async () => { root = TestRenderer.create(<WorkspaceShell {...readOnly} />); });
   await enterFixtureChat(root);
@@ -641,7 +642,7 @@ test('keeps session inputs inside a keyboard-avoiding scrollable sheet and revea
 });
 
 
-test('keeps model settings open as read-only while Desktop is busy', async () => {
+test('allows model configuration while generating without changing the current request', async () => {
   openConfigSession();
   const props = configFixture(true);
   let root!: TestRenderer.ReactTestRenderer;
@@ -652,11 +653,33 @@ test('keeps model settings open as read-only while Desktop is busy', async () =>
     await new Promise<void>(resolve => setTimeout(resolve, 0));
   });
   expect(props.tracked).toHaveBeenCalledWith(expect.any(String), 'conversation.config.get', {conversationId: 'conversation-shell-fixture'}, 30_000);
-  const modelRows = root.root.findAll(node => node.props.disabled === true && node.props.style && node.findAll(child => child.props.children === 'Fixture').length > 0);
-  expect(modelRows).toHaveLength(1);
-  expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('本轮处理中'))).toBe(true);
+  const modelRows = root.root.findAll(node => node.props.disabled === false && typeof node.props.onPress === 'function' && node.findAll(child => child.props.children === 'Fixture').length > 0);
+  expect(modelRows.length).toBeGreaterThan(0);
+  expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('下一轮发送时生效'))).toBe(true);
+  await act(async () => modelRows[0].props.onPress());
+  expect(props.tracked.mock.calls.some(([, method]) => method === 'conversation.config.patch')).toBe(true);
   await act(async () => root.unmount());
 });
+
+test('saving session prompt while generating keeps current turn and composer intact', async () => {
+  openConfigSession();
+  mockActiveTurn = {requestId: 'active-generation', conversationId: 'conversation-shell-fixture', text: 'current reply', terminal: false};
+  const turn = mockActiveTurn;
+  const props = configFixture(true);
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  const input = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!;
+  expect(input.props.editable).toBe(true);
+  await act(async () => input.props.onChangeText('next request prompt'));
+  await act(async () => button(root, '保存').props.onPress());
+  expect(props.tracked.mock.calls.some(([, method]) => method === 'conversation.config.patch')).toBe(true);
+  expect(mockActiveTurn).toBe(turn);
+  expect(mockActiveTurn.terminal).toBe(false);
+  await act(async () => root.unmount());
+});
+
 
 test('forces reconnect from the workspace refresh button while offline', async () => {
   const onReconnect = jest.fn(async () => undefined);

@@ -135,7 +135,9 @@ function workspaceNotice(error: unknown, fallback: string): string {
 
     remote_response_too_large: 'Desktop 返回的数据过大，当前请求未完成；连接仍保留。',
     remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
-    remote_conversation_busy: '会话正在生成或执行工具，请等待本轮结束，或先停止生成后再操作。',
+    remote_conversation_busy: '此操作需要会话空闲，请等待本轮结束后再操作；普通配置可在生成中保存。',
+    remote_desktop_takeover_in_progress: 'Desktop 正在接管该会话，Mobile 即将切为只读。',
+    remote_conversation_takeover_required: '该会话已由 Desktop 控制，Mobile 当前只读；请先接管后再修改。',
     remote_context_resolve_failed: '未能获取当前模型的上下文长度，已保留原值；可以手动填写。',
     remote_context_model_missing: '当前会话未选择模型，已保留原值；请先选择模型。',
     remote_context_model_not_found: '检索服务尚未收录当前模型，已保留原值；可手动填写。',
@@ -581,7 +583,7 @@ export function WorkspaceShell({
   const selectedOpenedSession = workspace.openedSessions.find(item => item.conversationId === workspace.selectedConversationId);
   const selectedTurn = workspace.activeTurn?.conversationId === workspace.selectedConversationId ? workspace.activeTurn : null;
   const executionBusy = Boolean((selectedTurn && !selectedTurn.terminal) || configExecutionBusy || (!selectedTurn?.terminal && selectedOpenedSession?.busy));
-  const canEditSession = connected && controlledByMobile && !executionBusy && !sessionBusy;
+  const canEditSession = connected && controlledByMobile && !sessionBusy;
   useEffect(() => {
     setConfigExecutionBusy(selectedOpenedSession?.busy === true);
     if (workspace.activeTurn?.conversationId === workspace.selectedConversationId && workspace.activeTurn.terminal) {
@@ -642,7 +644,7 @@ export function WorkspaceShell({
   };
 
   const compactNow = async () => {
-    if (!requireControl() || !canEditSession || !workspace.selectedConversationId) return;
+    if (!requireControl() || !canEditSession || executionBusy || !workspace.selectedConversationId) return;
     setSessionBusy(true);
     try {
       const receipt = startCommand({
@@ -691,6 +693,7 @@ export function WorkspaceShell({
       setSessionConfig(result.config);
       setSessionOptions(result.options);
       setContextLengthEdited(false);
+      if (result.deferred) setNotice('设置已保存，将在下一轮发送时生效；本轮请求保持原配置。');
       if (closeAfterSave) setSheet(null);
     } catch (error) {
       setSessionNotice(workspaceNotice(error, '保存会话设置失败。'));
@@ -712,7 +715,7 @@ export function WorkspaceShell({
   };
 
   const refreshContextLength = async () => {
-    if (!canEditSession || !sessionConfig || !requireControl() || sessionOperation.current) return;
+    if (!canEditSession || executionBusy || !sessionConfig || !requireControl() || sessionOperation.current) return;
     const conversationId = workspace.selectedConversationId;
     sessionOperation.current = true;
     setSessionNotice('');
@@ -1353,15 +1356,15 @@ export function WorkspaceShell({
       <Sheet
         visible={sheet === 'session'}
         onClose={() => { if (!sessionOperation.current && !sessionBusy) setSheet(null); }}
-        onConfirm={sessionConfig && connected && controlledByMobile && !executionBusy ? saveSessionSettings : undefined}
-        confirmLabel={sessionConfig && connected && controlledByMobile && !executionBusy ? '完成' : '关闭'}
+        onConfirm={sessionConfig && connected && controlledByMobile ? saveSessionSettings : undefined}
+        confirmLabel={sessionConfig && connected && controlledByMobile ? '完成' : '关闭'}
         confirmDisabled={sessionBusy}
         title="会话设置"
       >
         {sessionNotice ? <Text accessibilityLabel="会话设置操作结果" style={styles.sessionHint}>{sessionNotice}</Text> : null}
 
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>正在生成或执行工具，设置可查看；本轮结束或停止生成后可修改。</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置；现在保存的修改将在下一轮发送时生效。</Text> : null}
         {sessionBusy && !sessionConfig ? (
           <ActivityIndicator color={C.primary} />
         ) : sessionConfig ? (
@@ -1402,10 +1405,10 @@ export function WorkspaceShell({
               {!visibleSessionSkills.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 Skill。</Text></View> : null}
             </View> : null}
             {sessionTab === 'compact' ? <View style={styles.sessionSection}>
-              <View style={styles.compactAction}><Text style={styles.sessionSectionTitle}>上下文</Text><Action compact label="立即压缩" onPress={compactNow} disabled={!canEditSession} /></View>
+              <View style={styles.compactAction}><Text style={styles.sessionSectionTitle}>上下文</Text><Action compact label="立即压缩" onPress={compactNow} disabled={!canEditSession || executionBusy} /></View>
               <View style={styles.contextInfo}><Text style={styles.contextInfoLabel}>上下文长度</Text><Text style={styles.contextInfoValue}>{formatContextLength(sessionConfig.compact?.contextLength)} · {contextLengthEdited ? '手动（待保存）' : contextSourceLabel(sessionConfig.compact?.contextLengthSource)}</Text></View>
               <SheetTextInput accessibilityLabel="会话上下文长度" keyboardType="number-pad" value={contextLengthDraft} editable={canEditSession} onChangeText={value => { setContextLengthDraft(value); setContextLengthEdited(true); }} style={styles.input} placeholder="输入 4096–10000000" placeholderTextColor={C.muted} />
-              <Action label={sessionBusy ? '正在获取…' : '一键获取上下文长度'} onPress={refreshContextLength} disabled={!canEditSession} />
+              <Action label={sessionBusy ? '正在获取…' : '一键获取上下文长度'} onPress={refreshContextLength} disabled={!canEditSession || executionBusy} />
               <ToggleRow label="自动压缩" disabled={!canEditSession} value={sessionConfig.compact?.autoCompactEnabled !== false} onChange={autoCompactEnabled => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, autoCompactEnabled}})} />
               <View style={styles.sessionGrid}><View style={styles.field}><Text style={styles.fieldLabel}>触发比例 (0.1–0.99)</Text><SheetTextInput accessibilityLabel="压缩触发比例" keyboardType="decimal-pad" editable={canEditSession} value={triggerRatioDraft} onChangeText={setTriggerRatioDraft} style={styles.input} placeholder="例如 0.9" placeholderTextColor={C.muted} /></View><Field label="保留轮数" editable={canEditSession} value={String(sessionConfig.compact?.keepRecentRounds ?? 0)} onChange={raw => { const keepRecentRounds = Number(raw); if (Number.isFinite(keepRecentRounds)) setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, keepRecentRounds}}); }} /></View>
               <View style={styles.field}><Text style={styles.fieldLabel}>压缩提示词</Text><SheetTextInput value={sessionConfig.compact?.compactPrompt || ''} editable={canEditSession} onChangeText={compactPrompt => setSessionConfig({...sessionConfig, compact: {...sessionConfig.compact, compactPrompt}})} multiline style={[styles.input, styles.textarea]} placeholder="留空使用默认提示词" placeholderTextColor={C.muted} /></View>
@@ -1417,19 +1420,19 @@ export function WorkspaceShell({
       <Sheet visible={sheet === 'model'} onClose={() => setSheet(null)} title="选择模型">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置，修改将在下一轮发送时生效。</Text> : null}
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'reasoning'} onClose={() => setSheet(null)} title="思维深度">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置，修改将在下一轮发送时生效。</Text> : null}
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.reasoningEfforts || []).map(value => <Pressable key={value} style={[styles.sessionSelectRow, sessionConfig?.reasoningEffort === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, reasoningEffort: value}); saveSessionPatch({reasoningEffort: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{reasoningLabel(value)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.reasoningEffort === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'voice'} onClose={() => setSheet(null)} title="语音">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
+        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置，修改将在下一轮发送时生效。</Text> : null}
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '关闭'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
     </SafeAreaView>
