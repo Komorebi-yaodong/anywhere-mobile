@@ -1,6 +1,7 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Linking, ScrollView, StyleSheet, Text, View, type TextStyle} from 'react-native';
-import {MathText} from 'react-native-latex-text';
+import {MathRenderer, MathText, type RenderResult} from 'react-native-latex-text';
+import {SvgXml} from 'react-native-svg';
 import {parseMarkdown, safeMarkdownLink, type MarkdownNode} from './markdownParser';
 
 const C = {text: '#292724', muted: '#79746C', line: '#DDD6CB', code: '#EAE5DC', primary: '#C96849', header: '#EDE8DE'};
@@ -46,6 +47,64 @@ function Paragraph({nodes, color, style}: {nodes: MarkdownNode[]; color: string;
 function tableRows(node: MarkdownNode): MarkdownNode[] {
   return node.children.flatMap(child => child.type === 'tr' ? [child] : tableRows(child));
 }
+const displayMathScale = 7;
+const displayMathGutter = 4;
+
+type DisplayMathLayout = {width: number; height: number; scale: number};
+
+/** Strip Markdown display delimiters before asking MathJax for the SVG. */
+export function displayMathLatex(value: string): string {
+  const source = String(value || '').trim();
+  if (source.startsWith('$$') && source.endsWith('$$')) return source.slice(2, -2).trim();
+  if (source.startsWith('\\[') && source.endsWith('\\]')) return source.slice(2, -2).trim();
+  return source;
+}
+
+/** Use actual SVG dimensions—not characters—to keep a display formula inside its card. */
+export function fitDisplayMath(result: Pick<RenderResult, 'width' | 'height'>, availableWidth: number): DisplayMathLayout | null {
+  const rawWidth = Number(result.width) * displayMathScale;
+  const rawHeight = Number(result.height) * displayMathScale;
+  const limit = Math.max(0, Number(availableWidth) - displayMathGutter);
+  if (!Number.isFinite(rawWidth) || !Number.isFinite(rawHeight) || rawWidth <= 0 || rawHeight <= 0 || limit <= 0) return null;
+  const scale = Math.min(1, limit / rawWidth);
+  return {width: rawWidth * scale, height: rawHeight * scale, scale};
+}
+
+function AdaptiveMathBlock({content, color}: {content: string; color: string}) {
+  const latex = displayMathLatex(content);
+  const [availableWidth, setAvailableWidth] = useState(0);
+  const [rendered, setRendered] = useState<RenderResult | null>(null);
+  const revision = useRef(0);
+  useEffect(() => {
+    const current = ++revision.current;
+    setRendered(null);
+    if (!latex) return;
+    MathRenderer.Render(latex, result => {
+      if (revision.current !== current || !Number.isFinite(Number(result.width)) || !Number.isFinite(Number(result.height))) return;
+      setRendered(result);
+    }, {color});
+    return () => { revision.current += 1; };
+  }, [color, latex]);
+  const layout = rendered ? fitDisplayMath(rendered, availableWidth) : null;
+  return <View
+    accessibilityLabel="自适应块级公式"
+    testID="自适应块级公式容器"
+    style={styles.displayMathFrame}
+    onLayout={event => {
+      const width = Math.max(0, event.nativeEvent.layout.width);
+      setAvailableWidth(current => Math.abs(current - width) > 0.5 ? width : current);
+    }}
+  >
+    {layout && rendered ? <SvgXml
+      testID="自适应公式 SVG"
+      xml={rendered.svg}
+      width={layout.width}
+      height={layout.height}
+    /> : <Text style={[styles.mathLoading, {color}]}>公式加载中…</Text>}
+  </View>;
+}
+
+
 function Table({node, color}: {node: MarkdownNode; color: string}) {
   const [available, setAvailable] = useState(280);
   const rows = tableRows(node);
@@ -81,7 +140,7 @@ function Blocks({nodes, color}: {nodes: MarkdownNode[]; color: string}) {
       case 'bullet_list': case 'ordered_list': return <View key={key} style={styles.list}>{node.children.map((item, itemIndex) => <View key={itemIndex} style={styles.listRow}><Text style={[styles.marker, {color}]}>{node.type === 'ordered_list' ? `${Number(node.attrs.start || 1) + itemIndex}.` : '•'}</Text><View style={styles.listBody}><Blocks nodes={item.children} color={color} /></View></View>)}</View>;
       case 'table': return <Table key={key} node={node} color={color} />;
       case 'hr': return <View key={key} accessibilityLabel="分隔线" style={styles.rule} />;
-      case 'math_block': return <MathText key={key} content={node.content} textColor={color} fontSize={15} baseMathSize={10} lineHeight={1.5} viewStyle={styles.math} />;
+      case 'math_block': return <AdaptiveMathBlock key={key} content={node.content} color={color} />;
       default: return node.children.length ? <View key={key}><Blocks nodes={node.children} color={color} /></View> : node.content ? <Text key={key} selectable style={[styles.text, {color}]}>{node.content}</Text> : null;
     }
   })}</>;
@@ -96,6 +155,8 @@ const styles = StyleSheet.create({
   bold: {fontWeight: '800'}, italic: {fontStyle: 'italic'}, strike: {textDecorationLine: 'line-through'},
   inlineCode: {fontFamily: 'monospace', fontSize: 13, color: '#80533E', backgroundColor: C.code},
   link: {color: C.primary, textDecorationLine: 'underline'}, math: {marginVertical: 2, maxWidth: '100%'},
+  displayMathFrame: {width: '100%', maxWidth: '100%', minWidth: 0, minHeight: 24, marginVertical: 2, alignItems: 'center', justifyContent: 'center', overflow: 'hidden'},
+  mathLoading: {fontSize: 12, lineHeight: 20, opacity: 0.55},
   codeFrame: {backgroundColor: C.code, borderRadius: 8, maxWidth: '100%'},
   code: {fontFamily: 'monospace', color: C.text, padding: 10, fontSize: 12, lineHeight: 18},
   quote: {borderLeftWidth: 3, borderLeftColor: C.line, paddingLeft: 10, gap: 7},

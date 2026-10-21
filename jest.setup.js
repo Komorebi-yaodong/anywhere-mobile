@@ -30,6 +30,7 @@ jest.mock('react-native-latex-text', () => {
     MathJaxRenderer: props => React.createElement(View, props),
     MathText: ({content, ...props}) => React.createElement(Text, props, content),
     MathRenderer: {Init: jest.fn(), Render: jest.fn(), ClearCache: jest.fn()},
+    RenderResult: undefined,
   };
 });
 

@@ -1,7 +1,7 @@
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
 import {Linking, ScrollView, StyleSheet, Text} from 'react-native';
-import {NativeMarkdown} from '../src/components/NativeMarkdown';
+import {fitDisplayMath, NativeMarkdown} from '../src/components/NativeMarkdown';
 import {parseMarkdown, safeMarkdownLink, type MarkdownNode} from '../src/components/markdownParser';
 import {parseConversationContent} from '../src/components/conversationMediaMarkup';
 
@@ -52,6 +52,36 @@ it('preserves formulas without treating code or literal currency as math', async
   expect(root.root.findAllByType(Text).some(node => node.props.children === '**Result** $x_1 + y$')).toBe(true);
   await act(async () => root.unmount());
 });
+
+it('fits display formulas to the measured message width without shrinking short formulas', async () => {
+  expect(fitDisplayMath({width: 100, height: 4}, 300)).toEqual({width: 296, height: 11.84, scale: 296 / 700});
+  expect(fitDisplayMath({width: 10, height: 4}, 300)).toEqual({width: 70, height: 28, scale: 1});
+  expect(fitDisplayMath({width: 10, height: 4}, 0)).toBeNull();
+  const {MathRenderer} = require('react-native-latex-text');
+
+  MathRenderer.Render.mockReset();
+  MathRenderer.Render.mockImplementation((latex: string, done: (result: {svg: string; width: number; height: number}) => void) => {
+    done({svg: `<svg data-latex="${latex}"/>`, width: latex.includes('Attention') ? 100 : 10, height: 4});
+  });
+  const root = await render('$$\\operatorname{Attention}(Q,K,V)=\\operatorname{softmax}(QK^T/\\sqrt{d_k})V$$\n\n$$x^2$$');
+  const blocks = root.root.findAll(node => node.props.testID === '自适应块级公式容器' && typeof node.props.onLayout === 'function');
+  expect(blocks.length).toBeGreaterThanOrEqual(2);
+  await act(async () => blocks.forEach(node => node.props.onLayout({nativeEvent: {layout: {width: 300}}})));
+  expect(MathRenderer.Render.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+    '\\operatorname{Attention}(Q,K,V)=\\operatorname{softmax}(QK^T/\\sqrt{d_k})V', 'x^2',
+  ]);
+  const svgs = root.root.findAll(node => node.props.testID === '自适应公式 SVG');
+  expect(svgs.some(node => node.props.xml.includes('Attention') && node.props.width <= 296 && node.props.height < 28)).toBe(true);
+  expect(svgs.some(node => node.props.xml.includes('x^2') && node.props.width === 70 && node.props.height === 28)).toBe(true);
+  const beforeCalls = MathRenderer.Render.mock.calls.length;
+  await act(async () => blocks.forEach(node => node.props.onLayout({nativeEvent: {layout: {width: 180}}})));
+  const narrowed = root.root.findAll(node => node.props.testID === '自适应公式 SVG');
+  expect(narrowed.some(node => node.props.xml.includes('Attention') && node.props.width <= 176)).toBe(true);
+  expect(MathRenderer.Render.mock.calls).toHaveLength(beforeCalls);
+  MathRenderer.Render.mockReset();
+  await act(async () => root.unmount());
+});
+
 
 it('never executes raw HTML or opens unsafe/local URLs', async () => {
   // eslint-disable-next-line no-script-url -- adversarial message fixture, never executed.

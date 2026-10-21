@@ -448,18 +448,18 @@ test('shows the Desktop timestamp for a tool-only assistant message without a co
 });
 
 
-function configFixture(busy = false) {
+function configFixture(busy = false, contextSource = 'api') {
   const config = {model: 'fixture|model', reasoningEffort: 'default', voice: '', mcpServerIds: [], skillIds: [], systemPrompt: '', compact: {autoCompactEnabled: true, contextLength: 32768, contextLengthSource: 'default', triggerRatio: 0.9, keepRecentRounds: 3, compactPrompt: ''}};
   let lastMethod = '';
   const base = workspaceProps();
-  const tracked = jest.fn((_id, method) => {
+  const tracked = jest.fn((_id: string, method: string, _params?: Record<string, unknown>, _timeout?: number) => {
     lastMethod = method;
     return {requestId: 'request-ui-config-fixture', response: Promise.resolve({ok: true})};
   });
   const request = jest.fn(async (id, method, params) => {
     if (method === 'conversation.request.get') return {
       terminal: true, event: 'conversation.config.result',
-      result: {busy, config: lastMethod === 'conversation.context.refresh' ? {...config, compact: {...config.compact, contextLength: 131072, contextLengthSource: 'api'}} : config, options: {models: [{value: 'fixture|model', label: 'Fixture'}], mcpServers: [], skills: [], reasoningEfforts: [], voices: []}},
+      result: {busy, config: lastMethod === 'conversation.context.refresh' ? {...config, compact: {...config.compact, contextLength: 131072, contextLengthSource: contextSource}} : config, options: {models: [{value: 'fixture|model', label: 'Fixture'}], mcpServers: [], skills: [], reasoningEfforts: [], voices: []}},
     };
     return base.request(id, method, params);
   });
@@ -496,6 +496,128 @@ test('saves a manually edited context length and fetches context using the Deskt
   expect(props.tracked).toHaveBeenCalledWith(expect.any(String), 'conversation.context.refresh', {conversationId: 'conversation-shell-fixture'}, 30_000);
   await act(async () => root.unmount());
 });
+
+test.each(['完成', '保存'])('%s saves changes from all session tabs in one equivalent patch', async action => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  const prompt = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!;
+  await act(async () => prompt.props.onChangeText('saved across tabs'));
+  await act(async () => button(root, '上下文').props.onPress());
+  const input = root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '会话上下文长度')!;
+  await act(async () => input.props.onChangeText('65536'));
+  // Save while a different tab is active; hidden drafts must not disappear.
+  await act(async () => button(root, 'Skill').props.onPress());
+  const submit = action === '完成'
+    ? root.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0]
+    : button(root, '保存');
+  await act(async () => { const first = submit.props.onPress(); const second = submit.props.onPress(); await first; await second; });
+  const writes = props.tracked.mock.calls.filter(([, method]) => method === 'conversation.config.patch');
+  expect(writes).toHaveLength(1);
+  expect(writes[0][2]).toEqual({conversationId: 'conversation-shell-fixture', patch: {systemPrompt: 'saved across tabs', compact: {contextLength: 65536}}});
+  await act(async () => root.unmount());
+});
+
+test('save failure keeps the draft and reports the error inside the session sheet', async () => {
+  openConfigSession();
+  const props = configFixture();
+  const base = props.tracked.getMockImplementation()!;
+  props.tracked.mockImplementation((id, method) => method === 'conversation.config.patch'
+    ? {requestId: 'failed-save', response: Promise.reject(Object.assign(new Error('remote_conversation_busy'), {code: 'remote_conversation_busy'}))}
+    : base(id, method));
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  const prompt = () => root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!;
+  await act(async () => prompt().props.onChangeText('keep draft'));
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0].props.onPress());
+  expect(prompt().props.value).toBe('keep draft');
+  const status = root.root.findAll(node => node.props.accessibilityLabel === '会话设置操作结果')[0];
+  expect(status.props.children).toContain('会话正在生成或执行工具');
+  await act(async () => root.unmount());
+});
+
+test.each(['remote_context_lookup_timeout', 'remote_context_model_not_found', 'remote_context_network_unavailable'])('context failure %s is visible and preserves manual length', async code => {
+  openConfigSession();
+  const props = configFixture();
+  const base = props.tracked.getMockImplementation()!;
+  props.tracked.mockImplementation((id, method) => method === 'conversation.context.refresh'
+    ? {requestId: 'failed-context', response: Promise.reject(Object.assign(new Error(code), {code}))}
+    : base(id, method));
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => button(root, '上下文').props.onPress());
+  const input = () => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '会话上下文长度')!;
+  await act(async () => input().props.onChangeText('65536'));
+  await act(async () => button(root, '一键获取上下文长度').props.onPress());
+  expect(input().props.value).toBe('65536');
+  const status = root.root.findAll(node => node.props.accessibilityLabel === '会话设置操作结果')[0];
+  expect(status.props.children).toContain('已保留原值');
+  expect(status.props.children).not.toContain('remote_');
+  await act(async () => button(root, '保存').props.onPress());
+  expect(props.tracked.mock.calls.find(([, method]) => method === 'conversation.config.patch')?.[2]).toMatchObject({patch: {compact: {contextLength: 65536}}});
+  await act(async () => root.unmount());
+});
+
+test('successful context lookup preserves other unsaved tabs and API source is not turned into manual on save', async () => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!.props.onChangeText('keep other draft'));
+  await act(async () => button(root, '上下文').props.onPress());
+  await act(async () => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '压缩触发比例')!.props.onChangeText('0.8'));
+  await act(async () => button(root, '一键获取上下文长度').props.onPress());
+  expect(root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '会话上下文长度')!.props.value).toBe('131072');
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0].props.onPress());
+  const patch = props.tracked.mock.calls.find(([, method]) => method === 'conversation.config.patch')?.[2];
+  expect(patch).toEqual({conversationId: 'conversation-shell-fixture', patch: {systemPrompt: 'keep other draft', compact: {triggerRatio: 0.8}}});
+  await act(async () => root.unmount());
+});
+
+
+test('does not patch unchanged settings and names the read-only header action close', async () => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0].props.onPress());
+  expect(props.tracked.mock.calls.filter(([, method]) => method === 'conversation.config.patch')).toHaveLength(0);
+  await act(async () => root.unmount());
+  const readOnly = configFixture(true);
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...readOnly} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '会话设置关闭' && node.props.onPress)).toHaveLength(1);
+  await act(async () => root.unmount());
+});
+
+test('rejects a default fallback response without replacing a manually entered length', async () => {
+  openConfigSession();
+  const props = configFixture(false, 'default');
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置')[0].props.onPress());
+  await act(async () => button(root, '上下文').props.onPress());
+  const input = () => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '会话上下文长度')!;
+  await act(async () => input().props.onChangeText('65536'));
+  await act(async () => button(root, '一键获取上下文长度').props.onPress());
+  expect(input().props.value).toBe('65536');
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '会话设置操作结果')[0].props.children).toContain('未返回有效的 API');
+  await act(async () => root.unmount());
+});
+
 
 test('keeps session inputs inside a keyboard-avoiding scrollable sheet and reveals focus', async () => {
   openConfigSession();

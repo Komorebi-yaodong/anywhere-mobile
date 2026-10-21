@@ -56,6 +56,8 @@ import {KeyboardDock} from './KeyboardDock';
 
 
 import {ConversationMessageList, MessageLayoutInteractionContext, type ConversationMessageListHandle} from './ConversationMessageList';
+
+import {sessionSettingsPatch} from './sessionSettings';
 import { useThemedStyles } from './theme';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
@@ -135,6 +137,14 @@ function workspaceNotice(error: unknown, fallback: string): string {
     remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
     remote_conversation_busy: '会话正在生成或执行工具，请等待本轮结束，或先停止生成后再操作。',
     remote_context_resolve_failed: '未能获取当前模型的上下文长度，已保留原值；可以手动填写。',
+    remote_context_model_missing: '当前会话未选择模型，已保留原值；请先选择模型。',
+    remote_context_model_not_found: '检索服务尚未收录当前模型，已保留原值；可手动填写。',
+    remote_context_service_auth_failed: 'Desktop 上下文检索服务认证失败，已保留原值；请检查 Desktop 服务配置。',
+    remote_context_service_unavailable: '上下文检索服务暂不可用，已保留原值；请稍后重试。',
+    remote_context_response_invalid: '上下文检索服务返回无效长度，已保留原值。',
+    remote_context_lookup_timeout: 'Desktop 检索上下文长度超时，已保留原值。',
+    remote_context_network_unavailable: 'Desktop 无法连接上下文检索服务，已保留原值；请检查 Desktop 网络或代理。',
+    remote_model_changed: '检索期间模型已切换，请在当前模型下重新获取。',
     remote_context_resolve_unavailable: '当前 Desktop 尚不支持上下文检索，请更新并重启 Desktop。',
     remote_all_paired_endpoints_unreachable: '已配对的连接地址暂不可用，请确认 Desktop 远程服务仍在运行。',
   };
@@ -305,6 +315,9 @@ export function WorkspaceShell({
     ConversationConfigResult['options'] | null
   >(null);
   const sessionScope = useRef('');
+  const sessionBaseline = useRef<ConversationConfigResult['config'] | null>(null);
+  const sessionOperation = useRef(false);
+  const [sessionNotice, setSessionNotice] = useState('');
   const [sessionTab, setSessionTab] = useState<
     'prompt' | 'mcp' | 'skill' | 'compact'
   >('prompt');
@@ -587,7 +600,10 @@ export function WorkspaceShell({
   ) => {
     if (!workspace.selectedConversationId || !connected) return;
     const requestedConversation = workspace.selectedConversationId;
+    if (sessionOperation.current) return;
     sessionScope.current = requestedConversation;
+    sessionBaseline.current = null;
+    setSessionNotice('');
     setSessionReadError('');
     setContextLengthEdited(false);
     setSessionConfig(null);
@@ -611,6 +627,7 @@ export function WorkspaceShell({
       const result = state.result as ConversationConfigResult | undefined;
       if (result?.config) {
         if (sessionScope.current !== requestedConversation) return;
+        sessionBaseline.current = result.config;
         setSessionConfig(result.config);
         setSessionOptions(result.options);
         setConfigExecutionBusy(result.busy === true);
@@ -651,8 +668,11 @@ export function WorkspaceShell({
       !workspace.selectedConversationId ||
       sessionScope.current !== workspace.selectedConversationId ||
       !sessionConfig ||
-      sessionBusy
+      sessionBusy || sessionOperation.current
     ) return;
+    const conversationId = workspace.selectedConversationId;
+    sessionOperation.current = true;
+    setSessionNotice('');
     setSessionBusy(true);
     try {
       const receipt = startCommand({
@@ -664,52 +684,38 @@ export function WorkspaceShell({
         timeoutMs: 60_000,
       });
       const state = await receipt.completion;
+      if (sessionScope.current !== conversationId) return;
       const result = state.result as ConversationConfigResult | undefined;
-      if (result?.config) {
-        setSessionConfig(result.config);
-        setSessionOptions(result.options);
-      }
+      if (!result?.config) throw new Error('Desktop 未返回保存后的会话设置，请刷新检查。');
+      sessionBaseline.current = result.config;
+      setSessionConfig(result.config);
+      setSessionOptions(result.options);
+      setContextLengthEdited(false);
       if (closeAfterSave) setSheet(null);
     } catch (error) {
-      setNotice(workspaceNotice(error, '保存会话设置失败。'));
+      setSessionNotice(workspaceNotice(error, '保存会话设置失败。'));
     } finally {
+      sessionOperation.current = false;
       setSessionBusy(false);
     }
   };
 
   const saveSessionSettings = async () => {
-    if (!sessionConfig) return;
-    const contextLength = Number(contextLengthDraft);
-    const triggerRatio = Number(triggerRatioDraft);
-    if (sessionTab === 'compact' && contextLengthEdited && (!Number.isInteger(contextLength) || contextLength < 4096 || contextLength > 10_000_000)) {
-      setNotice('上下文长度请输入 4096–10000000 之间的整数。');
-      return;
+    if (!sessionConfig || !sessionBaseline.current || !canEditSession || sessionOperation.current) return;
+    try {
+      const patch = sessionSettingsPatch(sessionConfig, sessionBaseline.current, {contextLengthDraft, contextLengthEdited, triggerRatioDraft});
+      if (!Object.keys(patch).length) { setSheet(null); return; }
+      await saveSessionPatch(patch);
+    } catch (error) {
+      setSessionNotice(workspaceNotice(error, '保存会话设置失败。'));
     }
-    if (sessionTab === 'compact' && (!Number.isFinite(triggerRatio) || triggerRatio < 0.1 || triggerRatio > 0.99)) {
-      setNotice('触发比例请输入 0.1–0.99 之间的数值。');
-      return;
-    }
-    const patch = sessionTab === 'prompt'
-      ? {systemPrompt: sessionConfig.systemPrompt || ''}
-      : sessionTab === 'mcp'
-        ? {mcpServerIds: sessionConfig.mcpServerIds || []}
-        : sessionTab === 'skill'
-          ? {skillIds: sessionConfig.skillIds || []}
-          : {
-              compact: {
-                autoCompactEnabled: sessionConfig.compact?.autoCompactEnabled !== false,
-                ...(contextLengthEdited ? {contextLength} : {}),
-                triggerRatio,
-                keepRecentRounds: Number(sessionConfig.compact?.keepRecentRounds) || 0,
-                compactPrompt: sessionConfig.compact?.compactPrompt || '',
-              },
-            };
-    await saveSessionPatch(patch);
   };
 
   const refreshContextLength = async () => {
-    if (!canEditSession || !sessionConfig || !requireControl()) return;
+    if (!canEditSession || !sessionConfig || !requireControl() || sessionOperation.current) return;
     const conversationId = workspace.selectedConversationId;
+    sessionOperation.current = true;
+    setSessionNotice('');
     setSessionBusy(true);
     try {
       const receipt = startCommand({
@@ -719,15 +725,18 @@ export function WorkspaceShell({
       const state = await receipt.completion;
       if (sessionScope.current !== conversationId) return;
       const result = state.result as ConversationConfigResult;
-      if (result?.config?.compact) {
-        setSessionConfig((current: any) => current ? {...current, compact: {...current.compact, contextLength: result.config.compact.contextLength, contextLengthSource: result.config.compact.contextLengthSource, contextLengthManual: false}} : current);
-        setContextLengthDraft(String(result.config.compact.contextLength));
-        setContextLengthEdited(false);
-        setNotice('已获取并保存当前模型的上下文长度。');
+      const compact = result?.config?.compact;
+      if (!compact || compact.contextLengthSource !== 'api' || !Number.isInteger(compact.contextLength) || compact.contextLength < 4096 || compact.contextLength > 10_000_000) {
+        throw new Error('Desktop 未返回有效的 API 上下文长度，已保留原值。');
       }
+      if (sessionBaseline.current) sessionBaseline.current = {...sessionBaseline.current, compact: {...sessionBaseline.current.compact, contextLength: compact.contextLength, contextLengthSource: 'api', contextLengthManual: false}};
+      setSessionConfig((current: any) => current ? {...current, compact: {...current.compact, contextLength: compact.contextLength, contextLengthSource: 'api', contextLengthManual: false}} : current);
+      setContextLengthDraft(String(compact.contextLength));
+      setContextLengthEdited(false);
+      setSessionNotice('已获取并保存当前模型的上下文长度，其他修改仍待保存。');
     } catch (error) {
-      setNotice(workspaceNotice(error, '上下文检索失败，已保留原值。'));
-    } finally { setSessionBusy(false); }
+      setSessionNotice(workspaceNotice(error, '上下文检索失败，已保留原值。'));
+    } finally { sessionOperation.current = false; setSessionBusy(false); }
   };
 
 
@@ -1343,9 +1352,14 @@ export function WorkspaceShell({
 
       <Sheet
         visible={sheet === 'session'}
-        onClose={() => setSheet(null)}
+        onClose={() => { if (!sessionOperation.current && !sessionBusy) setSheet(null); }}
+        onConfirm={sessionConfig && connected && controlledByMobile && !executionBusy ? saveSessionSettings : undefined}
+        confirmLabel={sessionConfig && connected && controlledByMobile && !executionBusy ? '完成' : '关闭'}
+        confirmDisabled={sessionBusy}
         title="会话设置"
       >
+        {sessionNotice ? <Text accessibilityLabel="会话设置操作结果" style={styles.sessionHint}>{sessionNotice}</Text> : null}
+
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
         {executionBusy ? <Text style={styles.sessionHint}>正在生成或执行工具，设置可查看；本轮结束或停止生成后可修改。</Text> : null}
         {sessionBusy && !sessionConfig ? (
@@ -1401,16 +1415,19 @@ export function WorkspaceShell({
         ) : null}
       </Sheet>
       <Sheet visible={sheet === 'model'} onClose={() => setSheet(null)} title="选择模型">
+        {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
         {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'reasoning'} onClose={() => setSheet(null)} title="思维深度">
+        {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
         {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.reasoningEfforts || []).map(value => <Pressable key={value} style={[styles.sessionSelectRow, sessionConfig?.reasoningEffort === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, reasoningEffort: value}); saveSessionPatch({reasoningEffort: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{reasoningLabel(value)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.reasoningEffort === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'voice'} onClose={() => setSheet(null)} title="语音">
+        {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
         {executionBusy ? <Text style={styles.sessionHint}>本轮处理中，当前仅可查看；结束或停止生成后可修改。</Text> : null}
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '关闭'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
@@ -2279,11 +2296,17 @@ function Sheet({
   title,
   children,
   onClose,
+  onConfirm,
+  confirmLabel = '完成',
+  confirmDisabled = false,
 }: {
   visible: boolean;
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  onConfirm?: () => void;
+  confirmLabel?: string;
+  confirmDisabled?: boolean;
 }) {
   const styles = useThemedStyles(baseStyles);
   const scroll = useRef<ScrollView>(null);
@@ -2321,8 +2344,8 @@ function Sheet({
           <View style={styles.sheetHandle} />
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>{title}</Text>
-            <Pressable onPress={onClose}>
-              <Text style={styles.link}>完成</Text>
+            <Pressable accessibilityLabel={`${title}${confirmLabel}`} disabled={confirmDisabled} onPress={onConfirm || onClose}>
+              <Text style={[styles.link, confirmDisabled && styles.disabled]}>{confirmDisabled ? '处理中…' : confirmLabel}</Text>
             </Pressable>
           </View>
           <ScrollView
