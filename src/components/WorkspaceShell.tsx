@@ -11,7 +11,6 @@ import {
   Alert,
   Keyboard,
   KeyboardAvoidingView,
-  FlatList,
   Image,
   Modal,
   Platform,
@@ -56,7 +55,7 @@ import { AppIcon } from './AppIcon';
 import {KeyboardDock} from './KeyboardDock';
 
 
-import {createConversationScrollController} from './conversationScroll';
+import {ConversationMessageList, MessageLayoutInteractionContext, type ConversationMessageListHandle} from './ConversationMessageList';
 import { useThemedStyles } from './theme';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
@@ -1465,7 +1464,7 @@ function AssistantRouter({
 }
 
 const ChatPage = React.forwardRef<
-  FlatList<RemoteMessage>,
+  ConversationMessageListHandle,
   {
     title: string;
     desktopId: string;
@@ -1552,26 +1551,9 @@ const ChatPage = React.forwardRef<
   ) => {
     const styles = useThemedStyles(baseStyles);
     const [voiceMode, setVoiceMode] = useState(false);
-    const list = useRef<FlatList<RemoteMessage>>(null);
+    const list = useRef<ConversationMessageListHandle>(null);
     const [pinned, setPinned] = useState(true);
-    const visibleIndex = useRef(0);
-    const viewabilityConfig = useRef({itemVisiblePercentThreshold: 1}).current;
-    const onViewableItemsChanged = useRef(({viewableItems}: {viewableItems: Array<{index: number | null}>}) => {
-      const first = viewableItems.find(item => item.index != null);
-      if (first?.index != null) visibleIndex.current = first.index;
-    }).current;
-    const scroll = useMemo(() => createConversationScrollController({
-      scheduler: {request: requestAnimationFrame, cancel: cancelAnimationFrame},
-      // Use measured ScrollView content geometry, not FlatList's average-row
-      // estimate for an unmeasured tail (which can oscillate on long messages).
-      scrollToEnd: (animated, offset) => list.current?.scrollToOffset({animated, offset}),
-      onPinnedChange: setPinned,
-    }), []);
     React.useImperativeHandle(ref, () => list.current!);
-    useEffect(() => {
-      scroll.reset();
-      return () => scroll.dispose();
-    }, [conversationId, scroll]);
     const lastVisibleMessage = [...messages]
       .reverse()
       .find(message => message.role === 'user' || message.role === 'assistant');
@@ -1583,17 +1565,9 @@ const ChatPage = React.forwardRef<
     const actions = useRef({onEdit, onDelete, onReask, onResendUser, onSubmitChoice});
     actions.current = {onEdit, onDelete, onReask, onResendUser, onSubmitChoice};
     const navigate = (target: 'top' | 'previous' | 'next' | 'bottom') => {
-      if (!rows.length) return;
-      if (target === 'top') {
-        scroll.leaveBottom();
-        list.current?.scrollToOffset({offset: 0, animated: true});
-        return;
-      }
-      if (target === 'bottom') { scroll.jumpToBottom(true); return; }
-      const index = adjacentMessageIndex(visibleIndex.current, rows.length, target === 'previous' ? -1 : 1);
-      if (index < 0) return;
-      scroll.leaveBottom();
-      list.current?.scrollToIndex({index, animated: true, viewPosition: 0.15});
+      if (target === 'top') list.current?.top();
+      else if (target === 'bottom') list.current?.bottom();
+      else list.current?.adjacent(target === 'previous' ? -1 : 1);
     };
       const liveChoices = Object.entries(pendingChoices || {})
       .filter(([toolCallId, pending]) =>
@@ -1603,35 +1577,20 @@ const ChatPage = React.forwardRef<
     return (
       <KeyboardDock>
         <View style={styles.chatViewport}>
-        <FlatList
-          style={styles.chatMessages}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
+        <ConversationMessageList
           ref={list}
-          data={rows}
-          keyExtractor={item => item.uiMessageId}
+          messages={rows}
+          style={styles.chatMessages}
           contentContainerStyle={styles.messageList}
-          removeClippedSubviews={false}
-          maintainVisibleContentPosition={pinned ? undefined : {minIndexForVisible: 0}}
-          scrollEventThrottle={16}
-          onScrollBeginDrag={() => scroll.beginDrag()}
-          onScrollEndDrag={() => scroll.endDrag()}
-          onMomentumScrollBegin={() => scroll.beginDrag()}
-          onMomentumScrollEnd={() => scroll.endDrag()}
-          onScroll={event => scroll.onScroll(event.nativeEvent.contentOffset.y, event.nativeEvent.layoutMeasurement.height, event.nativeEvent.contentSize.height)}
-          onContentSizeChange={(_width, height) => scroll.onContentSize(height)}
-          onLayout={event => scroll.onLayout(event.nativeEvent.layout.height)}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
-          onScrollToIndexFailed={({index, averageItemLength}) => list.current?.scrollToOffset({offset: Math.max(0, index * averageItemLength), animated: true})}
-          ListHeaderComponent={
+          onPinnedChange={setPinned}
+          header={
             hasOlder ? (
               <Pressable onPress={onOlder}>
                 <Text style={styles.link}>加载更早消息</Text>
               </Pressable>
             ) : null
           }
-          renderItem={({ item }) => (
+          renderMessage={item => (
             <MessageCard
               message={item}
               desktopId={desktopId}
@@ -2193,16 +2152,18 @@ const MessageCard = React.memo(function MessageCardView({
 function FoldCard({title, text}: {title: string; text: string}) {
   const styles = useThemedStyles(baseStyles);
   const [open, setOpen] = useState(false);
-  return <View style={styles.foldCard}><Pressable style={styles.foldHeader} onPress={() => setOpen(current => !current)}><Text style={styles.foldTitle}>{title}</Text><Text style={styles.foldChevron}>{open ? '收起' : '展开'}</Text></Pressable>{open ? <Text selectable style={styles.foldText}>{text}</Text> : null}</View>;
+  const beforeLayoutChange = React.useContext(MessageLayoutInteractionContext);
+  return <View style={styles.foldCard}><Pressable style={styles.foldHeader} onPress={() => { beforeLayoutChange(); setOpen(current => !current); }}><Text style={styles.foldTitle}>{title}</Text><Text style={styles.foldChevron}>{open ? '收起' : '展开'}</Text></Pressable>{open ? <Text selectable style={styles.foldText}>{text}</Text> : null}</View>;
 }
 
 function ToolCallCard({tool, pending, writable = true, onSubmit}: {tool: RemoteMessage['payload']['toolCalls'][number]; pending?: {conversationId: string; questions: Array<{question: string; header: string; options: Array<{label: string; description: string}>}>}; writable?: boolean; onSubmit: (toolCallId: string, responses: Array<Record<string, unknown>>) => Promise<void>}) {
   const styles = useThemedStyles(baseStyles);
   const [open, setOpen] = useState(false);
+  const beforeLayoutChange = React.useContext(MessageLayoutInteractionContext);
   return <View style={styles.toolCard}>
-    <Pressable accessibilityLabel={`查看工具 ${tool.name || '工具'} 详情`} style={styles.toolHeader} onPress={() => setOpen(current => !current)}><View style={styles.toolHeaderCopy}><AppIcon name="mcp" size={16} color={C.primary} /><Text numberOfLines={1} style={styles.toolName}>调用 {tool.name || '工具'}</Text></View><Text style={styles.toolState}>{tool.status === 'choosing' || pending ? '等待选择' : tool.status || (tool.result !== undefined ? '已完成' : '处理中')}</Text></Pressable>
+    <Pressable accessibilityLabel={`查看工具 ${tool.name || '工具'} 详情`} style={styles.toolHeader} onPress={() => { beforeLayoutChange(); setOpen(current => !current); }}><View style={styles.toolHeaderCopy}><AppIcon name="mcp" size={16} color={C.primary} /><Text numberOfLines={1} style={styles.toolName}>调用 {tool.name || '工具'}</Text></View><Text style={styles.toolState}>{tool.status === 'choosing' || pending ? '等待选择' : tool.status || (tool.result !== undefined ? '已完成' : '处理中')}</Text></Pressable>
     {open ? <View style={styles.toolBody}>
-      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{tool.arguments === '[参数已隐藏]' ? '实时执行中，等待安全详情同步…' : formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>等待工具完成并同步安全详情…</Text>}</ScrollView>}
+      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView accessibilityLabel={`工具 ${tool.name || '工具'} 输入输出`} nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{tool.arguments === '[参数已隐藏]' ? '实时执行中，等待安全详情同步…' : formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>等待工具完成并同步安全详情…</Text>}</ScrollView>}
     </View> : null}
   </View>;
 }
@@ -2709,7 +2670,7 @@ const baseStyles = StyleSheet.create({
   toolName: {flex: 1, color: C.text, fontSize: 12, fontWeight: '800'},
   toolState: {color: C.muted, fontSize: 10},
   toolBody: {padding: 11, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line, backgroundColor: C.surface},
-  toolDetailScroll: {height: 184, borderRadius: 10, backgroundColor: C.surfaceMuted},
+  toolDetailScroll: {height: 184, flexGrow: 0, borderRadius: 10, backgroundColor: C.surfaceMuted},
   toolDetailContent: {gap: 7, padding: 9},
   toolLabel: {color: C.muted, fontSize: 10, fontWeight: '800'},
   toolCode: {color: C.text, fontFamily: 'monospace', fontSize: 11, lineHeight: 16, flexShrink: 0},

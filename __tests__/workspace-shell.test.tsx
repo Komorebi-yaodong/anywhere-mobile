@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import {FlatList, Image, ScrollView, Text, TextInput, StyleSheet} from 'react-native';
+import {Image, ScrollView, Text, TextInput, StyleSheet} from 'react-native';
 import {
   filterSessionMcpServers,
   filterSessionSkills,
@@ -15,6 +15,8 @@ import type { DesktopRuntime } from '../src/hooks/useDesktops';
 import type { RemoteRequest, RemoteTrackedRequest } from '../src/remote/api';
 
 import {ManagementSettings} from '../src/components/ManagementSettings';
+
+import {ConversationMessageList} from '../src/components/ConversationMessageList';
 
 const mockCreate = jest.fn(async () => undefined);
 const mockCancel = jest.fn(async () => undefined);
@@ -200,17 +202,17 @@ test('stream notifications never manufacture message cards or regroup the Deskto
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
   await enterFixtureChat(root);
-  const list = () => root.root.findByType(FlatList);
-  expect(list().props.data).toEqual([]);
+  const list = () => root.root.findByType(ConversationMessageList);
+  expect(list().props.messages).toEqual([]);
   const payload = {content: '', reasoningContent: 'Desktop thinking', timestamp: '', completedTimestamp: '', toolCalls: [tool]};
   mockWorkspaceMessages = [
     {messageId: 'canonical-one', uiMessageId: 'real-ui-one', role: 'assistant', order: 1, payload},
     {messageId: 'canonical-two', uiMessageId: 'real-ui-two', role: 'assistant', order: 2, payload: {...payload, toolCalls: [{id: 'second-tool', name: 'second_tool', status: 'executing'}]}},
   ];
   await act(async () => root.update(<WorkspaceShell {...props} />));
-  const keys = () => list().props.data.map((message: any) => list().props.keyExtractor(message));
+  const keys = () => list().props.messages.map((message: any) => message.uiMessageId);
   expect(keys()).toEqual(['real-ui-one', 'real-ui-two']);
-  expect(list().props.data.map((message: any) => message.payload.toolCalls.map((call: any) => call.id))).toEqual([['first-tool'], ['second-tool']]);
+  expect(list().props.messages.map((message: any) => message.payload.toolCalls.map((call: any) => call.id))).toEqual([['first-tool'], ['second-tool']]);
   const detailsButton = root.root.findAll(node => node.props.accessibilityLabel === '查看工具 first_tool 详情' && typeof node.props.onPress === 'function')[0];
   await act(async () => detailsButton.props.onPress());
   const details = () => root.root.findAllByType(ScrollView).filter(node => node.props.nestedScrollEnabled && node.props.showsVerticalScrollIndicator);
@@ -232,6 +234,35 @@ test('stream notifications never manufacture message cards or regroup the Deskto
   await act(async () => root.update(<WorkspaceShell {...props} />));
   expect(keys()).toEqual(['real-ui-two']);
   expect(details()).toHaveLength(0);
+  await act(async () => root.unmount());
+});
+
+
+test('expanding a real earlier tool leaves every later loaded message mounted and ordered', async () => {
+  openConfigSession();
+  const props = workspaceProps();
+  const payload = {content: '', reasoningContent: '', timestamp: '', completedTimestamp: '', toolCalls: [{id: 'earlier-tool', name: 'earlier_tool', status: 'finished', arguments: {items: Array.from({length: 60}, (_, index) => ({text: `safe input ${index}`}))}, result: {text: 'safe output'}}]};
+  mockWorkspaceMessages = [
+    {messageId: 'first', uiMessageId: 'first', role: 'assistant', order: 0, payload},
+    ...Array.from({length: 60}, (_, index) => ({messageId: `later-${index}`, uiMessageId: `later-${index}`, role: index % 2 ? 'user' : 'assistant', order: index + 1, payload: {...payload, content: `later fixture ${index}`, toolCalls: []}})),
+  ];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
+  await enterFixtureChat(root);
+  const tail = () => root.root.findAll(node => node.props.testID === 'message-row-later-59' && node.props.onLayout)[0];
+  const mountedTail = tail();
+  const toggle = () => root.root.findAll(node => node.props.accessibilityLabel === '查看工具 earlier_tool 详情' && node.props.onPress)[0];
+  await act(async () => toggle().props.onPress());
+  expect(tail()).toBe(mountedTail);
+  const list = root.root.findByType(ConversationMessageList);
+  expect(list.props.messages.map((row: any) => row.uiMessageId)).toEqual(['first', ...Array.from({length: 60}, (_, index) => `later-${index}`)]);
+  const inner = root.root.findAllByType(ScrollView).find(node => node.props.accessibilityLabel === '工具 earlier_tool 输入输出')!;
+  expect(StyleSheet.flatten(inner.props.style)).toMatchObject({height: 184, flexGrow: 0});
+  expect(inner.findAllByType(Text).some(node => typeof node.props.children === 'string' && node.props.children.includes('safe output'))).toBe(true);
+  expect(inner.props.onContentSizeChange).toBeUndefined(); // Inner tool scroll cannot resize/control the transcript.
+  await act(async () => toggle().props.onPress());
+  expect(tail()).toBe(mountedTail);
+  expect(root.root.findAllByType(ScrollView).some(node => node.props.accessibilityLabel === '工具 earlier_tool 输入输出')).toBe(false);
   await act(async () => root.unmount());
 });
 
