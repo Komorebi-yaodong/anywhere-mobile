@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import {Image, ScrollView, Text, TextInput, StyleSheet} from 'react-native';
+import {FlatList, Image, ScrollView, Text, TextInput, StyleSheet} from 'react-native';
 import {
   filterSessionMcpServers,
   filterSessionSkills,
@@ -8,7 +8,6 @@ import {
   isPinnedToBottom,
   adjacentMessageIndex,
   hasMessageBubble,
-  reconcileLiveAssistantSegment,
   shouldRenderMessage,
   WorkspaceShell,
 } from '../src/components/WorkspaceShell';
@@ -193,90 +192,45 @@ test('keeps pinned geometry and message navigation within the visible message ra
 });
 
 
-test('reconciles a persisted live Assistant segment instead of appending a duplicate card', () => {
-  const messages = [{
-    messageId: 'assistant-storage-fixture',
-    uiMessageId: 'assistant-ui-fixture',
-    role: 'assistant' as const,
-    order: 1,
-    payload: {content: '', reasoningContent: 'saved thinking', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-fixture', name: 'get_file', status: '', arguments: {}, result: ''}]},
-  }];
-  const reconciled = reconcileLiveAssistantSegment(messages, {
-    segmentId: 'assistant-storage-fixture', text: '', reasoning: 'live thinking', terminal: false,
-  });
-  expect(reconciled.hasPersistedLiveSegment).toBe(true);
-  expect(reconciled.messages).toHaveLength(1);
-  expect(reconciled.messages[0].uiMessageId).toBe('live-turn-assistant-storage-fixture');
-  expect(reconciled.messages[0].payload.reasoningContent).toBe('live thinking');
-  expect(reconciled.messages[0].payload.toolCalls).toHaveLength(1);
-});
-
-
-test('keeps earlier live tool segments until each persisted segment is confirmed', () => {
-  const active = {
-    segmentId: 'tool-segment-two', text: '', reasoning: '', terminal: false,
-    segments: [{segmentId: 'tool-segment-one', text: '', reasoning: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished'}]}],
-    toolCalls: [{id: 'tool-two', name: 'second_tool', status: 'executing'}],
-  };
-  const first = reconcileLiveAssistantSegment([], active);
-  expect(first.messages.map(message => message.uiMessageId)).toEqual(['live-turn-tool-segment-two']);
-  expect(first.messages[0].payload.toolCalls.map(tool => tool.id)).toEqual(['tool-one', 'tool-two']);
-  const persistedFirst = [{
-    messageId: 'tool-segment-one', uiMessageId: 'assistant-one', role: 'assistant' as const, order: 1,
-    payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-one', name: 'first_tool', status: 'finished', arguments: {safe: true}, result: {ok: true}}]},
-  }];
-  const second = reconcileLiveAssistantSegment(persistedFirst, {...active, historyLoaded: true});
-  expect(second.messages.map(message => message.uiMessageId)).toEqual(['live-turn-tool-segment-two']);
-  expect(second.messages[0].payload.toolCalls.map(tool => tool.id)).toEqual(['tool-one', 'tool-two']);
-  const final = reconcileLiveAssistantSegment([...persistedFirst, {
-    messageId: 'tool-segment-two', uiMessageId: 'assistant-two', role: 'assistant' as const, order: 2,
-    payload: {content: '', reasoningContent: '', summary: '', summaryPrefix: '', timestamp: '', completedTimestamp: '', aiName: '', voiceName: '', status: '', toolCalls: [{id: 'tool-two', name: 'second_tool', status: 'finished', arguments: {safe: true}, result: {ok: true}}]},
-  }], {...active, terminal: true, historyLoaded: true});
-  expect(final.messages.map(message => message.uiMessageId)).toEqual(['assistant-one', 'assistant-two']);
-  expect(final.messages.some(message => message.preview)).toBe(false);
-});
-
-
-test('renders a live tool-only Assistant card before normal assistant text arrives', async () => {
-  mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: false, controlledByThisDevice: true, mobileControlled: true}];
-  mockActiveTurn = {requestId: 'request-tool-live', conversationId: 'conversation-shell-fixture', submittedText: '', text: '', reasoning: '', segmentId: 'tool-live-card', toolCalls: [{id: 'tool-live-card-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}], event: 'assistant.delta', eventSequence: 1, terminal: false, truncated: false};
-  let root!: TestRenderer.ReactTestRenderer;
-  await act(async () => { root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />); });
-  await enterFixtureChat(root);
-  const renderedText = root.root.findAllByType(Text).map(node => Array.isArray(node.props.children) ? node.props.children.join('') : String(node.props.children || ''));
-  expect(renderedText).toContain('调用 safe_tool');
-  expect(renderedText).toContain('executing');
-  await act(async () => root.unmount());
-});
-
-
-test('keeps an expanded live tool mounted across updates and hands off to real message actions', async () => {
+test('stream notifications never manufacture message cards or regroup the Desktop page', async () => {
   openConfigSession();
   const props = workspaceProps();
-  const tool = {id: 'stable-tool', name: 'stable_tool', status: 'executing', arguments: '[参数已隐藏]'};
-  mockActiveTurn = {requestId: 'stable-request', conversationId: 'conversation-shell-fixture', segmentId: 'stable-segment', text: '', reasoning: 'thinking fixture', toolCalls: [tool], terminal: false};
+  const tool = {id: 'first-tool', name: 'first_tool', status: 'executing', arguments: '[参数已隐藏]'};
+  mockActiveTurn = {requestId: 'request-live', conversationId: 'conversation-shell-fixture', segmentId: 'segment-one', text: 'live text not in page', reasoning: 'live thinking not in page', toolCalls: [tool], terminal: false};
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => { root = TestRenderer.create(<WorkspaceShell {...props} />); });
   await enterFixtureChat(root);
-  const detailButton = () => root.root.findAll(node => node.props.accessibilityLabel === '查看工具 stable_tool 详情' && typeof node.props.onPress === 'function')[0];
-  await act(async () => detailButton().props.onPress());
+  const list = () => root.root.findByType(FlatList);
+  expect(list().props.data).toEqual([]);
+  const payload = {content: '', reasoningContent: 'Desktop thinking', timestamp: '', completedTimestamp: '', toolCalls: [tool]};
+  mockWorkspaceMessages = [
+    {messageId: 'canonical-one', uiMessageId: 'real-ui-one', role: 'assistant', order: 1, payload},
+    {messageId: 'canonical-two', uiMessageId: 'real-ui-two', role: 'assistant', order: 2, payload: {...payload, toolCalls: [{id: 'second-tool', name: 'second_tool', status: 'executing'}]}},
+  ];
+  await act(async () => root.update(<WorkspaceShell {...props} />));
+  const keys = () => list().props.data.map((message: any) => list().props.keyExtractor(message));
+  expect(keys()).toEqual(['real-ui-one', 'real-ui-two']);
+  expect(list().props.data.map((message: any) => message.payload.toolCalls.map((call: any) => call.id))).toEqual([['first-tool'], ['second-tool']]);
+  const detailsButton = root.root.findAll(node => node.props.accessibilityLabel === '查看工具 first_tool 详情' && typeof node.props.onPress === 'function')[0];
+  await act(async () => detailsButton.props.onPress());
   const details = () => root.root.findAllByType(ScrollView).filter(node => node.props.nestedScrollEnabled && node.props.showsVerticalScrollIndicator);
   expect(details()).toHaveLength(1);
-  expect(root.root.findAll(node => node.props.accessibilityLabel === '删除消息' && typeof node.props.onPress === 'function')).toHaveLength(0);
-  mockActiveTurn = {...mockActiveTurn, toolCalls: [{...tool, status: 'finished'}]};
+  const mountedPanel = details()[0];
+  mockActiveTurn = {...mockActiveTurn, segmentId: 'segment-three', text: 'different live text', toolCalls: [tool, {id: 'third-tool', name: 'not_in_page', status: 'executing'}]};
   await act(async () => root.update(<WorkspaceShell {...props} />));
-  expect(details()).toHaveLength(1);
-  mockWorkspaceMessages = [{messageId: 'stable-segment', uiMessageId: 'real-ui-message', role: 'assistant', order: 1, payload: {content: '', reasoningContent: 'thinking fixture', toolCalls: [{...tool, status: 'finished', arguments: {query: 'safe'}, result: {ok: true}}]}}];
-  mockActiveTurn = {...mockActiveTurn, terminal: true, historyLoaded: true, handoffUiMessageId: 'real-ui-message'};
+  expect(keys()).toEqual(['real-ui-one', 'real-ui-two']);
+  expect(details()[0]).toBe(mountedPanel);
+  mockWorkspaceMessages = [{...mockWorkspaceMessages[0], payload: {...payload, toolCalls: [{...tool, status: 'finished', result: 'Desktop safe result'}]}}, mockWorkspaceMessages[1]];
+  mockActiveTurn = {...mockActiveTurn, terminal: true, historyLoaded: true};
   await act(async () => root.update(<WorkspaceShell {...props} />));
-  expect(details()).toHaveLength(1);
-  expect(root.root.findAllByType(Text).some(node => node.props.children === '输出结果')).toBe(true);
-  expect(root.root.findAll(node => node.props.accessibilityLabel === '删除消息' && typeof node.props.onPress === 'function')).toHaveLength(1);
+  expect(keys()).toEqual(['real-ui-one', 'real-ui-two']);
+  expect(details()[0]).toBe(mountedPanel);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === 'Desktop safe result')).toBe(true);
   const dock = root.root.findAll(node => node.props.accessibilityLabel === '消息导航居中区域')[0];
-  expect(StyleSheet.flatten(dock.props.style).justifyContent).toBe('center');
-  expect(StyleSheet.flatten(dock.props.style)).toMatchObject({top: 0, bottom: 0});
-  mockWorkspaceMessages = [];
+  expect(StyleSheet.flatten(dock.props.style)).toMatchObject({top: 0, bottom: 0, justifyContent: 'center'});
+  mockWorkspaceMessages = [mockWorkspaceMessages[1]];
   await act(async () => root.update(<WorkspaceShell {...props} />));
+  expect(keys()).toEqual(['real-ui-two']);
   expect(details()).toHaveLength(0);
   await act(async () => root.unmount());
 });

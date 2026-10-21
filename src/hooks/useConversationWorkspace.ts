@@ -16,7 +16,9 @@ import {
 } from '../remote/api';
 import type { RemoteEventMessage } from '../remote/client';
 
-import {deletedProjectionUiIds} from '../components/conversationTimeline';
+import {reconcileDesktopMessages} from '../components/conversationTimeline';
+
+import {createConversationMessageRefresh} from './conversationMessageRefresh';
 
 export type ActiveConversationTurn = {
   requestId: string;
@@ -25,18 +27,12 @@ export type ActiveConversationTurn = {
   text: string;
   reasoning: string;
   toolCalls?: RemoteMessage['payload']['toolCalls'];
-  /** Segment snapshots belonging to the one request-level live preview. */
-  segments?: Array<{segmentId: string; text: string; reasoning: string; toolCalls?: RemoteMessage['payload']['toolCalls']}>;
-  baselineUiMessageIds?: string[];
-  baselineLastOrder?: number;
-  handoffUiMessageId?: string;
   event: string;
   eventSequence: number;
   terminal: boolean;
   truncated: boolean;
   segmentId?: string;
   historyLoaded?: boolean;
-  replacedUiMessageId?: string;
   errorCode?: string;
 };
 
@@ -173,13 +169,14 @@ export function useConversationWorkspace({
         | ((
             current: ActiveConversationTurn | null,
           ) => ActiveConversationTurn | null),
+      publish = true,
     ) => {
       const next =
         typeof updater === 'function'
           ? updater(activeTurnRef.current)
           : updater;
       activeTurnRef.current = next;
-      setActiveTurn(next);
+      if (publish) setActiveTurn(next);
     },
     [],
   );
@@ -237,7 +234,7 @@ export function useConversationWorkspace({
     }
   }, [api, catalogLoading, catalogPage]);
 
-  const loadMessages = useCallback(
+  const readMessages = useCallback(
     async (conversationId: string) => {
       if (!conversationId || desktopStatus !== '在线') return;
       const epoch = ++messageEpoch.current;
@@ -260,7 +257,9 @@ export function useConversationWorkspace({
         const older = result.page.hasMore && firstOrder !== undefined
           ? messagesRef.current.filter(message => message.order < firstOrder && !deletedUiMessageIdsRef.current.has(message.uiMessageId))
           : [];
-        setMessages([...older, ...incoming]);
+        const nextMessages = reconcileDesktopMessages(messagesRef.current, [...older, ...incoming]);
+        messagesRef.current = nextMessages;
+        setMessages(nextMessages);
         setTasks(Array.isArray(result.tasks) ? result.tasks : []);
         setConversationModel(typeof result.conversation?.model === 'string' ? result.conversation.model : '');
         setConversationAssistant({
@@ -278,19 +277,9 @@ export function useConversationWorkspace({
             current.conversationId !== conversationId ||
             (requestedTurn && current.requestId !== requestedTurn.requestId)
           ) return current;
-          // Intermediate persistence must never replace the one live Mobile
-          // bubble. Only the terminal history read is allowed to reveal its
-          // durable rows, preventing thought/tool/text cards from splitting.
-          if (!current.terminal || !requestedTurn?.terminal) return current;
-          // A successful read STARTED after terminal is authoritative, including
-          // an empty page or a segment removed by a later edit/delete.
-          const segmentIds = new Set([current.segmentId, ...(current.segments || []).map(segment => segment.segmentId)]);
-          const baseline = current.baselineUiMessageIds ? new Set(current.baselineUiMessageIds) : null;
-          const lastDurable = incoming.filter(message => message.role === 'assistant' && (
-            segmentIds.has(message.messageId) || segmentIds.has(message.uiMessageId) ||
-            (baseline !== null && !baseline.has(message.uiMessageId) && message.order >= (current.baselineLastOrder ?? Number.MAX_SAFE_INTEGER))
-          )).at(-1);
-          return {...current, historyLoaded: true, handoffUiMessageId: current.handoffUiMessageId || lastDurable?.uiMessageId};
+          return current.terminal && requestedTurn?.terminal
+            ? {...current, historyLoaded: true}
+            : current;
         });
       } catch (cause) {
         if (isCurrent()) {
@@ -303,6 +292,14 @@ export function useConversationWorkspace({
     },
     [api, commitTurn, desktopId, desktopStatus],
   );
+
+  const messageRefresh = useMemo(() => createConversationMessageRefresh(readMessages), [readMessages]);
+  const loadMessages = useCallback((conversationId: string) => messageRefresh.request(conversationId), [messageRefresh]);
+  useEffect(() => () => {
+    messageEpoch.current += 1;
+    messageRefresh.cancel();
+  }, [messageRefresh]);
+
 
   const loadOlderMessages = useCallback(async () => {
     if (
@@ -392,6 +389,7 @@ export function useConversationWorkspace({
         .catch(cause => setError(errorMessage(cause)));
     }
     messageEpoch.current += 1;
+    messageRefresh.cancel();
     deletedUiMessageIdsRef.current.clear();
     scopeRef.current.selectedConversationId = conversationId;
     setMessages([]);
@@ -401,7 +399,7 @@ export function useConversationWorkspace({
     setPendingChoices({});
     setMessagePage({ pageSize: 50, nextBeforeUiOrder: null, hasMore: false });
     setSelectedConversationId(conversationId);
-  }, [api, desktopStatus, refreshOpenedSessions, releaseConversation]);
+  }, [api, desktopStatus, messageRefresh, refreshOpenedSessions, releaseConversation]);
 
   const createConversation = useCallback(
     async (promptCode: string) => {
@@ -465,11 +463,6 @@ export function useConversationWorkspace({
           text: state.text,
           reasoning: state.reasoning,
           toolCalls: state.toolCalls,
-          segments: state.segmentId && current.segmentId && state.segmentId !== current.segmentId
-            ? [...(current.segments || []).filter(segment => segment.segmentId !== current.segmentId), {
-                segmentId: current.segmentId, text: current.text, reasoning: current.reasoning, toolCalls: current.toolCalls,
-              }]
-            : current.segments,
           segmentId: state.segmentId || current.segmentId,
           event: state.event,
           eventSequence: Math.max(current.eventSequence, state.eventSequence),
@@ -633,8 +626,6 @@ export function useConversationWorkspace({
                 requestId,
                 conversationId: conversationId || queued.conversationId,
                 submittedText: queued.text,
-                baselineUiMessageIds: messagesRef.current.map(message => message.uiMessageId),
-                baselineLastOrder: Math.max(0, ...messagesRef.current.map(message => message.order)),
                 text: '',
                 reasoning: '',
                 event: 'conversation.command.pending',
@@ -650,26 +641,22 @@ export function useConversationWorkspace({
         );
       }
       let becameTerminal = false;
+      let acceptedUpdate = false;
       commitTurn(current => {
         if (!current || current.requestId !== requestId || current.terminal)
           return current;
         if (sequence < 1 || sequence <= current.eventSequence) return current;
+        acceptedUpdate = true;
         const terminal = isTerminalEvent(event.event);
         const nextSegmentId = event.event === 'assistant.delta'
           ? stringValue(payload.segmentId) || current.segmentId
           : current.segmentId;
         const segmentChanged = Boolean(nextSegmentId && nextSegmentId !== current.segmentId);
-        const segments = segmentChanged && current.segmentId
-          ? [...(current.segments || []).filter(segment => segment.segmentId !== current.segmentId), {
-              segmentId: current.segmentId, text: current.text, reasoning: current.reasoning, toolCalls: current.toolCalls,
-            }]
-          : current.segments;
         becameTerminal = terminal;
         return {
           ...current,
           conversationId: conversationId || current.conversationId,
-          // A Desktop turn can create multiple storage segments. They remain
-          // one Mobile card and accumulate instead of being rendered as cards.
+          // Stream state is request progress only; never used as list data.
           text: event.event === 'assistant.delta'
             ? (segmentChanged ? '' : current.text) + stringValue(payload.textDelta)
             : current.text,
@@ -677,7 +664,6 @@ export function useConversationWorkspace({
             ? (segmentChanged ? '' : current.reasoning) + stringValue(payload.reasoningDelta)
             : current.reasoning,
           segmentId: nextSegmentId,
-          segments,
           historyLoaded: terminal ? current.historyLoaded : false,
           toolCalls: event.event === 'assistant.delta' && Array.isArray(payload.toolCalls)
             ? mergeLiveToolCalls(segmentChanged ? undefined : current.toolCalls, payload.toolCalls as RemoteMessage['payload']['toolCalls'])
@@ -692,9 +678,15 @@ export function useConversationWorkspace({
               ? stringValue(payload.code) || 'remote_operation_failed'
               : current.errorCode,
         };
-      });
+      }, event.event !== 'assistant.delta');
+      if (event.event === 'assistant.delta' && conversationId && conversationId === scopeRef.current.selectedConversationId &&
+        (acceptedUpdate || activeTurnRef.current?.requestId !== requestId)) {
+        messageRefresh.request(conversationId, false).catch(() => undefined);
+      }
+
       if (
-        (becameTerminal || event.event === 'assistant.started') &&
+        (becameTerminal || event.event === 'assistant.started' ||
+          (isTerminalEvent(event.event) && activeTurnRef.current?.requestId !== requestId)) &&
         conversationId
       ) {
         if (scopeRef.current.selectedConversationId === conversationId) {
@@ -708,7 +700,7 @@ export function useConversationWorkspace({
         }
       }
     },
-    [commitQueue, commitTurn, loadMessages, refreshCatalog, refreshOpenedSessions],
+    [commitQueue, commitTurn, loadMessages, messageRefresh, refreshCatalog, refreshOpenedSessions],
   );
 
   useEffect(() => {
@@ -779,7 +771,6 @@ export function useConversationWorkspace({
       text: string,
       uploadIds: string[] = [],
       reaskUiMessageId?: string,
-      reaskRole?: 'user' | 'assistant',
     ) => {
       const body = text;
       if (
@@ -822,9 +813,6 @@ export function useConversationWorkspace({
           requestId: tracked.requestId,
           conversationId: selectedConversationId,
           submittedText: body,
-          replacedUiMessageId: reaskRole === 'assistant' ? reaskUiMessageId : undefined,
-          baselineUiMessageIds: messagesRef.current.map(message => message.uiMessageId),
-          baselineLastOrder: Math.max(0, ...messagesRef.current.map(message => message.order)),
           text: '',
           reasoning: '',
           event: 'conversation.command.pending',
@@ -917,7 +905,6 @@ export function useConversationWorkspace({
             current?.requestId === tracked.requestId
               ? {
                   ...current,
-                  replacedUiMessageId: undefined,
                   historyLoaded: true,
                 }
               : current,
@@ -950,7 +937,7 @@ export function useConversationWorkspace({
       }
       // Desktop reuses the existing persisted user turn (and any persisted
       // attachments), so Mobile must not create a duplicate message or upload.
-      await sendMessage('', [], uiMessageId, role);
+      await sendMessage('', [], uiMessageId);
     },
     [messages, sendMessage],
   );
@@ -1034,11 +1021,14 @@ export function useConversationWorkspace({
 
   const removeMessageFromView = useCallback((uiMessageId: string) => {
     if (!uiMessageId) return;
-    for (const id of deletedProjectionUiIds(messagesRef.current, uiMessageId)) deletedUiMessageIdsRef.current.add(id);
-    // Invalidate any pre-deletion history response, then retire its preview.
+    deletedUiMessageIdsRef.current.add(uiMessageId);
+    // Invalidate any pre-deletion history response. Hide only the exact UI ID,
+    // never infer aliases from text or a shared canonical messageId.
     messageEpoch.current += 1;
     setMessagesLoading(false);
-    setMessages(current => current.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId)));
+    const remaining = messagesRef.current.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
+    messagesRef.current = remaining;
+    setMessages(remaining);
     commitTurn(current => current?.terminal ? {...current, historyLoaded: true} : current);
   }, [commitTurn]);
 
@@ -1082,14 +1072,7 @@ export function useConversationWorkspace({
             window: null,
           }
         : null),
-    messages:
-      activeTurn?.conversationId === selectedConversationId &&
-      !activeTurn.historyLoaded &&
-      activeTurn.replacedUiMessageId
-        ? messages.filter(
-            message => message.uiMessageId !== activeTurn.replacedUiMessageId,
-          )
-        : messages,
+    messages,
     messagePage,
     messagesLoading,
     activeTurn,

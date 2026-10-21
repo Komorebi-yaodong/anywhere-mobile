@@ -1,5 +1,5 @@
 import {createConversationScrollController} from '../src/components/conversationScroll';
-import {projectConversationTimeline, type LiveTurn} from '../src/components/conversationTimeline';
+import {reconcileDesktopMessages} from '../src/components/conversationTimeline';
 import type {RemoteMessage} from '../src/remote/api';
 
 function message(uiMessageId: string, messageId = uiMessageId, order = 1): RemoteMessage {
@@ -84,52 +84,27 @@ describe('conversation auto-follow has one owner', () => {
   });
 });
 
-describe('request-stable Mobile preview', () => {
-  it('keeps one preview key across reasoning, tool segments and UI-only persisted projections', () => {
-    const turn: NonNullable<LiveTurn> = {requestId: 'request-fixture', segmentId: 'segment-one', text: '', reasoning: 'thought fixture', baselineUiMessageIds: ['old-ui'], baselineLastOrder: 5, terminal: false};
-    const old = message('old-ui', 'old-storage', 5);
-    const first = projectConversationTimeline([old], turn);
-    expect(first.messages.map(item => item.renderKey)).toEqual(['old-ui', 'live-turn-request-fixture']);
-    const tool = {id: 'tool-one', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'};
-    const uiOnly = message('ui-only-thinking', 'ui-only-thinking', 7);
-    const persisted = {...message('ui-with-tool', 'segment-two', 8), payload: {...message('unused').payload, toolCalls: [{...tool, arguments: {query: 'synthetic safe'}, result: {ok: true}}]}};
-    const next = projectConversationTimeline([old, uiOnly, persisted], {
-      ...turn, segmentId: 'segment-two', reasoning: '', toolCalls: [tool],
-      segments: [{segmentId: 'segment-one', text: '', reasoning: 'thought fixture'}],
-    });
-    expect(next.messages.map(item => item.renderKey)).toEqual(['old-ui', 'live-turn-request-fixture']);
-    expect(next.messages[1].payload.reasoningContent).toBe('thought fixture');
-    expect(next.messages[1].payload.toolCalls).toHaveLength(1);
-    expect(next.messages[1].payload.toolCalls[0].arguments).toEqual({query: 'synthetic safe'});
-    expect(next.messages[1].preview).toBe(true);
-    expect(projectConversationTimeline([message('older-loaded', 'older', 1), old], turn).messages[0].uiMessageId).toBe('older-loaded');
+describe('Desktop message page is the only timeline truth', () => {
+  it('preserves every UI message ID and tool grouping, even when canonical IDs or reasoning match', () => {
+    const thought = message('thought-ui', 'same-canonical');
+    const tool = {...message('tool-ui', 'same-canonical', 2), payload: {...thought.payload, toolCalls: [{id: 'tool-one', name: 'safe_tool', status: 'executing'}]}};
+    const other = {...message('other-ui', 'other', 3), payload: {...thought.payload, toolCalls: [{id: 'tool-two', name: 'safe_tool', status: 'finished'}]}};
+    const page = [thought, tool, other];
+    const result = reconcileDesktopMessages([], page);
+    expect(result).toEqual(page);
+    expect(result.map(row => row.uiMessageId)).toEqual(['thought-ui', 'tool-ui', 'other-ui']);
+    expect(result.map(row => row.payload.toolCalls.map(call => call.id))).toEqual([[], ['tool-one'], ['tool-two']]);
+    expect(result.some(row => row.uiMessageId.startsWith('live-'))).toBe(false);
   });
 
-  it('does not render a stale thought-only projection beside the richer projection of the SAME real message', () => {
-    const thought = message('thinking-ui', 'same-message');
-    const tool = {...message('tool-ui', 'same-message', 2), payload: {...thought.payload, toolCalls: [{id: 'tool-id', name: 'safe_tool', status: 'finished', result: 'safe result'}]}};
-    const projected = projectConversationTimeline([thought, tool], null).messages;
-    expect(projected.map(item => item.uiMessageId)).toEqual(['tool-ui']);
-    expect(projected[0].payload.toolCalls).toHaveLength(1);
-    const independent = {...thought, uiMessageId: 'different-ui', payload: {...thought.payload, content: 'independent text'}};
-    expect(projectConversationTimeline([independent, tool], null).messages).toHaveLength(2);
-
-    // Textually similar but different real messages must not be deduplicated.
-    expect(projectConversationTimeline([thought, {...tool, messageId: 'another-message'}], null).messages).toHaveLength(2);
-  });
-
-
-  it('hands off identity but not live payload to a real durable target; deleted content is never recreated', () => {
-    const durable = {...message('durable-ui', 'segment-one'), payload: {...message('unused').payload, content: 'edited durable text'}};
-    const turn: NonNullable<LiveTurn> = {requestId: 'request-fixture', segmentId: 'segment-one', text: 'stale live text', reasoning: '', terminal: true, historyLoaded: true, handoffUiMessageId: 'durable-ui'};
-    const final = projectConversationTimeline([durable], turn).messages;
-    expect(final).toHaveLength(1);
-    expect(final[0].renderKey).toBe('live-turn-request-fixture');
-    expect(final[0].uiMessageId).toBe('durable-ui');
-    expect(final[0].preview).not.toBe(true);
-    expect(final[0].payload.content).toBe('edited durable text');
-    expect(projectConversationTimeline([], turn).messages).toEqual([]);
-    const other = message('other-ui', 'segment-one');
-    expect(projectConversationTimeline([other], turn).messages[0].renderKey).toBe('other-ui');
+  it('reuses unchanged rows and the entire array, but applies exact Desktop edits and deletion', () => {
+    const previous = [message('first'), message('second', 'second', 2)];
+    expect(reconcileDesktopMessages(previous, JSON.parse(JSON.stringify(previous)))).toBe(previous);
+    const changed = {...previous[1], payload: {...previous[1].payload, content: 'edited by Desktop'}};
+    const next = reconcileDesktopMessages(previous, [JSON.parse(JSON.stringify(previous[0])), changed]);
+    expect(next[0]).toBe(previous[0]);
+    expect(next[1]).toBe(changed);
+    expect(reconcileDesktopMessages(next, [changed])).toEqual([changed]);
+    expect(reconcileDesktopMessages(next, [])).toEqual([]);
   });
 });

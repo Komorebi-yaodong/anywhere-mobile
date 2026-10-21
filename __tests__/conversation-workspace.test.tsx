@@ -102,14 +102,16 @@ describe('conversation workspace state boundaries', () => {
     await act(async()=>{second=f.state.sendMessage('second');});
     expect(f.state.queuedSends).toHaveLength(1);
     await act(async()=>{f.emit('assistant.delta',1,{requestId:'request-queue-fixture-1',textDelta:'early queued reply'});});
+    await act(async () => { await f.state.refreshMessages(); });
     expect(f.state.activeTurn?.text).toBe('early queued reply');
     await act(async()=>{replies[1].resolve({ok:true,queued:true,position:1});await second;});
+    await act(async () => { await f.state.refreshMessages(); });
     expect(f.state.activeTurn?.text).toBe('early queued reply');
     expect(f.state.queuedSends).toHaveLength(0);
     await act(async()=>root.unmount());
   });
 
-  it('replaces a reasked reply immediately and reconciles persisted history without switching', async () => {
+  it('keeps Desktop history during reask until an authoritative page replaces it', async () => {
     const f = fixture();
     const oldPage = {...page(A), messages: [{uiMessageId: 'old-reply', role: 'assistant', order: 1, payload: {content: 'old error'}}]};
     const base = f.rpc.getMockImplementation()!;
@@ -119,10 +121,10 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
     let reask!: Promise<void>;
     await act(async () => { reask = f.state.reaskLastAssistant('old-reply'); });
-    expect(f.state.messages).toEqual([]);
+    expect(f.state.messages.map(item => item.uiMessageId)).toEqual(['old-reply']);
     expect(f.tracked).toHaveBeenCalledWith(desktopId, 'conversation.message.reask', {conversationId: A, uiMessageId: 'old-reply'}, 30_000);
     await act(async () => { f.emit('assistant.delta', 1, {textDelta: 'new reply'}); });
-    expect(f.state.messages).toEqual([]);
+    expect(f.state.messages.map(item => item.uiMessageId)).toEqual(['old-reply']);
     oldPage.messages = [{uiMessageId: 'new-reply', role: 'assistant', order: 1, payload: {content: 'new reply'}}];
     await act(async () => { f.response.resolve({ok: true}); await reask; f.emit('assistant.completed', 2); });
     expect(f.state.messages.map(item => item.uiMessageId)).toEqual(['new-reply']);
@@ -139,7 +141,7 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
     let result!: Promise<unknown>;
     await act(async () => { result = f.state.reaskLastAssistant('old-reply').catch(error => error); });
-    expect(f.state.messages).toHaveLength(0);
+    expect(f.state.messages.map(item => item.uiMessageId)).toEqual(['old-reply']);
     await act(async () => { f.response.reject(Object.assign(new Error('busy'), {code: 'remote_conversation_busy'})); await result; });
     expect(f.state.messages[0].uiMessageId).toBe('old-reply');
     expect(f.state.activeTurn?.terminal).toBe(true);
@@ -206,18 +208,77 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => {
       f.emit('assistant.delta', 1, {segmentId: 'assistant-tool-segment', toolCalls: [{id: 'tool-live-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}]});
     });
+    await act(async () => { await f.state.refreshMessages(); });
     expect(f.state.activeTurn).toMatchObject({text: '', reasoning: '', segmentId: 'assistant-tool-segment'});
     expect(f.state.activeTurn?.toolCalls).toEqual([{id: 'tool-live-fixture', name: 'safe_tool', status: 'executing', arguments: '[参数已隐藏]'}]);
     await act(async () => {
       f.emit('assistant.delta', 2, {segmentId: 'assistant-tool-segment', toolCalls: [{id: 'tool-live-fixture', name: 'safe_tool', status: 'finished', arguments: '[参数已隐藏]'}]});
     });
+    await act(async () => { await f.state.refreshMessages(); });
     expect(f.state.activeTurn?.toolCalls?.[0]).toMatchObject({status: 'finished', arguments: '[参数已隐藏]'});
     await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
   });
 
 
 
-  it('keeps tool-loop segments in one readable live Assistant turn', async () => {
+  it('never replaces Desktop message boundaries with stream tools, even at terminal', async () => {
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    const payload = {content: '', reasoningContent: 'Desktop reasoning', toolCalls: []};
+    const rows = [
+      {messageId: 'shared-canonical', uiMessageId: 'ui-one', role: 'assistant', order: 1, payload: {...payload, toolCalls: [{id: 'one', name: 'one', status: 'finished'}]}},
+      {messageId: 'shared-canonical', uiMessageId: 'ui-two', role: 'assistant', order: 2, payload: {...payload, toolCalls: [{id: 'two', name: 'two', status: 'executing'}]}},
+    ];
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A ? Promise.resolve({...page(A), messages: rows}) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    const before = f.state.messages;
+    let send!: Promise<void>;
+    await act(async () => { send = f.state.sendMessage('fixture'); });
+    await act(async () => {
+      for (let index = 1; index <= 20; index += 1) f.emit('assistant.delta', index, {segmentId: `stream-${index}`, reasoningDelta: 'must not become a bubble', toolCalls: [{id: `new-${index}`, name: 'not-in-page', status: 'executing'}]});
+    });
+    expect(f.state.messages).toBe(before);
+    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['ui-one', 'ui-two']);
+    expect(f.state.messages.map(message => message.payload.toolCalls.map(call => call.id))).toEqual([['one'], ['two']]);
+    await act(async () => { f.response.resolve({ok: true}); await send; f.emit('assistant.completed', 21); });
+    expect(f.state.messages).toBe(before);
+    expect(f.state.messages).toEqual(rows);
+    await act(async () => root.unmount());
+  });
+
+
+  it('does not publish React updates per token while the authoritative history read is throttled', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let send!: Promise<void>;
+    await act(async () => { send = f.state.sendMessage('fixture'); });
+    const snapshot = f.state;
+    await act(async () => {
+      for (let index = 1; index <= 50; index += 1) f.emit('assistant.delta', index, {textDelta: 'x'});
+    });
+    expect(f.state).toBe(snapshot);
+    expect(f.state.messages).toBe(snapshot.messages);
+    await act(async () => { f.response.resolve({ok: true}); await send; f.emit('assistant.completed', 51); });
+    expect(f.state.activeTurn?.terminal).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+
+  it('refreshes the final Desktop page for an observed request that was not sent by this Mobile', async () => {
+    const f = fixture();
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    const before = f.rpc.mock.calls.filter(call => call[1] === 'conversation.messages.list').length;
+    await act(async () => { f.emit('assistant.completed', 1, {requestId: 'desktop-observed-request'}); });
+    expect(f.rpc.mock.calls.filter(call => call[1] === 'conversation.messages.list').length).toBeGreaterThan(before);
+    expect(f.state.activeTurn).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+
+  it('tracks only current segment progress without accumulating a second timeline', async () => {
     const f = fixture();
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
@@ -231,9 +292,9 @@ describe('conversation workspace state boundaries', () => {
         textDelta: 'second answer', reasoningDelta: 'second thinking', segmentId: 'assistant-segment-two',
       });
     });
+    await act(async () => { await f.state.refreshMessages(); });
     expect(f.state.activeTurn).toMatchObject({
       segmentId: 'assistant-segment-two', text: 'second answer', reasoning: 'second thinking', historyLoaded: false,
-      segments: [{segmentId: 'assistant-segment-one', text: 'first answer', reasoning: 'first thinking'}],
     });
     await act(async () => { f.response.resolve({ok: true}); await send; root.unmount(); });
   });
@@ -249,6 +310,7 @@ describe('conversation workspace state boundaries', () => {
       f.emit('assistant.delta', 1, {textDelta: 'first'});
       f.emit('assistant.delta', 1, {textDelta: 'duplicate'});
     });
+    await act(async () => { await f.state.refreshMessages(); });
     expect(f.state.activeTurn?.text).toBe('first');
     await act(async () => {
       f.response.resolve({ok: true});
@@ -362,7 +424,7 @@ describe('conversation workspace state boundaries', () => {
   });
 
 
-  it('removes the hidden subset reasoning projection too, without hiding an independent message', async () => {
+  it('deletes only the exact confirmed UI ID, never guesses aliases from shared canonical IDs', async () => {
     const f = fixture();
     const payload = {content: '', reasoningContent: 'same reasoning', toolCalls: []};
     const rows = [
@@ -375,9 +437,9 @@ describe('conversation workspace state boundaries', () => {
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
     await act(async () => f.state.removeMessageFromView('tool-ui'));
-    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['keep-ui']);
+    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['thought-ui', 'keep-ui']);
     await act(async () => { await f.state.refreshMessages(); });
-    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['keep-ui']);
+    expect(f.state.messages.map(message => message.uiMessageId)).toEqual(['thought-ui', 'keep-ui']);
     await act(async () => root.unmount());
   });
 

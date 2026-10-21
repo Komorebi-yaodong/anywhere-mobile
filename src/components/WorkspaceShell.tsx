@@ -55,7 +55,6 @@ import {
 import { AppIcon } from './AppIcon';
 import {KeyboardDock} from './KeyboardDock';
 
-import {projectConversationTimeline, type TimelineMessage} from './conversationTimeline';
 
 import {createConversationScrollController} from './conversationScroll';
 import { useThemedStyles } from './theme';
@@ -176,7 +175,6 @@ export function keyboardFrameNeedsComposerScroll(previousTop: number | null, scr
 }
 
 
-export {projectConversationTimeline as reconcileLiveAssistantSegment} from './conversationTimeline';
 
 export {isPinnedToBottom} from './conversationScroll';
 
@@ -1467,7 +1465,7 @@ function AssistantRouter({
 }
 
 const ChatPage = React.forwardRef<
-  FlatList<TimelineMessage>,
+  FlatList<RemoteMessage>,
   {
     title: string;
     desktopId: string;
@@ -1554,7 +1552,7 @@ const ChatPage = React.forwardRef<
   ) => {
     const styles = useThemedStyles(baseStyles);
     const [voiceMode, setVoiceMode] = useState(false);
-    const list = useRef<FlatList<TimelineMessage>>(null);
+    const list = useRef<FlatList<RemoteMessage>>(null);
     const [pinned, setPinned] = useState(true);
     const visibleIndex = useRef(0);
     const viewabilityConfig = useRef({itemVisiblePercentThreshold: 1}).current;
@@ -1579,14 +1577,11 @@ const ChatPage = React.forwardRef<
       .find(message => message.role === 'user' || message.role === 'assistant');
     const lastAssistant = lastVisibleMessage?.role === 'assistant' ? lastVisibleMessage.uiMessageId : '';
     const lastUser = lastVisibleMessage?.role === 'user' ? lastVisibleMessage.uiMessageId : '';
-    const displayKeys = useRef(new Map<string, string>());
-    const liveSegment = projectConversationTimeline(messages, activeTurn);
-    const renderedMessages = liveSegment.messages.filter(message => shouldRenderMessage(message)).map(message => {
-      if (message.preview) return message;
-      if (message.renderKey !== message.uiMessageId) displayKeys.current.set(message.uiMessageId, message.renderKey);
-      return {...message, renderKey: displayKeys.current.get(message.uiMessageId) || message.renderKey};
-    });
-    const rows = renderedMessages;
+    // Desktop already chose message boundaries. Never merge them into a live
+    // request preview or reinterpret canonical IDs as duplicate UI messages.
+    const rows = useMemo(() => messages.filter(shouldRenderMessage), [messages]);
+    const actions = useRef({onEdit, onDelete, onReask, onResendUser, onSubmitChoice});
+    actions.current = {onEdit, onDelete, onReask, onResendUser, onSubmitChoice};
     const navigate = (target: 'top' | 'previous' | 'next' | 'bottom') => {
       if (!rows.length) return;
       if (target === 'top') {
@@ -1614,7 +1609,7 @@ const ChatPage = React.forwardRef<
           keyboardDismissMode="on-drag"
           ref={list}
           data={rows}
-          keyExtractor={item => item.renderKey}
+          keyExtractor={item => item.uiMessageId}
           contentContainerStyle={styles.messageList}
           removeClippedSubviews={false}
           maintainVisibleContentPosition={pinned ? undefined : {minIndexForVisible: 0}}
@@ -1648,20 +1643,19 @@ const ChatPage = React.forwardRef<
               assistantAvatar={assistantAvatar}
               model={model}
               pendingChoices={pendingChoices}
-              onSubmitChoice={onSubmitChoice}
-              onEdit={() => onEdit(item)}
-              onDelete={() => onDelete(item)}
-              writable={writable && !item.preview && (!activeTurn || activeTurn.terminal)}
-              preview={item.preview}
+              onSubmitChoice={(...args) => actions.current.onSubmitChoice(...args)}
+              onEdit={() => actions.current.onEdit(item)}
+              onDelete={() => actions.current.onDelete(item)}
+              writable={writable && (!activeTurn || activeTurn.terminal)}
               choiceWritable={writable}
               reask={
                 writable && (!activeTurn || activeTurn.terminal) && item.uiMessageId === lastAssistant
-                  ? () => onReask(item.uiMessageId).catch(() => undefined)
+                  ? () => actions.current.onReask(item.uiMessageId).catch(() => undefined)
                   : undefined
               }
               resend={
                 writable && (!activeTurn || activeTurn.terminal) && item.uiMessageId === lastUser
-                  ? () => onResendUser(item.uiMessageId).catch(() => undefined)
+                  ? () => actions.current.onResendUser(item.uiMessageId).catch(() => undefined)
                   : undefined
               }
             />
@@ -2119,7 +2113,7 @@ function LiveChoiceCard({
 }
 
 
-function MessageCard({
+const MessageCard = React.memo(function MessageCardView({
   message,
   desktopId,
   conversationId,
@@ -2136,7 +2130,6 @@ function MessageCard({
   onEdit,
   onDelete,
   writable,
-  preview = false,
   choiceWritable,
 }: {
   message: RemoteMessage;
@@ -2152,7 +2145,6 @@ function MessageCard({
   onSubmitChoice: (toolCallId: string, responses: Array<Record<string, unknown>>) => Promise<void>;
   reask?: () => void;
   resend?: () => void;
-  preview?: boolean;
   choiceWritable?: boolean;
   onEdit: () => void;
   onDelete: () => void;
@@ -2160,7 +2152,7 @@ function MessageCard({
 }) {
   const styles = useThemedStyles(baseStyles);
   const isUser = message.role === 'user';
-  const editableMessage = !preview && (message.role === 'user' || message.role === 'assistant');
+  const editableMessage = message.role === 'user' || message.role === 'assistant';
   const content = renderText(message.payload.content);
   const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
   const timestamp = message.payload.timestamp || message.payload.completedTimestamp;
@@ -2191,7 +2183,12 @@ function MessageCard({
       </View>
     </View>
   );
-}
+}, (previous, next) => previous.message === next.message &&
+  previous.desktopId === next.desktopId && previous.conversationId === next.conversationId &&
+  previous.request === next.request && previous.userName === next.userName && previous.userAvatar === next.userAvatar &&
+  previous.assistantName === next.assistantName && previous.assistantAvatar === next.assistantAvatar && previous.model === next.model &&
+  previous.pendingChoices === next.pendingChoices && previous.writable === next.writable && previous.choiceWritable === next.choiceWritable &&
+  Boolean(previous.reask) === Boolean(next.reask) && Boolean(previous.resend) === Boolean(next.resend));
 
 function FoldCard({title, text}: {title: string; text: string}) {
   const styles = useThemedStyles(baseStyles);
