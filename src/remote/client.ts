@@ -1,11 +1,14 @@
 import type {PairedDesktop} from '../domain/pairing';
+
+import {createBusinessRouter} from './businessRouter';
 import {
   GatewayEvent,
   PinnedGateway,
   subscribeGatewayEvents,
   TransportTlsOptions,
 } from '../native/PinnedGateway';
-import type {DeviceIdentitySecret} from '../services/secureStore';
+import {updatePendingOperations, type DeviceIdentitySecret} from '../services/secureStore';
+import {validateDurableOperation} from '../../packages/remote-contract';
 import {randomBase64Url} from './crypto';
 import {gatewayFailureDetail, localFailureDetail, safeRemoteFailureCode} from './connectionDiagnostics';
 import {
@@ -80,6 +83,40 @@ export class RemoteClient {
   // must share one queue for the lifetime of this client connection.
   private sendQueue: Promise<void> = Promise.resolve();
 
+  private operationRecoveryTimer?: ReturnType<typeof setInterval>;
+  private operationRecoveryRunning = false;
+
+  private readonly submittingOperations = new Set<string>();
+
+  private readonly business = createBusinessRouter((method, params = {}, timeout = 20000, requestId) => this.rawRequestTracked(method, params, timeout, requestId).response, {
+    remember: async (id, params, issuedAt) => {await updatePendingOperations(this.desktop.id, items => items.some(item => item.operationId === id) ? items : [...items, {operationId: id, conversationId: typeof params.conversationId === 'string' ? params.conversationId : null, issuedAt}]);},
+    settle: async id => {await updatePendingOperations(this.desktop.id, items => items.filter(item => item.operationId !== id));},
+  });
+
+  private async reconcilePendingOperations(): Promise<void> {
+    const items = await updatePendingOperations(this.desktop.id, current => current);
+    if (!items.length) return;
+    await this.rawRequestTracked('remote.contract.negotiate', {versions: [{major: 1, minor: 1}]}).response;
+    for (const item of items) {
+
+      if (this.submittingOperations.has(item.operationId)) continue;
+      let result;
+      try {result = validateDurableOperation(await this.rawRequestTracked('operation.status.get', {operationId: item.operationId}).response);}
+      catch (cause) {
+        if (!(cause instanceof RemoteRpcError) || cause.code !== 'remote_operation_not_found') throw cause;
+
+        if (Date.now() - item.issuedAt < 60000) continue;
+        this.onEvent?.({kind: 'event', event: 'remote.operation.recovered', payload: {...item, state: 'unknown', terminal: true}});
+        await updatePendingOperations(this.desktop.id, current => current.filter(operation => operation.operationId !== item.operationId));
+        continue;
+      }
+      if (result.terminal) {
+        await updatePendingOperations(this.desktop.id, current => current.filter(operation => operation.operationId !== item.operationId));
+        this.onEvent?.({kind: 'event', event: 'remote.operation.recovered', payload: {...item, state: result.state, code: result.code, terminal: true}});
+      }
+    }
+  }
+
   constructor(options: ClientOptions) {
     this.desktop = options.desktop;
     this.rootSecret = options.credential.rootSecret;
@@ -125,15 +162,25 @@ export class RemoteClient {
     return this.requestTracked<T>(method, params, timeoutMs).response;
   }
 
-  requestTracked<T = unknown>(
+  requestTracked<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 20000): {requestId: string; response: Promise<T>} {
+    if (this.status !== 'online' || !this.cryptoSession) throw new RemoteRpcError('remote_client_offline');
+    const issuedAt = Date.now();
+    const requestId = `command-${issuedAt}-${randomBase64Url(18)}`;
+    this.submittingOperations.add(requestId);
+    const response = (this.business.route(method, params, timeoutMs, requestId, issuedAt) as Promise<T>).finally(() => this.submittingOperations.delete(requestId));
+    return {requestId, response};
+  }
+
+  private rawRequestTracked<T = unknown>(
     method: string,
     params: Record<string, unknown> = {},
     timeoutMs = 20_000,
+    suppliedRequestId?: string,
   ): {requestId: string; response: Promise<T>} {
     if (this.status !== 'online' || !this.cryptoSession) {
       throw new RemoteRpcError('remote_client_offline');
     }
-    const requestId = `request-${randomBase64Url(18)}`;
+    const requestId = suppliedRequestId || `request-${randomBase64Url(18)}`;
     const response = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -288,8 +335,22 @@ export class RemoteClient {
       ) {
         throw remoteError('remote_welcome_invalid');
       }
+      this.business.welcome(event.payload.capabilities);
+
       this.setStatus('online');
       this.finishConnect();
+
+      if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes('operation.status.get')) {
+        const recover = async () => {
+          if (this.operationRecoveryRunning || this.status !== 'online') return;
+          this.operationRecoveryRunning = true;
+          try {await this.reconcilePendingOperations();}
+          catch {if (this.status === 'online') this.onEvent?.({kind: 'event', event: 'remote.operation.recovery.failed', payload: {}});}
+          finally {this.operationRecoveryRunning = false;}
+        };
+        recover();
+        this.operationRecoveryTimer = setInterval(recover, 5000);
+      }
     }
     this.onEvent?.(event);
   }
@@ -348,6 +409,9 @@ export class RemoteClient {
   }
 
   private cleanup(closeStatus: boolean): void {
+
+    if (this.operationRecoveryTimer) clearInterval(this.operationRecoveryTimer);
+    this.operationRecoveryTimer = undefined;
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = undefined;

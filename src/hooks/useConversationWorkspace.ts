@@ -778,6 +778,14 @@ export function useConversationWorkspace({
   useEffect(() => {
     return subscribeEvents((eventDesktopId, event) => {
       if (eventDesktopId !== desktopId) return;
+
+      if (event.event === 'remote.operation.recovered' || event.event === 'remote.operation.recovery.failed') {
+        const state = event.payload.state;
+        setError(event.event === 'remote.operation.recovery.failed' ? '部分原操作结果暂未确认；请重连查询，不要重复提交。' : state === 'interrupted' || state === 'unknown' ? 'Desktop 重启或原操作记录不可用，结果未知。已刷新历史，请检查后再决定；不会自动重发。' : state === 'failed' ? '原操作未完成，请刷新检查。' : '');
+        refreshCatalog().catch(() => undefined);
+        refreshOpenedSessions().catch(() => undefined);
+        if (scopeRef.current.selectedConversationId) loadMessages(scopeRef.current.selectedConversationId).catch(() => undefined);
+      }
       if (event.event === 'conversation.windows.changed') {
         refreshCatalog().catch(() => undefined);
         refreshOpenedSessions().catch(() => undefined);

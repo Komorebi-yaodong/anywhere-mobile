@@ -13,6 +13,13 @@ let mockHoldBusinessSend: Promise<void> | undefined;
 
 let mockRpcErrorCode: string | undefined;
 
+let mockV11 = false;
+const mockOperationItems: Array<{operationId: string; conversationId: string | null; issuedAt: number}> = [];
+const mockMethods: string[] = [];
+jest.mock('../src/services/secureStore', () => ({updatePendingOperations: jest.fn(async (_id, update) => {
+  const next = update([...mockOperationItems]); mockOperationItems.splice(0, mockOperationItems.length, ...next); return next;
+})}));
+
 jest.mock('../src/native/PinnedGateway', () => ({
   PinnedGateway: {
     connectSocket: jest.fn(async ({connectionId}) => {
@@ -49,7 +56,7 @@ jest.mock('../src/native/PinnedGateway', () => ({
                 protocolVersion: 2,
                 desktopId: mockDesktop.id,
                 device: {deviceId: mockIdentity.deviceId},
-                capabilities: {},
+                capabilities: mockV11 ? ['remote.contract.negotiate', 'resource.get', 'command.submit', 'operation.status.get'] : {},
               },
             }),
           ),
@@ -58,11 +65,20 @@ jest.mock('../src/native/PinnedGateway', () => ({
       }
       if (message.type === 'remote.encrypted') {
         const request = mockServerSession?.decrypt(message as never);
+
+        mockMethods.push(String(request?.method));
+        const params = request?.params as Record<string, any>;
+        let value: any = {method: request?.method, e2ee: true};
+        if (mockV11) {
+          if (request?.method === 'remote.contract.negotiate') value = {selected: {major: 1, minor: 1}, capabilities: ['resource.read.v1', 'command.durable.v1', 'message.blocks.v1'], serverEpoch: 'client-fixture', limits: {eventRetention: 512, operationRetentionMs: 1800000}};
+          if (request?.method === 'resource.get') value = {schemaVersion: '1.0', resource: params.resource, value: {method: params.resource, e2ee: true}};
+          if (request?.method === 'command.submit' || request?.method === 'operation.status.get') value = {operationId: params.commandId || params.operationId, conversationId: 'conversation-client-v11', state: 'succeeded', terminal: true, code: null, receipt: {ok: true}, progress: null, acceptedAt: 100, expiresAt: 10000};
+        }
         const response = mockServerSession?.encrypt({
           kind: 'response',
           requestId: request?.requestId,
           ok: !mockRpcErrorCode,
-          ...(mockRpcErrorCode ? {error: {code: mockRpcErrorCode}} : {result: {method: request?.method, e2ee: true}}),
+          ...(mockRpcErrorCode ? {error: {code: mockRpcErrorCode}} : {result: value}),
         });
         mockListener?.({connectionId, type: 'message', message: JSON.stringify(response)});
       }
@@ -109,7 +125,28 @@ describe('RemoteClient encrypted transport boundary', () => {
     mockSentTexts.length = 0;
     mockHoldBusinessSend = undefined;
     mockRpcErrorCode = undefined;
+
+    mockV11 = false; mockMethods.length = 0; mockOperationItems.length = 0;
   });
+
+  it('runs negotiated resources/durable writes through real encrypted RemoteClient and reconciles stored IDs without resend', async () => {
+    mockV11 = true;
+    mockOperationItems.push({operationId: 'command-before-mobile-restart', conversationId: 'conversation-client-v11', issuedAt: 100});
+    const recovered = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onEvent: recovered});
+    try {
+      await client.connect();
+      await expect(client.request('workspace.bootstrap.get')).resolves.toEqual({method: 'workspace.bootstrap.get', e2ee: true});
+      await expect(client.request('workspace.project.create', {name: 'Synthetic'})).resolves.toEqual({ok: true});
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(mockMethods).toContain('resource.get'); expect(mockMethods).toContain('command.submit'); expect(mockMethods).toContain('operation.status.get');
+      expect(mockMethods.filter(method => method === 'command.submit')).toHaveLength(1);
+      expect(mockOperationItems).toHaveLength(0);
+      expect(recovered.mock.calls.some(([event]) => event.event === 'remote.operation.recovered')).toBe(true);
+      expect(mockSentTexts.slice(1).every(text => !text.includes('workspace.project.create'))).toBe(true);
+    } finally {await client.close();}
+  });
+
 
   it('authenticates before online and carries RPC only in encrypted frames', async () => {
     const statuses: string[] = [];

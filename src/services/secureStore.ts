@@ -214,6 +214,25 @@ export async function loadDesktopIndex(): Promise<PairedDesktop[]> {
   });
 }
 
+export type PendingRemoteOperation = {operationId: string; conversationId: string | null; issuedAt: number};
+const operationQueues = new Map<string, Promise<unknown>>();
+export function updatePendingOperations(desktopId: string, update: (items: PendingRemoteOperation[]) => PendingRemoteOperation[]): Promise<PendingRemoteOperation[]> {
+  const service = `com.anywhere.mobile.remote-v2.operations.${desktopId}`;
+  const next = (operationQueues.get(desktopId) || Promise.resolve()).catch(() => undefined).then(async () => {
+    const stored = await readSecret(service);
+    if (stored !== null && !Array.isArray(stored)) throw new Error('remote_operation_storage_invalid');
+    const items = (stored || []) as PendingRemoteOperation[];
+    if (items.some(item => !item || typeof item.operationId !== 'string' || !Number.isFinite(item.issuedAt))) throw new Error('remote_operation_storage_invalid');
+    const result = update(items);
+    if (result.length > 128) throw new Error('remote_operation_limit_reached');
+    if (JSON.stringify(result) !== JSON.stringify(items) || stored === null && result.length > 0) await writeSecret(service, desktopId, result);
+    return result;
+  });
+  operationQueues.set(desktopId, next);
+  return next;
+}
+
+
 function createOpaqueIdentifier(): string {
   return randomBase64Url(24);
 }

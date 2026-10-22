@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
-import {Alert, Text, TextInput} from 'react-native';
+import {Alert, Text} from 'react-native';
 import {ConversationActions} from '../src/components/ConversationActions';
 import {RemoteSettings} from '../src/components/RemoteSettings';
 import type {RemoteRequest, RemoteTrackedRequest} from '../src/remote/api';
@@ -115,30 +115,17 @@ describe('Remote destructive confirmation and business revision UI', () => {
   });
 
 
-  it('hides business secrets until explicitly revealed and preserves expectedRevision on save', async () => {
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-    const request = jest.fn(async (_id: string, method: string, params?: Record<string, unknown>) => ({
-      section: 'general', revision: method.endsWith('replace') ? 'revision-new' : 'revision-original',
-      bytes: 25, value: params?.value ?? {language: 'zh', fixtureSecret: 'synthetic'},
-    }));
+  it('replaces the raw secret partition editor with safe structured settings', async () => {
+    const request = jest.fn(async (_desktopId: string, _method: string) => ({ok: true, items: [], sections: [], agents: [], models: [], options: {}}));
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<RemoteSettings desktopId="desktop-fixture-0001" conversationId="conversation-fixture-0001"
       request={request as RemoteRequest} requestTracked={jest.fn() as RemoteTrackedRequest}
       onClose={() => undefined} onChanged={() => undefined} />); });
     await act(async () => button(root, '全部业务配置').props.onPress());
-    await act(async () => button(root, '读取选中分区').props.onPress());
-    expect(root.root.findAllByType(TextInput)).toHaveLength(0);
-    await act(async () => button(root, '显示并编辑秘密').props.onPress());
-    const editor = root.root.findByType(TextInput);
-    expect(editor.props.autoCorrect).toBe(false);
-    await act(async () => editor.props.onChangeText('{"language":"en"}'));
-    await act(async () => button(root, '替换此业务配置分区').props.onPress());
-    expect(request.mock.calls.filter(call => call[1] === 'business.config.replace')).toHaveLength(0);
-    await act(async () => { alert.mock.calls[0][2]?.find(item => item.style === 'destructive')?.onPress?.(); });
-    expect(request).toHaveBeenCalledWith('desktop-fixture-0001', 'business.config.replace', {
-      section: 'general', expectedRevision: 'revision-original', value: {language: 'en'},
-    });
+    const {GlobalSettings} = require('../src/components/GlobalSettings');
+    expect(root.root.findAllByType(GlobalSettings)).toHaveLength(1);
+    expect(request.mock.calls.some(call => ['business.config.get', 'business.config.replace'].includes(String(call[1])))).toBe(false);
+    expect(JSON.stringify(root.toJSON())).not.toContain('显示并编辑秘密');
     await act(async () => root.unmount());
-    alert.mockRestore();
   });
 });

@@ -1,2 +1,3 @@
 # Published protocol artifacts must hash identically across developer/CI platforms.
 packages/remote-contract/** text eol=lf
+packages/remote-contract-v1/** text eol=lf

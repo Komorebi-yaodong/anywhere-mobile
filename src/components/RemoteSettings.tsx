@@ -2,8 +2,10 @@ import {TextInput, Switch} from './ThemedNative';
 import {useEffect, useRef, useState} from 'react';
 import {Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import type {RemoteRequest, RemoteTrackedRequest} from '../remote/api';
+
+import {GlobalSettings} from './GlobalSettings';
 import {
-  BusinessConfigSection, BusinessSection, ConversationConfig,
+  ConversationConfig,
   ConversationConfigResult, RemoteCommandPendingError, startCommand, waitForCommand,
 } from '../remote/commands';
 
@@ -109,76 +111,7 @@ export function RemoteSettings({desktopId, conversationId, request, requestTrack
 }
 
 function BusinessEditor({desktopId, request}: {desktopId: string; request: RemoteRequest}) {
-  const [section, setSection] = useState<BusinessSection>('general');
-  const [loaded, setLoaded] = useState<BusinessConfigSection | null>(null);
-  const [draft, setDraft] = useState('');
-  const [revealed, setRevealed] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
-  const epoch = useRef(0);
-  useEffect(() => () => { epoch.current += 1; }, []);
-  const load = async () => {
-    const current = ++epoch.current;
-    setBusy(true);
-    setRevealed(false);
-    setNotice('正在通过 E2EE 读取…');
-    try {
-      const value = await request<BusinessConfigSection>(desktopId, 'business.config.get', {section});
-      if (current !== epoch.current) return;
-      setLoaded(value);
-      setDraft(JSON.stringify(value.value, null, 2));
-      setNotice(`已读取 ${value.bytes} bytes；内容可能包含 API Key / WebDAV / MCP 秘密。`);
-    } catch (error) {
-      if (current === epoch.current) setNotice(error instanceof Error ? error.message : '读取失败');
-    } finally {
-      if (current === epoch.current) setBusy(false);
-    }
-  };
-  const save = async () => {
-    if (!loaded || loaded.section !== section) return;
-    let value: unknown;
-    try {
-      value = JSON.parse(draft);
-      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
-    } catch {
-      setNotice('必须输入有效的 JSON 对象。');
-      return;
-    }
-    const current = ++epoch.current;
-    setBusy(true);
-    try {
-      const saved = await request<BusinessConfigSection>(desktopId, 'business.config.replace', {
-        section, expectedRevision: loaded.revision, value,
-      });
-      if (current !== epoch.current) return;
-      setLoaded(saved);
-      setDraft(JSON.stringify(saved.value, null, 2));
-      setNotice('Desktop 已保存，revision 已更新。');
-    } catch (error) {
-      if (current === epoch.current) setNotice(error instanceof Error ? error.message : '保存失败；请重新读取确认状态，勿盲目重复提交。');
-    } finally {
-      if (current === epoch.current) setBusy(false);
-    }
-  };
-  return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <Text style={styles.description}>已配对设备完全信任。所有业务秘密仅在 E2EE 内传输并驻留本页内存；不读取 Remote 密钥、监听配置或 Desktop 本地路径。此编辑器整分区替换，revision 冲突会拒绝保存。</Text>
-      {(['general', 'providers', 'prompts', 'mcpServers', 'tasks'] as const).map(name => <Choice key={name} label={name} active={section === name} onPress={() => {
-        if (busy) return;
-        epoch.current += 1;
-        setSection(name); setLoaded(null); setDraft(''); setRevealed(false); setNotice('');
-      }} />)}
-      <Button label="读取选中分区" disabled={busy} onPress={load} />
-      <Text selectable style={styles.notice}>{notice}</Text>
-      {loaded ? <>
-        <Button label={revealed ? '隐藏秘密' : '显示并编辑秘密'} disabled={busy} onPress={() => setRevealed(!revealed)} />
-        {revealed ? <TextInput multiline autoCorrect={false} spellCheck={false} autoComplete="off" importantForAutofill="no" autoCapitalize="none" style={[styles.textarea, styles.json]} value={draft} onChangeText={setDraft} editable={!busy} /> : <Text style={styles.description}>配置已隐藏。关闭页面后不保留编辑内容。</Text>}
-        <Button label="替换此业务配置分区" disabled={busy || !revealed} onPress={() => Alert.alert('确认替换业务配置？', `将替换 ${section} 整个分区，可能改变服务商密钥、自动任务或工具行为。请确认内容完整。`, [
-          {text: '取消', style: 'cancel'}, {text: '确认替换', style: 'destructive', onPress: save},
-        ])} />
-      </> : null}
-    </ScrollView>
-  );
+  return <GlobalSettings desktopId={desktopId} request={request} onChanged={() => undefined} onSectionChange={() => undefined} refreshSignal={0} />;
 }
 
 function toggleId(values: string[], id: string) { return values.includes(id) ? values.filter(value => value !== id) : [...values, id]; }

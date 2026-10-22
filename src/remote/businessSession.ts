@@ -1,6 +1,8 @@
 import {validateNegotiation, validateView, validateChanges, validateOperation, type Negotiation, type Runtime, type View} from '../../packages/remote-contract';
 import type {ConversationMessagesResult, RemoteRequest} from './api';
 
+import {decodeStructuredPage} from './structuredContent';
+
 export type ConversationView = View<ConversationMessagesResult>;
 const invalid = () => Object.assign(new Error('remote_contract_invalid'), {code: 'remote_contract_invalid'});
 
@@ -15,7 +17,7 @@ export function createBusinessSession(desktopId: string, request: RemoteRequest)
   async function discover() {
     const status = await request<{capabilities?: string[]}>(desktopId, 'remote.status.get');
     if (!Array.isArray(status?.capabilities) || !status.capabilities.includes('remote.contract.negotiate')) return null;
-    const selected = validateNegotiation(await request(desktopId, 'remote.contract.negotiate', {versions: [{major: 1, minor: 0}]}));
+    const selected = validateNegotiation(await request(desktopId, 'remote.contract.negotiate', {versions: [{major: 1, minor: 1}, {major: 1, minor: 0}]}));
     return selected;
   }
   function negotiate() {
@@ -36,7 +38,8 @@ export function createBusinessSession(desktopId: string, request: RemoteRequest)
     if (generation !== started) throw invalid();
     negotiatedView = true;
     const currentTicket = ++ticket;
-    const value = validateView<ConversationMessagesResult>(await request(desktopId, 'conversation.view.get', {conversationId, pageSize}));
+    const raw = await request<any>(desktopId, 'conversation.view.get', {conversationId, pageSize});
+    const value = validateView<ConversationMessagesResult>({...raw, page: decodeStructuredPage(raw.page)});
     if (generation !== started || value.runtime.conversationId !== conversationId) throw invalid();
     const previous = views.get(conversationId);
     if (previous && (previous.ticket > currentTicket || previous.value.serverEpoch === value.serverEpoch && previous.value.sequence > value.sequence)) return previous.value;
@@ -56,6 +59,7 @@ export function createBusinessSession(desktopId: string, request: RemoteRequest)
     return false;
   }
   async function operation(operationId: string) {
+    if (await enabled(['command.durable.v1'])) return null;
     if (!await enabled(['operation.read.v1'])) return null;
     return validateOperation(await request(desktopId, 'operation.get', {operationId}));
   }

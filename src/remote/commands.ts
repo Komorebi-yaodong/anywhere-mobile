@@ -80,7 +80,7 @@ export function startCommand({
         ? String(error.code) : '';
       if (code.startsWith('remote_') && ![
         'remote_client_closed', 'remote_request_timeout', 'remote_client_offline',
-        'remote_transport_error', 'remote_transport_closed',
+        'remote_transport_error', 'remote_transport_closed', 'remote_operation_storage_failed',
       ].includes(code)) throw error;
     }
     return waitForCommand({
