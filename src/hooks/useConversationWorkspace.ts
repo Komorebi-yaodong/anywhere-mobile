@@ -21,6 +21,8 @@ import {reconcileDesktopMessages} from '../components/conversationTimeline';
 import {createConversationMessageRefresh} from './conversationMessageRefresh';
 
 import {createBusinessSession} from '../remote/businessSession';
+
+import {completeHistory, readSized} from '../remote/historyRead';
 import type {Runtime} from '../../packages/remote-contract';
 
 export type ActiveConversationTurn = {
@@ -259,7 +261,7 @@ export function useConversationWorkspace({
       setError('');
       try {
         const view = await business.read(conversationId, 50);
-        const result = view?.page || await api.listMessages(conversationId, { pageSize: 50 });
+        const result = view?.page || await completeHistory(await readSized(size => api.listMessages(conversationId, {pageSize: size}), 50), params => request(desktopId, 'conversation.history.chunk.get', params));
         if (!isCurrent()) return;
         setAuthoritativeRuntime(view?.runtime || null);
 
@@ -273,7 +275,7 @@ export function useConversationWorkspace({
         // pages or resetting the pagination cursor back into the loaded range.
         const firstOrder = incoming[0]?.order;
         const older = result.page.hasMore && firstOrder !== undefined
-          ? messagesRef.current.filter(message => message.order < firstOrder && !deletedUiMessageIdsRef.current.has(message.uiMessageId))
+          ? messagesRef.current.filter(message => message.order < firstOrder && message.order >= (result.page.visibleFromUiOrder || 0) && !deletedUiMessageIdsRef.current.has(message.uiMessageId))
           : [];
         const nextMessages = reconcileDesktopMessages(messagesRef.current, [...older, ...incoming]);
         messagesRef.current = nextMessages;
@@ -285,7 +287,7 @@ export function useConversationWorkspace({
           name: typeof result.conversation?.assistant?.name === 'string' ? result.conversation.assistant.name : '',
           avatarUrl: typeof result.conversation?.assistant?.avatarUrl === 'string' ? result.conversation.assistant.avatarUrl : '',
         });
-        setMessagePage(older.length ? {...result.page,
+        setMessagePage(older.length && (result.page.visibleFromUiOrder || 0) === (messagePageRef.current.visibleFromUiOrder || 0) ? {...result.page,
           hasMore: messagePageRef.current.hasMore,
           nextBeforeUiOrder: messagePageRef.current.nextBeforeUiOrder,
         } : result.page);
@@ -313,7 +315,7 @@ export function useConversationWorkspace({
         if (isCurrent()) setMessagesLoading(false);
       }
     },
-    [api, business, commitTurn, desktopId, desktopStatus],
+    [api, business, commitTurn, desktopId, desktopStatus, request],
   );
 
   const messageRefresh = useMemo(() => createConversationMessageRefresh(readMessages), [readMessages]);
@@ -345,12 +347,14 @@ export function useConversationWorkspace({
   }, [messageRefresh]);
 
 
+  const olderReadRunning = useRef(false);
+
   const loadOlderMessages = useCallback(async () => {
     if (
       !selectedConversationId ||
       !messagePage.hasMore ||
       messagePage.nextBeforeUiOrder == null ||
-      messagesLoading
+      olderReadRunning.current || messagesLoading
     ) {
       return;
     }
@@ -359,12 +363,13 @@ export function useConversationWorkspace({
       epoch === messageEpoch.current &&
       scopeRef.current.desktopId === desktopId &&
       scopeRef.current.selectedConversationId === selectedConversationId;
+    olderReadRunning.current = true;
     setMessagesLoading(true);
     try {
-      const result = await api.listMessages(selectedConversationId, {
-        pageSize: messagePage.pageSize,
-        beforeUiOrder: messagePage.nextBeforeUiOrder,
-      });
+      const result = await completeHistory(await readSized(size => api.listMessages(selectedConversationId, {
+        pageSize: size,
+        beforeUiOrder: messagePage.nextBeforeUiOrder ?? undefined,
+      }), messagePage.pageSize), params => request(desktopId, 'conversation.history.chunk.get', params));
       if (!isCurrent()) return;
       const visibleIncoming = result.messages.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
       setMessages(current =>
@@ -376,9 +381,10 @@ export function useConversationWorkspace({
     } catch (cause) {
       if (isCurrent()) setError(errorMessage(cause));
     } finally {
+      olderReadRunning.current = false;
       if (isCurrent()) setMessagesLoading(false);
     }
-  }, [api, desktopId, messagePage, messagesLoading, selectedConversationId]);
+  }, [api, desktopId, messagePage, messagesLoading, request, selectedConversationId]);
 
   const openedEpoch = useRef(0);
   const refreshOpenedSessions = useCallback(async () => {

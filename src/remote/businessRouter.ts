@@ -2,6 +2,8 @@ import routes from '../../packages/remote-contract/routes.json';
 import {validateNegotiation, validateDurableOperation, validateResource} from '../../packages/remote-contract';
 import {decodeStructuredPage} from './structuredContent';
 
+import {completeHistory, readSized} from './historyRead';
+
 type Raw = (method: string, params?: Record<string, unknown>, timeout?: number, requestId?: string) => Promise<unknown>;
 const error = (code: string) => Object.assign(new Error(code), {code});
 /** Every UI API enters this connection-scoped protocol adapter. No auto-resend. */
@@ -24,7 +26,7 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
     try {await pending} catch (cause) {pending = undefined; throw cause;}
   }
   async function route(method: string, params: Record<string, unknown>, timeout: number, commandId: string, issuedAt: number) {
-    if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.view.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
+    if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.view.get', 'conversation.history.chunk.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
     if (!advertised.includes('remote.contract.negotiate')) return raw(method, params, timeout, commandId);
     await negotiate();
     if (!negotiation || negotiation.selected.minor < 1) return raw(method, params, timeout, commandId);
@@ -50,7 +52,9 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
     if (routes.queries.includes(method)) {
 
       if (!negotiation.capabilities.includes('resource.read.v1')) throw error('remote_method_unavailable');
-      const response = validateResource(await raw('resource.get', {resource: method, params}, timeout), method);
+      const response = validateResource(method === 'conversation.messages.list'
+        ? await readSized(size => raw('resource.get', {resource: method, params: {...params, pageSize: size}}, timeout), Number(params.pageSize) || 50)
+        : await raw('resource.get', {resource: method, params}, timeout), method);
       if (!response || response.resource !== method || response.schemaVersion !== '1.0') throw error('remote_contract_invalid');
       if (method === 'conversation.config.get') {
         for (const [id, item] of readReceipts) if (item.expiresAt < Date.now()) readReceipts.delete(id);
@@ -59,7 +63,7 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
         return {ok: true};
       }
 
-      return method === 'conversation.messages.list' ? decodeStructuredPage(response.value) : response.value;
+      return method === 'conversation.messages.list' ? completeHistory(decodeStructuredPage(response.value), chunkParams => raw('conversation.history.chunk.get', chunkParams, timeout)) : response.value;
     }
     if (routes.transfers.includes(method)) return raw('transfer.request', {method, params}, timeout, commandId);
 

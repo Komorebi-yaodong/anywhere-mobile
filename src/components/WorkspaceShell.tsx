@@ -1637,6 +1637,9 @@ const ChatPage = React.forwardRef<
           style={styles.chatMessages}
           contentContainerStyle={styles.messageList}
           onPinnedChange={setPinned}
+
+          onOlder={onOlder}
+          hasOlder={hasOlder}
           header={
             hasOlder ? (
               <Pressable onPress={onOlder}>

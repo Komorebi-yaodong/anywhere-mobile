@@ -27,7 +27,9 @@ export const ConversationMessageList = React.forwardRef<ConversationMessageListH
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
   onPinnedChange: (pinned: boolean) => void;
-}>(function ConversationMessageListView({messages, renderMessage, header, style, contentContainerStyle, onPinnedChange}, ref) {
+  onOlder?: () => void;
+  hasOlder?: boolean;
+}>(function ConversationMessageListView({messages, renderMessage, header, style, contentContainerStyle, onPinnedChange, onOlder, hasOlder}, ref) {
   const host = useRef<ScrollView>(null);
   const rows = useRef(messages);
   rows.current = messages;
@@ -159,6 +161,8 @@ export const ConversationMessageList = React.forwardRef<ConversationMessageListH
         geometry.current.offset = contentOffset.y;
         geometry.current.viewport = layoutMeasurement.height;
         scroll.onScroll(contentOffset.y, layoutMeasurement.height, contentSize.height);
+
+        if (geometry.current.interacting && contentOffset.y < 80 && hasOlder) onOlder?.();
         if (navigationTarget.current !== undefined) {
           if (Math.abs(contentOffset.y - navigationTarget.current) > 1) return;
           navigationTarget.current = undefined;

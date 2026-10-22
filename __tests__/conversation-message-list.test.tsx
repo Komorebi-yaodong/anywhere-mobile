@@ -62,6 +62,17 @@ async function fixture(count = 80) {
   return {root, handle, unmount, pinned, rows, outer, rowHost};
 }
 
+test('loads earlier history when the user scrolls to the top, not on initial layout', async () => {
+ const onOlder = jest.fn(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<ConversationMessageList messages={[message(1)]} renderMessage={row => <Text>{String(row.payload.content)}</Text>} onPinnedChange={() => {}} hasOlder onOlder={onOlder} />);});
+ const outer = root.root.findAllByType(ScrollView).find(node => node.props.accessibilityLabel === '聊天消息列表')!;
+ const event = {nativeEvent: {contentOffset: {y: 0}, layoutMeasurement: {height: 400}, contentSize: {height: 2000}}};
+ await act(async () => outer.props.onScroll(event)); expect(onOlder).not.toHaveBeenCalled();
+ await act(async () => {outer.props.onScrollBeginDrag(); outer.props.onScroll(event);}); expect(onOlder).toHaveBeenCalledTimes(1);
+ await act(async () => root.unmount());
+});
+
+
 test('the supplied directory code block cannot replace the following loaded messages or navigation targets', async () => {
   const rows = Array.from({length: 8}, (_, index) => message(index));
   rows[0] = {...rows[0], payload: {...rows[0].payload, content: directoryMessage}};

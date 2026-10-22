@@ -576,6 +576,22 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('removes cached covered history when Desktop publishes a new compaction boundary', async () => {
+    const f = fixture(); const base = f.rpc.getMockImplementation()!; let compacted = false;
+    const row = (order: number) => ({uiMessageId: `compact-ui-${order}`, messageId: `compact-store-${order}`, role: 'assistant', order, payload: {content: `kept-${order}`}});
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A
+      ? Promise.resolve({...page(A), messages: compacted ? [row(3), row(4)] : [row(1), row(2), row(3), row(4)], page: {pageSize: 50, nextBeforeUiOrder: null, hasMore: false, visibleFromUiOrder: compacted ? 3 : 0}})
+      : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    expect(f.state.messages.map(item => item.order)).toEqual([1, 2, 3, 4]);
+    compacted = true;
+    await act(async () => {await f.state.refreshMessages();});
+    expect(f.state.messages.map(item => item.order)).toEqual([3, 4]);
+    await act(async () => root.unmount());
+  });
+
+
   it('retains already loaded older rows and their pagination cursor when refreshing the latest page', async () => {
     const f = fixture();
     const base = f.rpc.getMockImplementation()!;

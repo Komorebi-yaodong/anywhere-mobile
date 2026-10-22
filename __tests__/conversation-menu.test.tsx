@@ -57,6 +57,17 @@ it.each([true, false])('blocks busy or foreign-controlled sessions without impli
   expect(f.request.mock.calls.some(call => call[1] === 'conversation.takeover')).toBe(false);
   await act(async () => root.unmount());
 });
+it('allows idle orphan hidden writers but never bypasses another mobile owner', async () => {
+ for (const mobileControlled of [false, true]) {
+  const f = fixture(undefined, [{conversationId: CID, busy: false, hidden: true, mobileControlled, controlledByThisDevice: false}]);
+  const root = await render(f.props);
+  expect(button(root, '删除会话').props.disabled).toBe(mobileControlled);
+  expect(f.tracked).not.toHaveBeenCalled();
+  await act(async () => root.unmount());
+ }
+});
+
+
 it('keeps an uncertain operation recoverable and never dispatches it twice', async () => {
   const f = fixture(); const base = f.request.getMockImplementation()!;
   f.request.mockImplementation((id, method) => method === 'conversation.request.get' ? Promise.reject(new Error('transient')) : base(id, method));

@@ -22,12 +22,12 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
     const abortController = controller.current;
     Promise.all([
       request<{capabilities: string[]}>(desktopId, 'remote.status.get'),
-      request<{sessions: Array<{conversationId: string; busy: boolean; controlledByThisDevice: boolean}>}>(desktopId, 'conversation.opened.list'),
+      request<{sessions: Array<{conversationId: string; busy: boolean; controlledByThisDevice: boolean; hidden?: boolean; mobileControlled?: boolean}>}>(desktopId, 'conversation.opened.list'),
     ]).then(([status, opened]) => {
       if (!active) return;
       setCapabilities(Array.isArray(status.capabilities) ? status.capabilities : []);
       const session = opened.sessions?.find(item => item.conversationId === conversation.conversationId);
-      setBlocked(!conversation.readable ? '此会话需先在 Desktop 迁移。' : session?.busy ? '会话仍在处理中，请结束后再操作。' : session && !session.controlledByThisDevice ? '此会话由 Desktop 或其他设备控制，请先打开会话并接管。' : '');
+      setBlocked(!conversation.readable ? '此会话需先在 Desktop 迁移。' : session?.busy ? '会话仍在处理中，请结束后再操作。' : session && !session.controlledByThisDevice && !(session.hidden && !session.mobileControlled) ? '此会话由 Desktop 或其他设备控制，请先打开会话并接管。' : '');
     }).catch(() => {if (active) setBlocked('无法确认 Desktop 能力和控制权，请关闭后重试。');})
       .finally(() => {if (active) setChecking(false);});
     return () => {active = false; abortController.abort();};
@@ -61,7 +61,7 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
         // destructive retries inside the same confirmation.
         if (deleted) setFinished(true);
         const code = cause instanceof Error ? cause.message : '';
-        setNotice(code === 'remote_project_not_found' ? '目标项目已不存在，请关闭后刷新。' : code === 'remote_conversation_busy' ? 'Desktop 确认会话仍在处理，请稍后重试。' : code === 'remote_conversation_takeover_required' || code === 'remote_conversation_controlled_by_other_device' ? '控制权已变化，请先打开会话并接管。' : '未能确认操作完成，请关闭后刷新检查。');
+        setNotice(code === 'remote_project_not_found' ? '目标项目已不存在，请关闭后刷新。' : code === 'remote_conversation_busy' ? 'Desktop 确认会话仍在处理，请稍后重试。' : code === 'remote_control_epoch_conflict' || code === 'remote_conversation_takeover_required' || code === 'remote_conversation_controlled_by_other_device' ? '控制权已变化，请先打开会话并接管。' : '未能确认操作完成，请关闭后刷新检查。');
       }
     } finally {submitting.current = false; if (!controller.current.signal.aborted) setBusy(false);}
   };

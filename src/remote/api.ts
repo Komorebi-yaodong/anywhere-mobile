@@ -153,6 +153,8 @@ export type ConversationMessagesResult = {
   tasks?: ConversationTask[];
   page: {
     pageSize: number;
+
+    visibleFromUiOrder?: number,
     nextBeforeUiOrder: number | null;
     hasMore: boolean;
   };
