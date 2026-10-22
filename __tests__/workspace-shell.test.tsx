@@ -145,6 +145,38 @@ function workspaceProps() {
   };
 }
 
+test('attachment actions have identical natural row geometry, matching vector icons and explicit separation', async () => {
+ openConfigSession(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);}); await enterFixtureChat(root);
+ await act(async () => button(root, '＋').props.onPress());
+ const labels = ['从照片选择', '选择文件', '拍照发送'];
+ const rows = labels.map(label => root.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0]);
+ expect(rows.every(row => Boolean(row))).toBe(true);
+ expect(rows.map(row => StyleSheet.flatten(row.props.style))).toEqual(Array(3).fill(StyleSheet.flatten(rows[0].props.style)));
+ expect(StyleSheet.flatten(rows[0].props.style)).toMatchObject({minHeight: 56, flexGrow: 0, flexShrink: 0});
+ expect(StyleSheet.flatten(rows[0].parent!.props.style).gap).toBe(10);
+ const {AppIcon} = require('../src/components/AppIcon');
+ expect(rows.map(row => row.findByType(AppIcon).props.size)).toEqual([22, 22, 22]);
+ await act(async () => root.unmount());
+});
+
+test('shows the current model logo in the composer and a logo on the left of each model choice', async () => {
+ openConfigSession(); mockConversationModel = 'provider|gpt-fixture'; const props = configFixture(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ const {ModelLogo} = require('../src/components/ModelLogo');
+ const composer = root.root.findAll(node => node.props.accessibilityLabel === '选择模型' && node.props.onPress)[0];
+ expect(composer.findByType(ModelLogo).props.model).toBe('provider|gpt-fixture');
+ expect(StyleSheet.flatten(composer.props.style)).toMatchObject({minWidth: 36, minHeight: 40});
+ await act(async () => composer.props.onPress());
+ const row = button(root, 'Fixture'); expect(row.findByType(ModelLogo).props).toMatchObject({model: 'fixture|model', enabled: true});
+ const rows: any[] = []; const visit = (node: any) => {if (!node) return; if (Array.isArray(node)) {node.forEach(visit); return;} if (node.children?.[0]?.props?.testID === 'model-logo-slot') rows.push(node); node.children?.forEach(visit);}; visit(root.toJSON());
+ expect(rows.some(node => JSON.stringify(node).includes('Fixture'))).toBe(true);
+ await act(async () => row.props.onPress());
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '选择模型' && node.props.onPress)[0].findByType(ModelLogo).props.model).toBe('fixture|model');
+ await act(async () => root.unmount());
+});
+
+
 test('shows recorded audio upload progress before the send completes', async () => {
   openConfigSession(); mockSend.mockClear();
   const {uploadAudioCapture} = require('../src/services/mediaAttachment');

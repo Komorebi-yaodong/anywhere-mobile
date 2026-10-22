@@ -52,6 +52,8 @@ import {
 } from './GlobalSettings';
 
 import { AppIcon } from './AppIcon';
+
+import {ModelLogo} from './ModelLogo';
 import {KeyboardDock} from './KeyboardDock';
 
 
@@ -335,6 +337,9 @@ export function WorkspaceShell({
   const [sessionOptions, setSessionOptions] = useState<
     ConversationConfigResult['options'] | null
   >(null);
+  const [savedComposerModel, setSavedComposerModel] = useState<{conversationId: string; model: string} | null>(null);
+  useEffect(() => {setSavedComposerModel(null);}, [workspace.selectedConversationId, workspace.conversationModel]);
+
   const sessionScope = useRef('');
   const sessionBaseline = useRef<ConversationConfigResult['config'] | null>(null);
   const sessionOperation = useRef(false);
@@ -721,6 +726,8 @@ export function WorkspaceShell({
       setSessionOptions(result.options);
       setContextUsage(result.contextUsage || null);
       setContextLengthEdited(false);
+      if ('model' in patch) setSavedComposerModel({conversationId, model: result.config.model});
+
       if (result.deferred) setNotice('已保存，下轮生效');
       if (closeAfterSave) setSheet(null);
     } catch (error) {
@@ -1113,6 +1120,7 @@ export function WorkspaceShell({
           assistantName={activeAssistantIdentity.name}
           assistantAvatar={assistantAvatar}
           model={workspace.conversationModel}
+          composerModel={savedComposerModel?.conversationId === workspace.selectedConversationId ? savedComposerModel.model : workspace.conversationModel}
           messages={workspace.messages}
           activeTurn={activeTurn}
           onRefresh={workspace.refreshMessages}
@@ -1333,34 +1341,11 @@ export function WorkspaceShell({
         onClose={() => setSheet(null)}
         title="添加附件"
       >
-        <Pressable style={styles.mediaChoice} onPress={pickPhoto}>
-          <AppIcon name="◉" />
-          <Text style={styles.settingsListTitle}>从照片选择</Text>
-        </Pressable>
-        <Pressable
-          style={styles.mediaChoice}
-          onPress={() => {
-            setSheet(null);
-            attachments.add();
-          }}
-        >
-          <Text style={styles.mediaChoiceIcon}>▤</Text>
-          <View>
-            <Text style={styles.settingsListTitle}>选择文件</Text>
-          </View>
-        </Pressable>
-        <Pressable
-          style={styles.mediaChoice}
-          onPress={() => {
-            setSheet(null);
-            setShowCamera(true);
-          }}
-        >
-          <Text style={styles.mediaChoiceIcon}>◉</Text>
-          <View>
-            <Text style={styles.settingsListTitle}>拍照发送</Text>
-          </View>
-        </Pressable>
+        <View accessibilityLabel="附件选项" style={styles.mediaChoices}>
+          <Pressable accessibilityRole="button" accessibilityLabel="从照片选择" style={styles.mediaChoice} onPress={pickPhoto}><AppIcon name="◉" size={22} /><Text style={styles.mediaChoiceTitle}>从照片选择</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="选择文件" style={styles.mediaChoice} onPress={() => {setSheet(null); attachments.add();}}><AppIcon name="▤" size={22} /><Text style={styles.mediaChoiceTitle}>选择文件</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="拍照发送" style={styles.mediaChoice} onPress={() => {setSheet(null); setShowCamera(true);}}><AppIcon name="◉" size={22} /><Text style={styles.mediaChoiceTitle}>拍照发送</Text></Pressable>
+        </View>
       </Sheet>
       <Modal
         visible={showCamera}
@@ -1445,7 +1430,7 @@ export function WorkspaceShell({
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
 
-        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
+        {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><ModelLogo model={item.value} enabled={sheet === 'model'} /><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'reasoning'} onClose={() => setSheet(null)} title="思维深度">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
@@ -1519,6 +1504,7 @@ const ChatPage = React.forwardRef<
     assistantName: string;
     assistantAvatar?: string;
     model: string;
+    composerModel: string;
     messages: RemoteMessage[];
     activeTurn: any;
     onRefresh: () => void;
@@ -1562,6 +1548,7 @@ const ChatPage = React.forwardRef<
       assistantName,
       assistantAvatar,
       model,
+      composerModel,
       messages,
       activeTurn,
       onReask,
@@ -1756,7 +1743,7 @@ const ChatPage = React.forwardRef<
             </Pressable>
             <View style={styles.statusPills}>
               <Pressable style={styles.composerConfigButton} accessibilityLabel="选择模型" disabled={!writable} onPress={writable ? onModelSettings : undefined}>
-                <AppIcon name="模型" />
+                <ModelLogo model={composerModel} />
               </Pressable>
               <Pressable style={styles.composerConfigButton} accessibilityLabel="思维深度" disabled={!writable} onPress={writable ? onReasoningSettings : undefined}>
                 <AppIcon name="思维" />
@@ -3045,15 +3032,9 @@ const baseStyles = StyleSheet.create({
     backgroundColor: C.primarySoft,
   },
   managementIconText: { color: C.primary, fontSize: 17 },
-  mediaChoice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    padding: 14,
-    borderRadius: 16,
-    backgroundColor: C.surfaceMuted,
-  },
-  mediaChoiceIcon: { fontSize: 26, color: C.primary },
+  mediaChoices: {gap: 10},
+  mediaChoice: {minHeight: 56, flexGrow: 0, flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, backgroundColor: C.surfaceMuted},
+  mediaChoiceTitle: {flex: 1, minWidth: 0, fontSize: 15, lineHeight: 22, color: C.text, fontWeight: '600'},
   field: { gap: 6 },
   fieldLabel: { fontSize: 13, color: C.text, fontWeight: '600' },
   textarea: { minHeight: 110, textAlignVertical: 'top' },

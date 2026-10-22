@@ -12,6 +12,8 @@ import {
 import {
   Camera,
   useCameraDevice,
+
+  useCameraFormat,
   useCameraPermission,
 } from 'react-native-vision-camera';
 
@@ -24,22 +26,39 @@ export function PhotoCapture({
 }) {
   const themed = useThemedStyles(styles);
   const camera = useRef<Camera>(null);
-  const device = useCameraDevice('back');
+  const device = useCameraDevice('back', {physicalDevices: ['wide-angle-camera']});
+  const format = useCameraFormat(device, [{photoResolution: 'max'}, {videoResolution: {width: 1920, height: 1080}}]);
   const { hasPermission, requestPermission } = useCameraPermission();
   const [busy, setBusy] = useState(false);
+
+  const [ready, setReady] = useState(false);
+  const capturing = useRef(false);
+  const focusTask = useRef<Promise<void> | null>(null);
+  const mounted = useRef(true);
+  const tap = useRef<{x: number; y: number; at: number} | null>(null);
+  useEffect(() => {mounted.current = true; return () => {mounted.current = false;};}, []);
   useEffect(() => {
     if (!hasPermission) requestPermission().catch(() => undefined);
   }, [hasPermission, requestPermission]);
   const capture = async () => {
-    if (!camera.current || busy) return;
+    if (!camera.current || !ready || capturing.current) return;
+    capturing.current = true;
     setBusy(true);
     try {
-      onCaptured((await camera.current.takePhoto({ flash: 'auto' })).path);
+      await focusTask.current;
+      if (!mounted.current) return;
+      const photo = await camera.current.takePhoto({flash: device?.hasFlash ? 'auto' : 'off'});
+      if (mounted.current) onCaptured(photo.path);
     } catch {
-      Alert.alert('拍照失败', '请检查相机权限并重试。');
+      if (mounted.current) Alert.alert('拍照失败', '请检查相机权限并重试。');
     } finally {
-      setBusy(false);
+      capturing.current = false;
+      if (mounted.current) setBusy(false);
     }
+  };
+  const focusAt = (x: number, y: number) => {
+    if (!ready || !device?.supportsFocus || !camera.current || capturing.current) return;
+    focusTask.current = camera.current.focus({x, y}).catch(() => undefined);
   };
   if (!hasPermission || !device)
     return (
@@ -58,14 +77,24 @@ export function PhotoCapture({
         ref={camera}
         style={StyleSheet.absoluteFill}
         device={device}
+        format={format}
         isActive
         photo
+        photoQualityBalance="quality"
+        enableZoomGesture
+        accessibilityLabel="相机取景区域，轻点对焦"
+        onTouchStart={event => {const {touches, locationX: x, locationY: y} = event.nativeEvent; tap.current = touches.length === 1 ? {x, y, at: Date.now()} : null;}}
+        onTouchMove={event => {const start = tap.current; if (start && (event.nativeEvent.touches.length !== 1 || Math.hypot(event.nativeEvent.locationX - start.x, event.nativeEvent.locationY - start.y) > 12)) tap.current = null;}}
+        onTouchEnd={() => {const start = tap.current; tap.current = null; if (start && Date.now() - start.at < 350) focusAt(start.x, start.y);}}
+        onTouchCancel={() => {tap.current = null;}}
+        onInitialized={() => setReady(true)}
+        onError={() => {setReady(false); Alert.alert('相机不可用', '请重新打开相机后重试。');}}
       />
-      <View style={styles.overlay}>
+      <View pointerEvents="box-none" style={styles.overlay}>
         <Pressable style={styles.button} onPress={onCancel}>
           <Text style={styles.buttonText}>取消</Text>
         </Pressable>
-        <Pressable style={styles.shutter} onPress={capture} disabled={busy}>
+        <Pressable accessibilityLabel="拍照" style={styles.shutter} onPress={capture} disabled={busy || !ready}>
           {busy ? (
             <ActivityIndicator color="#fff" />
           ) : (
@@ -84,7 +113,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 28,
     paddingTop: 58,
-    backgroundColor: 'rgba(0,0,0,0.12)',
   },
   button: {
     backgroundColor: 'rgba(255,255,255,0.22)',

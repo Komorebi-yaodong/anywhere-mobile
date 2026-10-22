@@ -17,6 +17,8 @@ jest.mock('react-native-file-access', () => ({
     mv: jest.fn(async () => undefined),
     cpExternal: jest.fn(async () => undefined),
     fetch: jest.fn(async () => ({ok: true, status: 200})),
+
+    fetchManaged: jest.fn(() => ({cancel: jest.fn(async () => undefined), result: Promise.resolve({ok: true, status: 200})})),
     unlink: jest.fn(async () => undefined),
   },
 }));
@@ -56,6 +58,8 @@ jest.mock('react-native-vision-camera', () => {
   return {
     Camera: props => React.createElement(View, props),
     useCameraDevice: () => undefined,
+
+    useCameraFormat: () => undefined,
     useCameraPermission: () => ({hasPermission: false, requestPermission: jest.fn()}),
     useCodeScanner: options => options,
   };

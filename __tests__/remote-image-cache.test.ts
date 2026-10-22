@@ -86,6 +86,32 @@ test('reuses an HTTPS resource after conditional validator confirmation without 
   expect(memory.getBodyDownloads()).toBe(1);
 });
 
+test('model logo cache keeps version validation and hash checks for SVG and resolver metadata', async () => {
+ const memory = installMemoryFiles();
+ (FileSystem.fetchManaged as jest.Mock).mockImplementation((remote, init) => ({cancel: jest.fn(), result: (FileSystem.fetch as jest.Mock)(remote, init)}));
+ const first = await cacheRemoteHttpsResource({url, namespace: 'model-logo', maxBytes: 4096});
+ const second = await cacheRemoteHttpsResource({url, namespace: 'model-logo', maxBytes: 4096});
+ expect(first.uri).toBe(second.uri); expect(memory.getBodyDownloads()).toBe(1); expect(memory.getHeadRequests()).toBe(1);
+ memory.files.set(memory.native(first.uri), 'AQ==');
+ await cacheRemoteHttpsResource({url, namespace: 'model-logo', maxBytes: 4096});
+ expect(memory.getBodyDownloads()).toBe(2);
+});
+
+test('model logo downloads time out and cancel instead of holding resolution slots forever', async () => {
+ jest.useFakeTimers(); installMemoryFiles(); const cancel = jest.fn(async () => undefined);
+ (FileSystem.fetchManaged as jest.Mock).mockImplementation(() => ({cancel, result: new Promise(() => undefined)}));
+ const pending = cacheRemoteHttpsResource({url: 'https://logos.example/slow.svg', namespace: 'model-logo', maxBytes: 4096});
+ const checked = pending.catch(error => error.message);
+ await jest.advanceTimersByTimeAsync(10001); expect(await checked).toBe('https_resource_timeout'); expect(cancel).toHaveBeenCalledTimes(1); jest.useRealTimers();
+});
+
+test('does not reuse an existing cache larger than a new caller limit', async () => {
+ const memory = installMemoryFiles(); await cacheRemoteHttpsResource({url, namespace: 'avatar', maxBytes: 4096});
+ await expect(cacheRemoteHttpsResource({url, namespace: 'avatar', maxBytes: 1})).rejects.toThrow();
+ expect(memory.getHeadRequests()).toBe(0);
+});
+
+
 test('does not reuse a tampered HTTPS cache file even when the stored remote version matches', async () => {
   const memory = installMemoryFiles();
   const first = await cacheRemoteHttpsResource({url, namespace: 'media'});
