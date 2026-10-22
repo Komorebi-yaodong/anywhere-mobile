@@ -3,6 +3,8 @@ import {Dirs, FileSystem} from 'react-native-file-access';
 import {sha256Base64Url} from '../remote/crypto';
 import {utf8ToBytes} from '../remote/utf8';
 
+import {httpsResourceUrl as safeUrl} from './httpsResourceUrl';
+
 const cacheRoot = `${Dirs.CacheDir}/anywhere-https-resources`;
 const ttlMs = 30 * 24 * 60 * 60 * 1000;
 const maxAvatarBytes = 512 * 1024;
@@ -23,17 +25,6 @@ type StoredResource = HttpsResourceCache & {
   lastModified?: string;
 };
 
-function safeUrl(value: string): string {
-  const source = typeof value === 'string' ? value.trim() : '';
-  if (!source || source.length > 4096) return '';
-  try {
-    const url = new URL(source);
-    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return '';
-    return url.toString();
-  } catch {
-    return '';
-  }
-}
 
 function localPath(uri: string): string {
   return uri.replace(/^file:\/\//, '');

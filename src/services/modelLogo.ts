@@ -2,6 +2,8 @@ import {FileSystem} from 'react-native-file-access';
 import {parse} from 'react-native-svg';
 import {cacheRemoteHttpsResource} from './remoteImageCache';
 
+import {httpsResourceUrl} from './httpsResourceUrl';
+
 export type ModelLogo = {uri: string; version: string; xml?: string};
 const pending = new Map<string, Promise<ModelLogo | null>>();
 
@@ -17,13 +19,6 @@ export function modelNameForLogo(model: string): string {
   return (parts[1] || parts[0] || '').trim().slice(0, 320);
 }
 
-function httpsUrl(value: unknown): string {
-  if (typeof value !== 'string' || value.length > 4096) return '';
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === 'https:' && url.hostname && !url.username && !url.password ? url.toString() : '';
-  } catch {return '';}
-}
 
 /** Only local vector primitives/references; no scripts, images, CSS imports or external resources. */
 export function verifiedLogoSvg(xml: string): string {
@@ -62,7 +57,7 @@ async function load(name: string): Promise<ModelLogo | null> {
     }
     const metadata = await cacheRemoteHttpsResource({url: `https://llm-model.141277.xyz/v1/resolve?model=${encodeURIComponent(name)}`, namespace: 'model-logo', maxBytes: 64 * 1024});
     const payload = JSON.parse(await FileSystem.readFile(metadata.uri.replace(/^file:\/\//, ''), 'utf8'));
-    const url = httpsUrl(payload?.resolved?.logo);
+    const url = httpsResourceUrl(payload?.resolved?.logo);
     if (!url) return null;
     const image = await cacheRemoteHttpsResource({url, namespace: 'model-logo', maxBytes});
     if (image.mimeType === 'image/svg+xml' || /\.svg(?:[?#]|$)/i.test(url)) {

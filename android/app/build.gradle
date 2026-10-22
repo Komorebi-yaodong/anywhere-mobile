@@ -82,8 +82,8 @@ android {
         applicationId "com.anywheremobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 30
-        versionName "1.0.29"
+        versionCode 31
+        versionName "1.0.30"
     }
     signingConfigs {
         debug {
@@ -110,7 +110,7 @@ android {
         qa {
             initWith release
             applicationIdSuffix ".qa"
-            versionNameSuffix "-internal.29"
+            versionNameSuffix "-internal.30"
             resValue "string", "app_name", "Anywhere Mobile"
             matchingFallbacks = ["release"]
             signingConfig signingConfigs.debug

@@ -5,6 +5,23 @@ import {Alert, Image, Text, View} from 'react-native';
 import {ConversationMarkdown} from '../src/components/ConversationMarkdown';
 import type {RemoteRequest} from '../src/remote/api';
 
+import Video from 'react-native-video';
+
+const mockPlaybackCalls: string[] = [];
+jest.mock('react-native-video', () => {
+  const R = require('react'); const Native = require('react-native');
+  return {__esModule: true, default: R.forwardRef((props: any, ref: any) => {
+    R.useImperativeHandle(ref, () => ({
+      seek: (position: number) => mockPlaybackCalls.push(`seek:${position}`),
+      resume: () => mockPlaybackCalls.push('resume'),
+      pause: () => mockPlaybackCalls.push('pause'),
+    }));
+    return R.createElement(Native.View, props);
+  })};
+});
+jest.mock('../src/services/conversationMediaCache', () => ({getConversationMediaCache: jest.fn(async () => ({uri: 'file:///cache/recording.m4a', mimeType: 'audio/mp4'}))}));
+
+
 
 jest.mock('../src/services/remoteImageCache', () => ({
   cacheRemoteHttpsResource: jest.fn(async ({url}: {url: string}) => ({
@@ -40,6 +57,34 @@ describe('ConversationMarkdown media rendering', () => {
     expect(output).not.toContain('受限缓存音频'); expect(output).not.toContain('HTTPS 音频'); expect(output).toContain('音频播放');
     await act(async () => root.unmount());
   });
+
+  it.each(['https://media.example/replay.m4a', 'anywhere-media://opaque_audio_fixture_0001?type=audio'])('replays the same audio from the beginning on every completed playback: %s', async uri => {
+    mockPlaybackCalls.length = 0;
+    const root = await render(`<audio src="${uri}"></audio>`);
+    const engine = () => root.root.findByType(Video);
+    const press = async (label: string) => act(async () => root.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0].props.onPress());
+    await act(async () => engine().props.onLoad({duration: 20}));
+    await press('播放音频');
+    expect(mockPlaybackCalls).toEqual(['resume']);
+    for (let replay = 0; replay < 3; replay++) {
+      await act(async () => {engine().props.onProgress({currentTime: 20}); engine().props.onEnd();});
+      expect(engine().props.paused).toBe(true);
+
+      await act(async () => engine().props.onProgress({currentTime: 20}));
+      const clock = root.root.findAllByType(Text).find(node => Array.isArray(node.props.children) && node.props.children.includes(' / '))!;
+      expect(clock.props.children.join('')).toBe('0:00 / 0:20');
+      mockPlaybackCalls.length = 0;
+      await press('播放音频');
+      expect(mockPlaybackCalls).toEqual(['seek:0', 'resume']);
+      expect(engine().props.paused).toBe(false);
+    }
+    mockPlaybackCalls.length = 0;
+    await act(async () => engine().props.onProgress({currentTime: 8}));
+    await press('暂停音频'); await press('播放音频');
+    expect(mockPlaybackCalls).toEqual(['pause', 'resume']);
+    await act(async () => root.unmount());
+  });
+
 
   it('renders HTTPS Markdown image and HTML audio/video with native media views', async () => {
     const root = await render([

@@ -273,21 +273,28 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
 }
 
 function AudioPlayer({state, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
+
+  const ended = useRef(false);
+  const playingRef = useRef(false);
   const styles = useThemedStyles(baseStyles);
   const ref = useRef<VideoRef>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [position, setPosition] = useState(0);
   const toggle = () => {
-    setPlaying(current => {
-      if (current) ref.current?.pause();
-      else ref.current?.resume();
-      return !current;
-    });
+    const next = !playingRef.current;
+    if (!next) ref.current?.pause();
+    else {
+      if (ended.current) {ref.current?.seek(0); ended.current = false; setPosition(0);}
+      ref.current?.resume();
+    }
+    playingRef.current = next;
+    setPlaying(next);
   };
   const seekRelative = (seconds: number) => {
     const next = Math.max(0, Math.min(duration || Number.MAX_SAFE_INTEGER, position + seconds));
     ref.current?.seek(next);
+    ended.current = duration > 0 && next >= duration;
     setPosition(next);
   };
   const progress = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
@@ -300,8 +307,8 @@ function AudioPlayer({state, onError}: {state: MediaState; opaque: boolean; onEr
       playInBackground={false}
       style={styles.audioEngine}
       onLoad={event => setDuration(event.duration || 0)}
-      onProgress={event => setPosition(event.currentTime || 0)}
-      onEnd={() => { setPlaying(false); setPosition(0); }}
+      onProgress={event => {if (!ended.current) setPosition(event.currentTime || 0);}}
+      onEnd={() => {ended.current = true; playingRef.current = false; setPlaying(false); setPosition(0);}}
       onError={onError}
     />
     <View style={styles.audioHeader}><View><Text style={styles.audioTitle}>音频播放</Text></View><Text style={styles.audioTime}>{formatTime(position)} / {formatTime(duration)}</Text></View>
