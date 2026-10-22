@@ -20,6 +20,9 @@ import {reconcileDesktopMessages} from '../components/conversationTimeline';
 
 import {createConversationMessageRefresh} from './conversationMessageRefresh';
 
+import {createBusinessSession} from '../remote/businessSession';
+import type {Runtime} from '../../packages/remote-contract';
+
 export type ActiveConversationTurn = {
   requestId: string;
   conversationId: string;
@@ -57,6 +60,13 @@ export function useConversationWorkspace({
     () => createRemoteApi({ desktopId, request, requestTracked }),
     [desktopId, request, requestTracked],
   );
+  const business = useMemo(() => createBusinessSession(desktopId, request), [desktopId, request]);
+  const [authoritativeRuntime, setAuthoritativeRuntime] = useState<Runtime | null>(null);
+  useEffect(() => {
+    business.reset();
+    setAuthoritativeRuntime(null);
+  }, [business, desktopStatus]);
+
   const [catalog, setCatalog] = useState<ConversationSummary[]>([]);
   const [catalogPage, setCatalogPage] = useState<
     ConversationListResult['page']
@@ -248,8 +258,14 @@ export function useConversationWorkspace({
       setMessagesLoading(true);
       setError('');
       try {
-        const result = await api.listMessages(conversationId, { pageSize: 50 });
+        const view = await business.read(conversationId, 50);
+        const result = view?.page || await api.listMessages(conversationId, { pageSize: 50 });
         if (!isCurrent()) return;
+        setAuthoritativeRuntime(view?.runtime || null);
+
+        if (view) setPendingChoices(Object.fromEntries(view.runtime.pendingChoices.map(choice => [choice.toolCallId, {
+          conversationId, questions: choice.questions as Array<{question: string; header: string; options: Array<{label: string; description: string}>}>,
+        }])));
         // A confirmed deletion stays hidden for this selected transcript so a
         // stale in-flight list response cannot visibly resurrect its card.
         const incoming = result.messages.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
@@ -285,18 +301,44 @@ export function useConversationWorkspace({
         });
       } catch (cause) {
         if (isCurrent()) {
-          // A transient transport failure must not erase the loaded transcript.
+          // Keep history, but never treat a failed new-protocol read as fresh
+          // permission. The next successful snapshot restores writability.
+          if (business.usesView()) {
+            business.invalidate(conversationId);
+            setAuthoritativeRuntime(current => current?.conversationId === conversationId ? {...current, execution: {...current.execution, state: 'recovering'}, control: {...current.control, canWrite: false}} : current);
+          }
           setError(errorMessage(cause));
         }
       } finally {
         if (isCurrent()) setMessagesLoading(false);
       }
     },
-    [api, commitTurn, desktopId, desktopStatus],
+    [api, business, commitTurn, desktopId, desktopStatus],
   );
 
   const messageRefresh = useMemo(() => createConversationMessageRefresh(readMessages), [readMessages]);
   const loadMessages = useCallback((conversationId: string) => messageRefresh.request(conversationId), [messageRefresh]);
+
+  useEffect(() => {
+    if (desktopStatus !== '在线' || !selectedConversationId) return;
+    let active = true;
+    let running = false;
+    const synchronize = async () => {
+      if (running || !active) return;
+      running = true;
+      try {
+        if (await business.dirty(selectedConversationId) && active) await loadMessages(selectedConversationId);
+      } catch (cause) {if (active) {
+
+        business.invalidate(selectedConversationId);
+        setAuthoritativeRuntime(current => current?.conversationId === selectedConversationId ? {...current, execution: {...current.execution, state: 'recovering'}, control: {...current.control, canWrite: false}} : current);
+        setError(errorMessage(cause));
+      }}
+      finally {running = false;}
+    };
+    const timer = setInterval(synchronize, 2500);
+    return () => {active = false; clearInterval(timer);};
+  }, [business, desktopStatus, loadMessages, selectedConversationId]);
   useEffect(() => () => {
     messageEpoch.current += 1;
     messageRefresh.cancel();
@@ -373,7 +415,8 @@ export function useConversationWorkspace({
   }, [api, loadMessages, refreshCatalog, refreshOpenedSessions]);
 
   const canControlConversation = useCallback((conversationId: string) =>
-    controlledConversationIds.includes(conversationId), [controlledConversationIds]);
+    business.usesView() && conversationId === selectedConversationId ? authoritativeRuntime?.conversationId === conversationId && authoritativeRuntime.control.canWrite :
+      controlledConversationIds.includes(conversationId), [authoritativeRuntime, business, controlledConversationIds, selectedConversationId]);
 
 
   const releaseConversation = useCallback((conversationId: string) => {
@@ -503,7 +546,8 @@ export function useConversationWorkspace({
     const isCurrent = () => scopeRef.current.desktopId === desktopId &&
       activeTurnRef.current?.requestId === active.requestId && !activeTurnRef.current.terminal;
     try {
-      const state = await api.getRequest(active.requestId);
+      const operation = await business.operation(active.requestId);
+      const state = operation ? operation.progress as ConversationRequestState : await api.getRequest(active.requestId);
       if (isCurrent()) applyRequestState(state);
     } catch (cause) {
       if (!isCurrent()) return;
@@ -522,7 +566,7 @@ export function useConversationWorkspace({
         setError(`无法恢复生成状态：${errorMessage(cause)}`);
       }
     } finally { recoveryInFlight.current = false; }
-  }, [api, applyRequestState, commitTurn, desktopId, desktopStatus, loadMessages, refreshOpenedSessions]);
+  }, [api, business, applyRequestState, commitTurn, desktopId, desktopStatus, loadMessages, refreshOpenedSessions]);
 
   useEffect(() => {
     if (desktopStatus !== '在线' || !selectedConversationId) return;
@@ -793,9 +837,9 @@ export function useConversationWorkspace({
 
   const assertControl = useCallback((conversationId: string) => {
     if (desktopStatus !== '在线') throw new Error('连接正在恢复，暂时无法操作；已保留当前会话。');
-    if (controlledConversationIds.includes(conversationId)) return;
+    if (business.usesView() && conversationId === selectedConversationId ? authoritativeRuntime?.conversationId === conversationId && authoritativeRuntime.control.canWrite : controlledConversationIds.includes(conversationId)) return;
     throw new Error('该会话正在由 Desktop 控制，请先点击“接管会话”。');
-  }, [controlledConversationIds, desktopStatus]);
+  }, [authoritativeRuntime, business, controlledConversationIds, desktopStatus, selectedConversationId]);
 
 
   const sendMessage = useCallback(
@@ -1059,6 +1103,25 @@ export function useConversationWorkspace({
 
 
 
+  const removeConversationFromView = useCallback((conversationId: string) => {
+    catalogEpoch.current += 1;
+    setCatalog(current => current.filter(item => item.conversationId !== conversationId));
+    setOpenedSessions(current => current.filter(item => item.conversationId !== conversationId));
+    setControlledConversationIds(current => current.filter(item => item !== conversationId));
+    commitTurn(current => current?.conversationId === conversationId ? null : current);
+    if (scopeRef.current.selectedConversationId === conversationId) {
+      messageEpoch.current += 1;
+      messageRefresh.cancel();
+      scopeRef.current.selectedConversationId = '';
+      selectedOpenedTitleRef.current = '';
+      setSelectedConversationId('');
+      setMessages([]);
+      setPendingChoices({});
+      setAuthoritativeRuntime(null);
+    }
+  }, [commitTurn, messageRefresh]);
+
+
   const removeMessageFromView = useCallback((uiMessageId: string) => {
     if (!uiMessageId) return;
     deletedUiMessageIdsRef.current.add(uiMessageId);
@@ -1120,6 +1183,7 @@ export function useConversationWorkspace({
     conversationModel,
     conversationAssistant,
     openedSessions,
+    authoritativeRuntime: authoritativeRuntime?.conversationId === selectedConversationId ? authoritativeRuntime : null,
     canControlConversation,
     takeoverConversation,
     handoffConversation,
@@ -1140,6 +1204,8 @@ export function useConversationWorkspace({
     showSelectedOnDesktop,
     releaseSelectedConversation,
     removeMessageFromView,
+
+    removeConversationFromView,
   };
 }
 

@@ -7,7 +7,8 @@
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest",
+    "test": "node scripts/verify-remote-contract.cjs && jest",
+    "test:remote-contract": "node scripts/verify-remote-contract.cjs",
     "test:desktop-interop": "node scripts/desktop-interop.cjs",
     "test:phone-fixture": "node scripts/phone-fixture.mjs"
   },

@@ -57,6 +57,10 @@ import {KeyboardDock} from './KeyboardDock';
 
 import {ConversationMessageList, MessageLayoutInteractionContext, type ConversationMessageListHandle} from './ConversationMessageList';
 
+import {ConversationMenu} from './ConversationMenu';
+
+import {ContextUsageBar} from './ContextUsageBar';
+
 import {sessionSettingsPatch} from './sessionSettings';
 import { useThemedStyles } from './theme';
 import Clipboard from '@react-native-clipboard/clipboard';
@@ -309,6 +313,8 @@ export function WorkspaceShell({
     'session' | 'model' | 'reasoning' | 'voice' | 'tasks' | 'opened' | 'composer' | 'project' | 'management' | 'attachment' | null
   >(null);
   const [showCamera, setShowCamera] = useState(false);
+  const [conversationMenu, setConversationMenu] = useState<ConversationSummary | null>(null);
+
   const [messageAction, setMessageAction] = useState<ConversationAction | null>(
     null,
   );
@@ -330,6 +336,8 @@ export function WorkspaceShell({
   const [sessionBusy, setSessionBusy] = useState(false);
   const [configExecutionBusy, setConfigExecutionBusy] = useState(false);
   const [sessionReadError, setSessionReadError] = useState('');
+
+  const [contextUsage, setContextUsage] = useState<ConversationConfigResult['contextUsage']>(null);
   const [contextLengthDraft, setContextLengthDraft] = useState('');
   const [contextLengthEdited, setContextLengthEdited] = useState(false);
   const [triggerRatioDraft, setTriggerRatioDraft] = useState('');
@@ -586,7 +594,9 @@ export function WorkspaceShell({
   const controlledByMobile = workspace.canControlConversation(workspace.selectedConversationId);
   const selectedOpenedSession = workspace.openedSessions.find(item => item.conversationId === workspace.selectedConversationId);
   const selectedTurn = workspace.activeTurn?.conversationId === workspace.selectedConversationId ? workspace.activeTurn : null;
-  const executionBusy = Boolean((selectedTurn && !selectedTurn.terminal) || configExecutionBusy || (!selectedTurn?.terminal && selectedOpenedSession?.busy));
+  const executionBusy = workspace.authoritativeRuntime
+    ? workspace.authoritativeRuntime.execution.state !== 'idle'
+    : Boolean((selectedTurn && !selectedTurn.terminal) || configExecutionBusy || (!selectedTurn?.terminal && selectedOpenedSession?.busy));
   const canEditSession = connected && controlledByMobile && !sessionBusy;
   useEffect(() => {
     setConfigExecutionBusy(selectedOpenedSession?.busy === true);
@@ -611,6 +621,8 @@ export function WorkspaceShell({
     sessionBaseline.current = null;
     setSessionNotice('');
     setSessionReadError('');
+    setContextUsage(null);
+
     setContextLengthEdited(false);
     setSessionConfig(null);
     setSessionOptions(null);
@@ -636,6 +648,8 @@ export function WorkspaceShell({
         sessionBaseline.current = result.config;
         setSessionConfig(result.config);
         setSessionOptions(result.options);
+
+        setContextUsage(result.contextUsage || null);
         setConfigExecutionBusy(result.busy === true);
         setContextLengthDraft(String(result.config.compact?.contextLength || ''));
         setTriggerRatioDraft(String(result.config.compact?.triggerRatio ?? 0.9));
@@ -696,6 +710,7 @@ export function WorkspaceShell({
       sessionBaseline.current = result.config;
       setSessionConfig(result.config);
       setSessionOptions(result.options);
+      setContextUsage(result.contextUsage || null);
       setContextLengthEdited(false);
       if (result.deferred) setNotice('设置已保存，将在下一轮发送时生效；本轮请求保持原配置。');
       if (closeAfterSave) setSheet(null);
@@ -1163,6 +1178,15 @@ export function WorkspaceShell({
         />
       ) : null}
 
+      {conversationMenu ? <ConversationMenu key={conversationMenu.conversationId} desktopId={desktop.id} conversation={conversationMenu} projects={bootstrap?.projects || []} request={request} requestTracked={requestTracked} onClose={() => setConversationMenu(null)} onCompleted={deleted => {
+        if (deleted) workspace.removeConversationFromView(conversationMenu.conversationId);
+        setConversationMenu(null);
+        refreshWorkspace();
+        if (!deleted || conversationMenu.conversationId !== workspace.selectedConversationId) workspace.refreshMessages();
+        workspace.refreshOpenedSessions();
+      }} /> : null}
+
+
       <Drawer
         visible={drawerOpen}
         profile={bootstrap?.profile}
@@ -1172,6 +1196,8 @@ export function WorkspaceShell({
         currentConversationId={workspace.selectedConversationId}
         onClose={() => setDrawerOpen(false)}
         onSelectConversation={selectConversation}
+
+        onConversationMenu={(item: ConversationSummary) => {setDrawerOpen(false); setConversationMenu(item);}}
         onNewChat={() => {
           leaveConversation();
           setMode('router');
@@ -1411,6 +1437,8 @@ export function WorkspaceShell({
               {!visibleSessionSkills.length ? <View style={styles.sessionMcpEmpty}><Text style={styles.sessionHint}>没有匹配的 Skill。</Text></View> : null}
             </View> : null}
             {sessionTab === 'compact' ? <View style={styles.sessionSection}>
+
+              <ContextUsageBar usage={contextUsage} capacity={Number(contextLengthDraft) || sessionConfig.compact?.contextLength || 1} ratio={Number(triggerRatioDraft)} preview={contextLengthEdited || Number(triggerRatioDraft) !== sessionConfig.compact?.triggerRatio} autoCompact={sessionConfig.compact?.autoCompactEnabled !== false} />
               <View style={styles.compactAction}><Text style={styles.sessionSectionTitle}>上下文</Text><Action compact label="立即压缩" onPress={compactNow} disabled={!canEditSession || executionBusy} /></View>
               <View style={styles.contextInfo}><Text style={styles.contextInfoLabel}>上下文长度</Text><Text style={styles.contextInfoValue}>{formatContextLength(sessionConfig.compact?.contextLength)} · {contextLengthEdited ? '手动（待保存）' : contextSourceLabel(sessionConfig.compact?.contextLengthSource)}</Text></View>
               <SheetTextInput accessibilityLabel="会话上下文长度" keyboardType="number-pad" value={contextLengthDraft} editable={canEditSession} onChangeText={value => { setContextLengthDraft(value); setContextLengthEdited(true); }} style={styles.input} placeholder="输入 4096–10000000" placeholderTextColor={C.muted} />
@@ -1792,6 +1820,7 @@ function Drawer({
   currentConversationId,
   onClose,
   onSelectConversation,
+  onConversationMenu,
   onNewChat,
   onNewProject,
   onEditProject,
@@ -1860,6 +1889,8 @@ function Drawer({
                 item={item}
                 active={item.conversationId === currentConversationId}
                 onPress={() => onSelectConversation(item.conversationId)}
+
+                onLongPress={() => onConversationMenu(item)}
               />
             ))
           : null}
@@ -1932,6 +1963,8 @@ function Drawer({
                         item={item}
                         active={item.conversationId === currentConversationId}
                         onPress={() => onSelectConversation(item.conversationId)}
+
+                        onLongPress={() => onConversationMenu(item)}
                       />
                     ))
                   : null}
@@ -1958,17 +1991,19 @@ function ConversationRow({
   item,
   active,
   onPress,
+  onLongPress,
 }: {
   item: ConversationSummary;
   active: boolean;
   onPress: () => void;
+  onLongPress: () => void;
 }) {
   const styles = useThemedStyles(baseStyles);
   return (
     <Pressable
       style={[styles.conversationRow, active && styles.conversationRowActive]}
       onPress={onPress}
-      onLongPress={() => Alert.alert('会话名称', item.title || '未命名会话')}
+      onLongPress={onLongPress}
       accessibilityLabel={item.title || '未命名会话'}
     >
       <Text numberOfLines={1} style={styles.conversationRowTitle}>

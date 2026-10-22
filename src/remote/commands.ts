@@ -111,7 +111,15 @@ export type ConversationConfig = {
   compact: CompactConfig;
 };
 
+export type ContextUsage = {
+  status: 'ready' | 'calculating' | 'stale' | 'unavailable'; estimated: boolean;
+  systemTokens: number; conversationTokens: number; toolTokens: number; updatedAt: number;
+};
+
+
 export type ConversationConfigResult = {
+
+  contextUsage?: ContextUsage | null,
   revision: number;
   busy?: boolean;
   deferred?: boolean;

@@ -30,6 +30,7 @@ const mockHandoffConversation = jest.fn(async () => undefined);
 const mockCloseConversation = jest.fn(async () => undefined);
 const mockRefreshOpenedSessions = jest.fn(async () => undefined);
 let mockOpenedSessions: Array<Record<string, unknown>> = [];
+let mockCatalog: Array<Record<string, any>> = [];
 let mockWorkspaceMessages: Array<Record<string, any>> = [];
 let mockConversationModel = '';
 let mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
@@ -56,7 +57,7 @@ jest.mock('../src/services/mediaAttachment', () => ({
 jest.mock('../src/hooks/useConversationWorkspace', () => ({
   useConversationWorkspace: () => ({
     configured: true,
-    catalog: [],
+    catalog: mockCatalog,
     messages: mockWorkspaceMessages,
     activeTurn: mockActiveTurn,
     queuedSends: [],
@@ -119,6 +120,8 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
 }
 beforeEach(() => {
   mockOpenedSessions = [];
+
+  mockCatalog = [];
 
   mockWorkspaceMessages = [];
   mockConversationModel = '';
@@ -517,7 +520,7 @@ function configFixture(busy = false, contextSource = 'api') {
   const request = jest.fn(async (id, method, params) => {
     if (method === 'conversation.request.get') return {
       terminal: true, event: 'conversation.config.result',
-      result: {busy, config: lastMethod === 'conversation.context.refresh' ? {...config, compact: {...config.compact, contextLength: 131072, contextLengthSource: contextSource}} : config, options: {models: [{value: 'fixture|model', label: 'Fixture'}], mcpServers: [], skills: [], reasoningEfforts: [], voices: []}},
+      result: {busy, contextUsage: {status: 'ready', estimated: true, systemTokens: 100, conversationTokens: 300, toolTokens: 50, updatedAt: 1234}, config: lastMethod === 'conversation.context.refresh' ? {...config, compact: {...config.compact, contextLength: 131072, contextLengthSource: contextSource}} : config, options: {models: [{value: 'fixture|model', label: 'Fixture'}], mcpServers: [], skills: [], reasoningEfforts: [], voices: []}},
     };
     return base.request(id, method, params);
   });
@@ -533,6 +536,35 @@ async function enterFixtureChat(root: TestRenderer.ReactTestRenderer) {
 function openConfigSession() {
   mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: false, controlledByThisDevice: true, mobileControlled: true}];
 }
+
+test('long pressing a sidebar row opens the target conversation menu, not a name-only alert', async () => {
+  mockCatalog = [{conversationId: 'target-not-current-fixture', title: '长按目标完整名称', readable: true, createdAt: '', project: null}];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
+  await act(async () => button(root, '未分组').props.onPress());
+  const row = root.root.findAll(node => node.props.accessibilityLabel === '长按目标完整名称' && node.props.onLongPress)[0];
+  await act(async () => row.props.onLongPress());
+  const {ConversationMenu} = require('../src/components/ConversationMenu');
+  expect(root.root.findByType(ConversationMenu).props.conversation.conversationId).toBe('target-not-current-fixture');
+  expect(root.root.findAll(node => node.props.accessibilityLabel === '删除会话').length).toBeGreaterThan(0);
+  await act(async () => root.unmount());
+});
+
+test('context settings render the Desktop usage summary above the controls', async () => {
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  await enterFixtureChat(root);
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置' && node.props.onPress)[0].props.onPress());
+  await act(async () => button(root, '上下文').props.onPress());
+  const {ContextUsageBar} = require('../src/components/ContextUsageBar');
+  expect(root.root.findByType(ContextUsageBar).props.usage).toMatchObject({systemTokens: 100, conversationTokens: 300, toolTokens: 50});
+  expect(root.root.findByType(ContextUsageBar).props.capacity).toBe(32768);
+  await act(async () => root.unmount());
+});
+
 
 test('saves a manually edited context length and fetches context using the Desktop command', async () => {
   openConfigSession();

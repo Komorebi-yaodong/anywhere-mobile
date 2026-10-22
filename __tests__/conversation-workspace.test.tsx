@@ -89,6 +89,40 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it('uses negotiated runtime rather than stale windows, preserves history on sync failure and recovers writability', async () => {
+    jest.useFakeTimers();
+    const f = fixture();
+    const base = f.rpc.getMockImplementation()!;
+    const frozen = require('../packages/remote-contract/fixtures/v1.0-view.json');
+    let fail = false;
+    f.rpc.mockImplementation((id, method, params) => {
+      if (method === 'remote.status.get') return Promise.resolve({capabilities: ['remote.contract.negotiate']});
+      if (method === 'remote.contract.negotiate') return Promise.resolve({selected: {major: 1, minor: 0}, capabilities: ['conversation.view.v1', 'conversation.runtime.v1', 'conversation.invalidation.v1'], serverEpoch: frozen.serverEpoch, limits: {eventRetention: 512, operationRetentionMs: 1800000}});
+      if (method === 'conversation.view.get') return Promise.resolve({...frozen, page: {...frozen.page, conversation: {...frozen.page.conversation, conversationId: A}}, runtime: {...frozen.runtime, conversationId: A, control: {owner: 'this_device', canWrite: true}, pendingChoices: [{toolCallId: 'restored-choice', questions: [{question: 'Recovered?', header: '', options: [{label: 'Yes', description: ''}]}]}]}});
+      if (method === 'conversation.changes.get') return fail ? Promise.reject(new Error('synthetic sync unavailable')) : Promise.resolve({serverEpoch: frozen.serverEpoch, cursor: frozen.cursor, sequence: frozen.sequence, resyncRequired: false, hasMore: false, events: []});
+      return base(id, method, params);
+    });
+    let root!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      expect(f.state.authoritativeRuntime?.execution.state).toBe('idle');
+
+      expect(f.state.canControlConversation(B)).toBe(true);
+      expect(f.state.pendingChoices['restored-choice']?.questions[0].question).toBe('Recovered?');
+      expect(f.state.canControlConversation(A)).toBe(true);
+      const history = f.state.messages;
+      fail = true;
+      await act(async () => {jest.advanceTimersByTime(2500);});
+      expect(f.state.messages).toEqual(history);
+      expect(f.state.canControlConversation(A)).toBe(false);
+      fail = false;
+      await act(async () => {jest.advanceTimersByTime(2500);});
+      expect(f.state.canControlConversation(A)).toBe(true);
+      expect(f.rpc.mock.calls.some(call => call[1] === 'conversation.messages.list')).toBe(false);
+    } finally {await act(async () => root?.unmount()); jest.useRealTimers();}
+  });
+
+
   it.each(['missing', 'completed', 'timeout'])('periodically reconciles %s requests without retransmitting or masking uncertain work', async kind => {
     jest.useFakeTimers();
     const f = fixture();
