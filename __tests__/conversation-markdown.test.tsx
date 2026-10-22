@@ -33,6 +33,14 @@ async function render(value: string) {
 }
 
 describe('ConversationMarkdown media rendering', () => {
+
+  it('shows audio controls without transport/cache implementation labels', async () => {
+    const root = await render('<audio controls src="https://media.example/recording.m4a"></audio>');
+    const output = JSON.stringify(root.toJSON());
+    expect(output).not.toContain('受限缓存音频'); expect(output).not.toContain('HTTPS 音频'); expect(output).toContain('音频播放');
+    await act(async () => root.unmount());
+  });
+
   it('renders HTTPS Markdown image and HTML audio/video with native media views', async () => {
     const root = await render([
       '![angry bird](https://media.example/fixture.png)',

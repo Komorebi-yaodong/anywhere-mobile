@@ -24,13 +24,27 @@ it('shows full name and moves the exact long-pressed conversation to project or 
   for (const project of ['新项目', '未分组']) {
     const f = fixture(); const root = await render(f.props);
     expect(JSON.stringify(root.toJSON())).toContain(f.props.conversation.title);
+    await act(async () => button(root, '选择所属项目').props.onPress());
+
     await act(async () => button(root, `项目 ${project}`).props.onPress());
-    await act(async () => button(root, '保存所属项目').props.onPress());
+    await act(async () => button(root, '保存到项目').props.onPress());
     expect(f.tracked).toHaveBeenCalledWith('desktop-menu-fixture', 'conversation.project.set', {conversationId: CID, projectId: project === '新项目' ? 'new-project' : ''}, 30000);
     expect(f.completed).toHaveBeenCalledWith(false);
     await act(async () => root.unmount());
   }
 });
+it('uses a sorted project picker and places delete left of save in one row', async () => {
+ const f = fixture(); f.props.projects = [{projectId: 'z', name: 'Zebra'}, {projectId: 'b10', name: 'Beta10'}, {projectId: 'b2', name: 'Beta2'}, {projectId: 'a', name: 'Alpha'}];
+ const root = await render(f.props);
+ expect(button(root, '删除会话').parent).toBe(button(root, '保存到项目').parent);
+ expect(JSON.stringify(root.toJSON()).indexOf('删除会话')).toBeLessThan(JSON.stringify(root.toJSON()).indexOf('保存到项目'));
+ await act(async () => button(root, '选择所属项目').props.onPress());
+ const labels = root.root.findAll(node => node.props.accessibilityRole === 'radio' && typeof node.props.onPress === 'function').map(node => node.props.accessibilityLabel);
+ expect(labels).toEqual(['项目 未分组', '项目 Alpha', '项目 Beta2', '项目 Beta10', '项目 Zebra']);
+ await act(async () => root.unmount());
+});
+
+
 it('requires explicit destructive confirmation and deletes only the target conversation', async () => {
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
   const f = fixture(); const root = await render(f.props);
@@ -45,7 +59,7 @@ it('requires explicit destructive confirmation and deletes only the target conve
 });
 it('disables unsupported project change without disabling a supported delete', async () => {
   const f = fixture(['conversation.delete']); const root = await render(f.props);
-  expect(button(root, '保存所属项目').props.disabled).toBe(true);
+  expect(button(root, '保存到项目').props.disabled).toBe(true);
   expect(button(root, '删除会话').props.disabled).toBe(false);
   expect(f.tracked).not.toHaveBeenCalled();
   await act(async () => root.unmount());
@@ -53,7 +67,7 @@ it('disables unsupported project change without disabling a supported delete', a
 it.each([true, false])('blocks busy or foreign-controlled sessions without implicit takeover (busy=%s)', async busy => {
   const f = fixture(undefined, [{conversationId: CID, busy, controlledByThisDevice: false}]); const root = await render(f.props);
   expect(button(root, '删除会话').props.disabled).toBe(true);
-  expect(button(root, '保存所属项目').props.disabled).toBe(true);
+  expect(button(root, '保存到项目').props.disabled).toBe(true);
   expect(f.request.mock.calls.some(call => call[1] === 'conversation.takeover')).toBe(false);
   await act(async () => root.unmount());
 });
@@ -69,14 +83,21 @@ it('allows idle orphan hidden writers but never bypasses another mobile owner', 
 
 
 it('keeps an uncertain operation recoverable and never dispatches it twice', async () => {
+  jest.useFakeTimers();
   const f = fixture(); const base = f.request.getMockImplementation()!;
   f.request.mockImplementation((id, method) => method === 'conversation.request.get' ? Promise.reject(new Error('transient')) : base(id, method));
   const root = await render(f.props);
+  await act(async () => button(root, '选择所属项目').props.onPress());
+
   await act(async () => button(root, '项目 新项目').props.onPress());
-  await act(async () => button(root, '保存所属项目').props.onPress());
+  await act(async () => button(root, '保存到项目').props.onPress());
   expect(f.completed).not.toHaveBeenCalled();
-  expect(button(root, '保存所属项目').props.disabled).toBe(true);
-  await act(async () => button(root, '检查会话操作结果').props.onPress());
+  expect(button(root, '保存到项目').props.disabled).toBe(true);
+  expect(JSON.stringify(root.toJSON())).not.toContain('检查原操作结果');
+  f.request.mockImplementation(base);
+  await act(async () => {jest.advanceTimersByTime(2500);});
+  expect(f.completed).toHaveBeenCalledWith(false);
   expect(f.tracked).toHaveBeenCalledTimes(1);
   await act(async () => root.unmount());
+  jest.useRealTimers();
 });

@@ -4,6 +4,8 @@ import type {ConversationSummary, RemoteRequest, RemoteTrackedRequest, Workspace
 import {RemoteCommandPendingError, startCommand, waitForCommand} from '../remote/commands';
 import {useThemedStyles} from './theme';
 
+import {sortByName} from './nameSort';
+
 type Props = {desktopId: string; conversation: ConversationSummary; projects: WorkspaceProject[]; request: RemoteRequest; requestTracked: RemoteTrackedRequest; onClose: () => void; onCompleted: (deleted: boolean) => void};
 export function ConversationMenu({desktopId, conversation, projects, request, requestTracked, onClose, onCompleted}: Props) {
   const s = useThemedStyles(styles);
@@ -11,6 +13,8 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
   const [checking, setChecking] = useState(true);
   const [blocked, setBlocked] = useState('');
   const [projectId, setProjectId] = useState(conversation.project?.projectId || '');
+
+  const [choosingProject, setChoosingProject] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState<{requestId: string; deleted: boolean} | null>(null);
@@ -54,7 +58,7 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
       if (controller.current.signal.aborted) return;
       if (cause instanceof RemoteCommandPendingError) {
         setPending({requestId: cause.requestId, deleted});
-        setNotice('结果尚待确认，请检查原操作，不要重复提交。');
+        setNotice('正在自动确认操作结果，请稍候；不会重复提交。');
       } else {
         setPending(null);
         // A failure can follow a partial persistence on older Desktop. Prevent
@@ -65,26 +69,41 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
       }
     } finally {submitting.current = false; if (!controller.current.signal.aborted) setBusy(false);}
   };
+  const retry = useRef(submit);
+  retry.current = submit;
+  useEffect(() => {
+    if (!pending || busy || finished) return;
+    const timer = setTimeout(() => {retry.current(pending.deleted, true);}, 2500);
+    return () => clearTimeout(timer);
+  }, [pending, busy, finished]);
+
   const disabled = busy || checking || Boolean(blocked) || Boolean(pending) || finished;
   const canMove = capabilities.includes('conversation.project.set');
   const canDelete = capabilities.includes('conversation.delete');
-  return <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+  return <Modal visible transparent animationType="slide" onRequestClose={() => choosingProject ? setChoosingProject(false) : onClose()}>
     <View style={s.overlay}><View style={s.sheet}>
       <Text style={s.label}>会话</Text><Text selectable style={s.title}>{conversation.title || '未命名会话'}</Text>
       <Text style={s.label}>所属项目 · 当前：{conversation.project?.name || '未分组'}</Text>
       {!checking && !canMove ? <Text style={s.hint}>此 Desktop 暂不支持修改会话项目，其他功能仍可使用。</Text> : null}
-      <ScrollView style={s.projects} keyboardShouldPersistTaps="handled">
-        {[{projectId: '', name: '未分组'}, ...projects].map(project => <Pressable key={project.projectId} accessibilityRole="radio" accessibilityLabel={`项目 ${project.name}`} accessibilityState={{checked: projectId === project.projectId, disabled: disabled || !canMove}} disabled={disabled || !canMove} style={[s.option, projectId === project.projectId && s.selected]} onPress={() => setProjectId(project.projectId)}><Text style={s.text}>{project.name}</Text><Text style={s.text}>{projectId === project.projectId ? '✓' : ''}</Text></Pressable>)}
-      </ScrollView>
+      {choosingProject ? <>
+        <Text style={s.title}>选择所属项目</Text>
+        <ScrollView style={s.projects} keyboardShouldPersistTaps="handled">
+          {[{projectId: '', name: '未分组'}, ...sortByName(projects)].map(project => <Pressable key={project.projectId} accessibilityRole="radio" accessibilityLabel={`项目 ${project.name}`} accessibilityState={{checked: projectId === project.projectId, disabled: disabled || !canMove}} disabled={disabled || !canMove} style={[s.option, projectId === project.projectId && s.selected]} onPress={() => {setProjectId(project.projectId); setChoosingProject(false);}}><Text style={s.text}>{project.name}</Text><Text style={s.text}>{projectId === project.projectId ? '✓' : ''}</Text></Pressable>)}
+        </ScrollView>
+        <Pressable accessibilityLabel="返回会话操作" style={s.button} onPress={() => setChoosingProject(false)}><Text style={s.text}>返回</Text></Pressable>
+      </> : <Pressable accessibilityLabel="选择所属项目" disabled={disabled || !canMove} style={s.option} onPress={() => setChoosingProject(true)}><Text style={s.text}>{projectId ? projects.find(project => project.projectId === projectId)?.name || conversation.project?.name : '未分组'}</Text><Text style={s.text}>⌃</Text></Pressable>}
       {checking || blocked || notice ? <Text accessibilityLabel="会话操作提示" style={s.hint}>{checking ? '正在检查 Desktop 能力…' : notice || blocked}</Text> : null}
-      <Pressable accessibilityLabel="保存所属项目" disabled={disabled || !canMove || projectId === (conversation.project?.projectId || '')} style={[s.button, (disabled || !canMove) && s.disabled]} onPress={() => submit(false)}><Text style={s.text}>保存所属项目</Text></Pressable>
-      <Pressable accessibilityLabel="删除会话" disabled={disabled || !canDelete} style={[s.button, (disabled || !canDelete) && s.disabled]} onPress={() => Alert.alert('删除会话？', `将永久删除“${conversation.title || '未命名会话'}”及其 Desktop 本地历史，无法在本页撤销。`, [{text: '取消', style: 'cancel'}, {text: '删除', style: 'destructive', onPress: () => submit(true)}])}><Text style={s.danger}>删除会话</Text></Pressable>
-      {pending ? <Pressable accessibilityLabel="检查会话操作结果" disabled={busy} style={s.button} onPress={() => submit(pending.deleted, true)}><Text style={s.text}>检查原操作结果</Text></Pressable> : null}
+      {!choosingProject ? <View style={s.actionRow}>
+      <Pressable accessibilityLabel="删除会话" disabled={disabled || !canDelete} style={[s.button, s.action, (disabled || !canDelete) && s.disabled]} onPress={() => Alert.alert('删除会话？', `将永久删除“${conversation.title || '未命名会话'}”及其 Desktop 本地历史，无法在本页撤销。`, [{text: '取消', style: 'cancel'}, {text: '删除', style: 'destructive', onPress: () => submit(true)}])}><Text style={s.danger}>删除会话</Text></Pressable>
+        <Pressable accessibilityLabel="保存到项目" disabled={disabled || !canMove || projectId === (conversation.project?.projectId || '')} style={[s.button, s.action, (disabled || !canMove) && s.disabled]} onPress={() => submit(false)}><Text style={s.text}>保存到项目</Text></Pressable>
+      </View> : null}
       <Pressable accessibilityLabel="关闭会话操作" style={s.button} onPress={onClose}><Text style={s.text}>关闭</Text></Pressable>
     </View></View>
   </Modal>;
 }
 const styles = StyleSheet.create({
+
+  actionRow: {flexDirection: 'row', gap: 10}, action: {flex: 1},
   overlay: {flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(39,36,31,0.34)'},
   sheet: {maxHeight: '90%', backgroundColor: '#FAF8F3', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 18, paddingBottom: 28, gap: 10},
   title: {fontSize: 17, fontWeight: '600', color: '#292724'}, label: {fontSize: 12, color: '#79746C'}, hint: {fontSize: 12, lineHeight: 18, color: '#79746C'},

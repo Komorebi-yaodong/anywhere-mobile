@@ -8,6 +8,8 @@ export function useAudioRecording(
   onError: (message: string) => void,
 ) {
   const [recording, setRecording] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const processingRef = useRef(false);
   const active = useRef(false);
   const held = useRef(false);
   const cancelled = useRef(false);
@@ -40,7 +42,7 @@ export function useAudioRecording(
   }, [cancel]);
 
   const start = useCallback(() => {
-    if (held.current || operation.current || active.current) return;
+    if (held.current || operation.current || active.current || processingRef.current) return;
     held.current = true;
     cancelled.current = false;
     const pending = (async () => {
@@ -78,9 +80,10 @@ export function useAudioRecording(
   const finish = useCallback(async () => {
     held.current = false;
     await operation.current?.catch(() => undefined);
-    if (!active.current) return;
+    if (!active.current || processingRef.current) return;
     active.current = false;
-    if (mounted.current) setRecording(false);
+    processingRef.current = true;
+    if (mounted.current) {setRecording(false); setProcessing(true);}
     let capture: AudioCapture | null = null;
     try {
       if (cancelled.current || !mounted.current) {
@@ -99,8 +102,11 @@ export function useAudioRecording(
           () => undefined,
         );
       if (mounted.current) callbacks.current.onError('录音处理失败，请重试。');
+    } finally {
+      processingRef.current = false;
+      if (mounted.current) setProcessing(false);
     }
   }, []);
 
-  return { recording, start, finish, cancel };
+  return { recording, processing, start, finish, cancel };
 }

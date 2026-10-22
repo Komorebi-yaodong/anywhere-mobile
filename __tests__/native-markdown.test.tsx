@@ -16,6 +16,21 @@ async function render(value: string) {
   return root;
 }
 
+it('draws many-fence/table replies in independent non-growing surfaces and retains the ending', async () => {
+  const source = Array.from({length: 32}, (_, i) => `## Section ${i}\n\n正文 ${i}\n\n\`\`\`text\nrow-${i}\n\`\`\`\n\n`).join('') + '| A | B |\n|---|---|\n| x | y |\n\n最后正文完整';
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<NativeMarkdown value={source} surfaceStyle={{backgroundColor: '#fff'}} />);});
+  const surfaces = root.root.findAll(node => node.props.testID === 'markdown-surface-segment' && node.props.style);
+  expect(surfaces.length).toBeGreaterThan(32);
+  expect(surfaces.every(node => StyleSheet.flatten(node.props.style).flexGrow === 0 && StyleSheet.flatten(node.props.style).flexShrink === 0)).toBe(true);
+  expect(root.root.findAllByType(MarkdownCodeBlock)).toHaveLength(32);
+  const table = root.root.findAll(node => node.props.accessibilityLabel === 'Markdown 表格')[0];
+  expect(StyleSheet.flatten(table.findByType(ScrollView).props.style)).toMatchObject({flexGrow: 0, flexShrink: 0});
+  expect(JSON.stringify(root.toJSON())).toContain('最后正文完整');
+  await act(async () => root.unmount());
+});
+
+
 it('keeps the supplied directory literal and bounds its native code viewport without losing following prose', async () => {
   expect(parseConversationContent(directoryMessage)).toEqual([{kind: 'text', value: directoryMessage}]);
   const fences = flatten(parseMarkdown(directoryMessage)).filter(node => node.type === 'fence');
@@ -72,6 +87,17 @@ it('parses real Markdown table structure with alignment, escaped pipes and inlin
   expect(nodes.some(node => node.type === 'code_inline' && node.content === 'a|b')).toBe(true);
   expect(nodes.some(node => node.type === 'strong')).toBe(true);
 });
+
+it('measures horizontal table height instead of filling the vertical message viewport', async () => {
+ const root = await render('| A | B |\n|---|---|\n| x | y |');
+ const content = root.root.findAll(node => node.props.accessibilityLabel === '表格内容' && node.props.onLayout)[0];
+ await act(async () => content.props.onLayout({nativeEvent: {layout: {height: 146.2}}}));
+ const scroll = root.root.findByType(ScrollView);
+ expect(StyleSheet.flatten(scroll.props.style)).toMatchObject({height: 147, flexGrow: 0, flexShrink: 0});
+ expect(scroll.props.removeClippedSubviews).toBe(false);
+ await act(async () => root.unmount());
+});
+
 
 it('renders wide tables as horizontally scrollable, consistently sized native cells', async () => {
   const root = await render('| A | B | C | D |\n| --- | :---: | ---: | --- |\n| one | two | three | four |\n| five | six | seven | eight |');

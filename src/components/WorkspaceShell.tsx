@@ -59,6 +59,8 @@ import {ConversationMessageList, MessageLayoutInteractionContext, type Conversat
 
 import {ConversationMenu} from './ConversationMenu';
 
+import {sortByName} from './nameSort';
+
 import {ContextUsageBar} from './ContextUsageBar';
 
 import {sessionSettingsPatch} from './sessionSettings';
@@ -176,7 +178,7 @@ export function filterSessionMcpServers(
 ) {
   const selected = new Set(selectedIds);
   const keyword = query.trim().toLocaleLowerCase('zh-CN');
-  return servers.filter(item => {
+  return sortByName(servers).filter(item => {
     const tags = Array.isArray(item.tags) ? item.tags : [];
     if (quickFilter === 'selected' && !selected.has(item.id)) return false;
     if (quickFilter === 'preset' && !item.preset) return false;
@@ -207,7 +209,7 @@ export function filterSessionSkills(
   query = '',
 ) {
   const keyword = query.trim().toLocaleLowerCase('zh-CN');
-  return skills.filter(item =>
+  return sortByName(skills).filter(item =>
     !keyword || item.name.toLocaleLowerCase('zh-CN').includes(keyword),
   );
 }
@@ -273,6 +275,8 @@ export function WorkspaceShell({
   const currentConversation = useRef(workspace.selectedConversationId);
   currentConversation.current = workspace.selectedConversationId;
 
+  const [audioProgress, setAudioProgress] = useState('');
+
   const audio = useAudioRecording(async capture => {
     const conversationId = workspace.selectedConversationId;
     if (!conversationId || !workspace.canControlConversation(conversationId)) {
@@ -280,11 +284,14 @@ export function WorkspaceShell({
       await MediaCapture.deleteCapture(capture.captureId);
       return;
     }
-    const upload = await uploadAudioCapture({
-      desktopId: desktop.id,
-      request,
-      capture,
-    });
+    setAudioProgress('正在准备录音上传…');
+    let upload;
+    try {
+      upload = await uploadAudioCapture({desktopId: desktop.id, request, capture,
+        onProgress: progress => setAudioProgress(progress.stage === 'hashing' ? '正在准备录音上传…' : `录音上传中 ${Math.min(100, Math.round(progress.bytes / Math.max(1, progress.total) * 100))}%`),
+      });
+    } catch (cause) {setAudioProgress(''); throw cause;}
+    setAudioProgress('录音已上传，正在发送…');
     try {
       if (currentConversation.current !== conversationId) {
         attachments.addCapturedUpload(upload);
@@ -295,7 +302,7 @@ export function WorkspaceShell({
     } catch (error) {
       attachments.addCapturedUpload(upload);
       throw error;
-    }
+    } finally {setAudioProgress('');}
   }, setNotice);
   const { recording, cancel: cancelAudio } = audio;
 
@@ -1059,10 +1066,10 @@ export function WorkspaceShell({
         ) : null}
       </View>
 
-      {workspace.error || attachments.error || attachments.progress ? (
+      {workspace.error || attachments.error || audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || attachments.progress ? (
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            {workspace.error || attachments.error || attachments.progress}
+            {audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || workspace.error || attachments.error || attachments.progress}
           </Text>
         </View>
       ) : null}
@@ -1147,6 +1154,8 @@ export function WorkspaceShell({
           )}
           onRemoveQueued={workspace.removeQueuedSend}
           recording={recording}
+
+          audioProcessing={audio.processing}
           onRecordStart={audio.start}
           onRecordEnd={audio.finish}
           onRecordCancel={audio.cancel}
@@ -1553,6 +1562,7 @@ const ChatPage = React.forwardRef<
     queuedSends: Array<{ requestId: string; text: string; position: number }>;
     onRemoveQueued: (requestId: string) => Promise<void>;
     recording: boolean;
+    audioProcessing?: boolean;
     onRecordStart: () => void;
     onRecordEnd: () => void;
     onRecordCancel: () => void;
@@ -1589,6 +1599,7 @@ const ChatPage = React.forwardRef<
       queuedSends,
       onRemoveQueued,
       recording,
+      audioProcessing,
       onRecordStart,
       onRecordEnd,
       onRecordCancel,
@@ -1728,15 +1739,15 @@ const ChatPage = React.forwardRef<
           {voiceMode ? (
             <Pressable
               style={styles.recordingPanel}
-              disabled={!writable}
-              onPressIn={() => writable && onRecordStart()}
+              disabled={!writable || audioProcessing}
+              onPressIn={() => writable && !audioProcessing && onRecordStart()}
               onPressOut={() => writable && onRecordEnd()}
               onTouchMove={event => {
                 if (event.nativeEvent.locationY < -34) onRecordCancel();
               }}
             >
               <Text style={styles.recordingText}>
-                {recording ? '正在录音 · 松手发送 · 上滑取消' : '按住说话'}
+                {audioProcessing ? '录音上传发送中…' : recording ? '正在录音 · 松手发送 · 上滑取消' : '按住说话'}
               </Text>
             </Pressable>
           ) : (
@@ -1945,7 +1956,7 @@ function Drawer({
             </Pressable>
           </View>
           <ScrollView style={styles.drawerScroll} keyboardShouldPersistTaps="handled">
-            {projects.map((project: WorkspaceProject) => renderProject(project))}
+            {sortByName<WorkspaceProject>(projects).map(project => renderProject(project))}
             {ungrouped.length ? (
               <View style={styles.projectCard}>
                 <View style={styles.projectCardHeader}>
@@ -2194,9 +2205,9 @@ const MessageCard = React.memo(function MessageCardView({
         {isUser ? <Avatar source={userAvatar} label={displayName} /> : null}
       </View>
       {message.payload.reasoningContent ? <FoldCard title="思考过程" text={message.payload.reasoningContent} /> : null}
-      {hasMessageBubble(message) ? <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
-        <ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} />
-      </View> : null}
+      {hasMessageBubble(message) ? content.length > 1800 || content.split('\n').length > 50
+        ? <ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} surfaceStyle={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]} />
+        : <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}><ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} /></View> : null}
       {files.length ? <View accessibilityLabel="消息文件附件" style={styles.toolList}>{files.map((file, index) => <View key={`${index}-${file.name}`} style={styles.toolCard}><View style={styles.toolHeaderCopy}><AppIcon name="▤" size={17} color={C.primary} /><Text numberOfLines={2} selectable style={styles.toolName}>{file.name || '文件'}</Text></View><Text style={styles.sessionHint}>文件内容已保留在 Desktop，编辑正文不会修改附件</Text></View>)}</View> : null}
 
       {message.payload.toolCalls?.length ? <View style={[styles.toolList, toolOnly && styles.toolListFullWidth]}>{message.payload.toolCalls.map(tool => <ToolCallCard key={tool.id || tool.name} tool={tool} pending={pendingChoices[tool.id]} writable={choiceWritable ?? writable} onSubmit={onSubmitChoice} />)}</View> : null}
@@ -2708,7 +2719,7 @@ const baseStyles = StyleSheet.create({
   chatViewport: {flex: 1, minHeight: 0, position: 'relative'},
   chatMessages: {flex: 1, minHeight: 0},
   messageList: {padding: 16, paddingBottom: 14, gap: 16},
-  messageWrap: {maxWidth: '94%', gap: 7},
+  messageWrap: {maxWidth: '94%', minWidth: 0, flexGrow: 0, flexShrink: 0, gap: 7},
   messageLeft: {alignSelf: 'flex-start'},
 
   toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 7},

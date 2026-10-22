@@ -4,6 +4,8 @@ import {Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react
 import type {RemoteRequest, RemoteTrackedRequest} from '../remote/api';
 
 import {GlobalSettings} from './GlobalSettings';
+
+import {sortByName} from './nameSort';
 import {
   ConversationConfig,
   ConversationConfigResult, RemoteCommandPendingError, startCommand, waitForCommand,
@@ -81,9 +83,9 @@ export function RemoteSettings({desktopId, conversationId, request, requestTrack
               <Text style={styles.label}>语音</Text>
               {['', ...result.options.voices.filter(Boolean)].map(value => <Choice key={value} label={value || '关闭 / 默认'} active={config.voice === value} onPress={() => setConfig({...config, voice: value})} />)}
               <Text style={styles.label}>MCP</Text>
-              {result.options.mcpServers.map(item => <Toggle key={item.id} label={item.name} value={config.mcpServerIds.includes(item.id)} onChange={() => setConfig({...config, mcpServerIds: toggleId(config.mcpServerIds, item.id)})} />)}
+              {sortByName(result.options.mcpServers).map(item => <Toggle key={item.id} label={item.name} value={config.mcpServerIds.includes(item.id)} onChange={() => setConfig({...config, mcpServerIds: toggleId(config.mcpServerIds, item.id)})} />)}
               <Text style={styles.label}>Skill</Text>
-              {result.options.skills.map(item => <Toggle key={item.id} label={item.name} value={config.skillIds.includes(item.id)} onChange={() => setConfig({...config, skillIds: toggleId(config.skillIds, item.id)})} />)}
+              {sortByName(result.options.skills).map(item => <Toggle key={item.id} label={item.name} value={config.skillIds.includes(item.id)} onChange={() => setConfig({...config, skillIds: toggleId(config.skillIds, item.id)})} />)}
               <Text style={styles.label}>System prompt</Text>
               <TextInput multiline style={styles.textarea} value={config.systemPrompt} onChangeText={systemPrompt => setConfig({...config, systemPrompt})} autoCorrect={false} />
               <Toggle label="自动压缩" value={config.compact.autoCompactEnabled} onChange={autoCompactEnabled => setConfig({...config, compact: {...config.compact, autoCompactEnabled}})} />

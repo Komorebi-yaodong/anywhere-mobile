@@ -9,6 +9,16 @@ function hasText(root: TestRenderer.ReactTestRenderer, label: string) {
   return root.root.findAllByType(Text).some(node => node.props.children === label);
 }
 
+test.each(['mcp', 'skills'] as const)('sorts global %s by name regardless of enabled state', async section => {
+ const request = jest.fn(async () => ({ok: true, section, items: [{id: 'z', name: 'Zebra', enabled: true}, {id: 'a10', name: 'Alpha10', enabled: true}, {id: 'a2', name: 'Alpha2', enabled: false}]}));
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<SimpleManagementSettings section={section} desktopId="sort-fixture" request={request as RemoteRequest} onChanged={() => {}} refreshSignal={0} />);});
+ const labels = root.root.findAllByType(Text).map(node => node.props.children).filter(value => ['Zebra', 'Alpha10', 'Alpha2'].includes(String(value)));
+ expect(labels).toEqual(['Alpha2', 'Alpha10', 'Zebra']);
+ await act(async () => root.unmount());
+});
+
+
 test('filters global MCP services by visible configuration tags and keywords only', async () => {
   const request = jest.fn(async () => ({
     ok: true,

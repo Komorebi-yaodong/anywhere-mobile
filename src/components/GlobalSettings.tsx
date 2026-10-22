@@ -30,6 +30,8 @@ import {ProviderSettings} from './ProviderSettings';
 import {ManagementSettings} from './ManagementSettings';
 import {TaskSettings} from './TaskSettings';
 import {SimpleManagementSettings} from './SimpleManagementSettings';
+
+import {sortByName} from './nameSort';
 import {useThemedStyles} from './theme';
 import {ensureAvatarResource} from '../services/avatarResourceCache';
 import {cacheRemoteImage} from '../services/remoteImageCache';
@@ -875,7 +877,7 @@ function AgentEditor({
             onPress={() => select('默认保存项目', [
               {value: '__none__', label: '不自动保存'},
               {value: '__ungrouped__', label: '保存到未分组'},
-              ...options.projects.map(project => ({value: project.projectId, label: project.name})),
+              ...sortByName(options.projects).map(project => ({value: project.projectId, label: project.name})),
             ], form.saveTarget, value => set('saveTarget', String(value)))}
           />
           <SelectRow
@@ -889,12 +891,12 @@ function AgentEditor({
           <SelectRow
             label="MCP"
             value={form.mcpServerIds.length ? `已选 ${form.mcpServerIds.length} 项` : '未选择'}
-            onPress={() => select('选择 MCP', [...options.mcpServers].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')).map(item => ({value: item.id, label: item.name})), form.mcpServerIds, value => set('mcpServerIds', value as string[]), true)}
+            onPress={() => select('选择 MCP', sortByName(options.mcpServers).map(item => ({value: item.id, label: item.name})), form.mcpServerIds, value => set('mcpServerIds', value as string[]), true)}
           />
           <SelectRow
             label="Skill"
             value={form.skillIds.length ? `已选 ${form.skillIds.length} 项` : '未选择'}
-            onPress={() => select('选择 Skill', [...options.skills].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')).map(item => ({value: item.id, label: item.name})), form.skillIds, value => set('skillIds', value as string[]), true)}
+            onPress={() => select('选择 Skill', sortByName(options.skills).map(item => ({value: item.id, label: item.name})), form.skillIds, value => set('skillIds', value as string[]), true)}
           />
           <SelectRow
             label="标签"

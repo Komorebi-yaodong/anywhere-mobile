@@ -11,6 +11,8 @@ import {
   StyleSheet,
   Text,
   View,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 import {Dirs, FileSystem} from 'react-native-file-access';
 import Video, {type VideoRef} from 'react-native-video';
@@ -273,7 +275,7 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
   </>;
 }
 
-function AudioPlayer({state, opaque, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
+function AudioPlayer({state, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
   const styles = useThemedStyles(baseStyles);
   const ref = useRef<VideoRef>(null);
   const [playing, setPlaying] = useState(false);
@@ -305,7 +307,7 @@ function AudioPlayer({state, opaque, onError}: {state: MediaState; opaque: boole
       onEnd={() => { setPlaying(false); setPosition(0); }}
       onError={onError}
     />
-    <View style={styles.audioHeader}><View><Text style={styles.audioEyebrow}>{opaque ? '受限缓存音频' : 'HTTPS 音频'}</Text><Text style={styles.audioTitle}>音频播放</Text></View><Text style={styles.audioTime}>{formatTime(position)} / {formatTime(duration)}</Text></View>
+    <View style={styles.audioHeader}><View><Text style={styles.audioTitle}>音频播放</Text></View><Text style={styles.audioTime}>{formatTime(position)} / {formatTime(duration)}</Text></View>
     <View style={styles.audioProgressTrack}><View style={[styles.audioProgressFill, {width: `${progress}%`}]} /></View>
     <View style={styles.audioControls}>
       <Pressable accessibilityLabel="音频后退十秒" style={styles.skipButton} onPress={() => seekRelative(-10)}><Text style={styles.skipButtonText}>−10</Text></Pressable>
@@ -379,7 +381,7 @@ function MediaPreview({media, desktopId, conversationId, request}: {media: Conve
 }
 
 /** Render constrained Markdown/HTML media. Direct media is HTTPS-only; local Desktop media must use opaque IDs. */
-export function ConversationMarkdown({value, desktopId, conversationId, request, color}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string}) {
+export function ConversationMarkdown({value, desktopId, conversationId, request, color, surfaceStyle}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string; surfaceStyle?: StyleProp<ViewStyle>}) {
   const styles = useThemedStyles(baseStyles);
   const theme = useTheme();
   color = color ? theme.color(color) : theme.colors.text;
@@ -387,13 +389,13 @@ export function ConversationMarkdown({value, desktopId, conversationId, request,
   const blocks = useMemo(() => file ? [] : parseConversationContent(value), [file, value]);
   if (file) return <View style={styles.root}><Text selectable style={{color: color || C.text}}>{file}</Text></View>;
   return <View style={styles.root}>{blocks.map(block => block.kind === 'text'
-    ? <NativeMarkdown key={`text-${block.value.slice(0, 32)}-${blocks.indexOf(block)}`} value={block.value} color={color} />
-    : <MediaPreview key={block.media.key} media={block.media} desktopId={desktopId} conversationId={conversationId} request={request} />,
+    ? <NativeMarkdown key={`text-${block.value.slice(0, 32)}-${blocks.indexOf(block)}`} value={block.value} color={color} surfaceStyle={surfaceStyle} />
+    : <View key={block.media.key} collapsable={false} style={surfaceStyle}><MediaPreview media={block.media} desktopId={desktopId} conversationId={conversationId} request={request} /></View>,
   )}</View>;
 }
 
 const baseStyles = StyleSheet.create({
-  root: {gap: 9, minWidth: 0, maxWidth: '100%', flexShrink: 1},
+  root: {gap: 9, minWidth: 0, maxWidth: '100%', flexGrow: 0, flexShrink: 0},
   mediaPlaceholder: {minHeight: 68, alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 14, backgroundColor: C.mutedSurface},
   mediaHint: {fontSize: 12, color: C.muted},
   mediaError: {fontSize: 12, color: C.danger},

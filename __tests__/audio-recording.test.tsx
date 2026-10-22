@@ -89,6 +89,22 @@ test('a completed hold emits one audio attachment and unmount cancels active cap
   expect(MediaCapture.cancelAudio).toHaveBeenCalled();
 });
 
+test('keeps processing visible and blocks a second recording until upload/send completes', async () => {
+  const pending = deferred(); captured.mockImplementationOnce(async () => {await pending.promise; return undefined;});
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<Harness />);});
+  await act(async () => state.start());
+  let finish!: Promise<void>;
+  await act(async () => {finish = state.finish();});
+  expect(state.processing).toBe(true); expect(state.recording).toBe(false);
+  await act(async () => {state.start(); await state.finish();});
+  expect(MediaCapture.startAudio).toHaveBeenCalledTimes(1); expect(captured).toHaveBeenCalledTimes(1);
+  await act(async () => {pending.resolve(); await finish;});
+  expect(state.processing).toBe(false);
+  await act(async () => root.unmount());
+});
+
+
 test('swipe cancellation never uploads and resets the recording state', async () => {
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => {

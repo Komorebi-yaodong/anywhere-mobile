@@ -145,6 +145,24 @@ function workspaceProps() {
   };
 }
 
+test('shows recorded audio upload progress before the send completes', async () => {
+  openConfigSession(); mockSend.mockClear();
+  const {uploadAudioCapture} = require('../src/services/mediaAttachment');
+  let complete!: (value: unknown) => void;
+  uploadAudioCapture.mockImplementationOnce((options: any) => {options.onProgress({stage: 'uploading', bytes: 5, total: 10}); return new Promise(resolve => {complete = resolve;});});
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+  let operation!: Promise<unknown>;
+  await act(async () => {operation = mockOnCapture!({captureId: 'synthetic-recording'});});
+  expect(JSON.stringify(root.toJSON())).toContain('录音上传中 50%');
+  expect(mockSend).not.toHaveBeenCalled();
+  await act(async () => {complete({uploadId: 'recorded-upload'}); await operation;});
+  expect(mockSend).toHaveBeenCalledWith('', ['recorded-upload']);
+  expect(JSON.stringify(root.toJSON())).not.toContain('录音上传中');
+  await act(async () => root.unmount());
+});
+
+
 test('renders document cards separately and edits only prose, never file labels or extracted content', async () => {
   openConfigSession();
   const props = workspaceProps();
@@ -164,6 +182,28 @@ test('renders document cards separately and edits only prose, never file labels 
 });
 
 
+test('long multi-block replies keep one message identity and the following message visible', async () => {
+ openConfigSession();
+ const long = Array.from({length: 32}, (_, i) => `## Section ${i}\n\n正文\n\n\`\`\`text\nrow-${i}\n\`\`\`\n\n`).join('') + '| A | B |\n|---|---|\n| x | y |\n\n长回复末尾';
+ const payload = {content: long, reasoningContent: '', toolCalls: [], timestamp: '', completedTimestamp: ''};
+ mockWorkspaceMessages = [{messageId: 'long-fixture', uiMessageId: 'long-fixture', role: 'assistant', order: 1, payload}, {messageId: 'after-long-fixture', uiMessageId: 'after-long-fixture', role: 'user', order: 2, payload: {...payload, content: '后续消息仍在'}}];
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+ await enterFixtureChat(root);
+ expect(root.root.findAll(node => node.props.testID === 'markdown-surface-segment' && node.props.style).length).toBeGreaterThan(32);
+ expect(root.root.findAll(node => node.props.testID === 'message-row-after-long-fixture').length).toBeGreaterThan(0);
+ expect(JSON.stringify(root.toJSON())).toContain('长回复末尾'); expect(JSON.stringify(root.toJSON())).toContain('后续消息仍在');
+ await act(async () => root.unmount());
+});
+
+test('sorts session MCP and Skill by display name without mutating source', () => {
+ const items = [{id: 'z', name: 'Zebra', tags: [], preset: true}, {id: 'a10', name: 'Alpha10', tags: [], preset: false}, {id: 'a2', name: 'Alpha2', tags: [], preset: true}];
+ expect(filterSessionMcpServers(items, ['z']).map(item => item.id)).toEqual(['a2', 'a10', 'z']);
+ expect(filterSessionSkills(items).map(item => item.id)).toEqual(['a2', 'a10', 'z']);
+ expect(items.map(item => item.id)).toEqual(['z', 'a10', 'a2']);
+});
+
+
 test('filters session MCP options by quick filter and keyword, including configuration tags', () => {
   const servers = [
     {id: 'mcp-research-preset', name: '研究 MCP', tags: ['Research', '知识库'], preset: true},
@@ -174,7 +214,7 @@ test('filters session MCP options by quick filter and keyword, including configu
   expect(filterSessionMcpServers(servers, ['mcp-files-selected'], {
     quickFilter: 'all',
     query: 'Research',
-  }).map(item => item.id)).toEqual(['mcp-research-preset', 'mcp-research-other']);
+  }).map(item => item.id)).toEqual(['mcp-research-other', 'mcp-research-preset']);
   expect(filterSessionMcpServers(servers, ['mcp-files-selected'], {
     quickFilter: 'selected',
   }).map(item => item.id)).toEqual(['mcp-files-selected']);

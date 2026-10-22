@@ -16,6 +16,8 @@ import {mcpTransportLabel, mcpTransportSearchTerms} from './mcpPresentation';
 import {useThemedStyles} from './theme';
 import {AppearanceSettings} from './AppearanceSettings';
 
+import {sortByName} from './nameSort';
+
 type ToggleSection = 'mcp' | 'skills';
 type ToggleItem = {id: string; name: string; enabled: boolean; revision: string; tags?: string[]; transport?: string};
 type DetailsReply = {ok: true; section: ToggleSection; items: ToggleItem[]};
@@ -172,7 +174,7 @@ export function SimpleManagementSettings({
 
   const title = section === 'mcp' ? 'MCP 服务' : 'Skill 服务';
   const keyword = query.trim().toLocaleLowerCase('zh-CN');
-  const visibleItems = items.filter(item => {
+  const visibleItems = sortByName(items).filter(item => {
     if (!keyword) return true;
     const tags = section === 'mcp' ? item.tags || [] : [];
     const transportTerms = section === 'mcp' ? mcpTransportSearchTerms(item.transport) : [];
