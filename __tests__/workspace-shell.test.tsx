@@ -18,6 +18,8 @@ import {ManagementSettings} from '../src/components/ManagementSettings';
 
 import {ConversationMessageList} from '../src/components/ConversationMessageList';
 
+import {directoryMessage} from '../test-fixtures/directoryTree';
+
 const mockCreate = jest.fn(async () => undefined);
 const mockCancel = jest.fn(async () => undefined);
 const mockSend = jest.fn(async () => undefined);
@@ -210,6 +212,29 @@ test('keeps pinned geometry and message navigation within the visible message ra
   expect(adjacentMessageIndex(1, 3, 1)).toBe(2);
   expect(adjacentMessageIndex(2, 3, 1)).toBe(2);
   expect(adjacentMessageIndex(0, 0, 1)).toBe(-1);
+});
+
+
+test('keeps the real directory bubble followed by user, tool and assistant messages with one navigator', async () => {
+  openConfigSession();
+  const props = workspaceProps();
+  const payload = {content: directoryMessage, reasoningContent: '', timestamp: '', completedTimestamp: '', toolCalls: []};
+  mockWorkspaceMessages = [
+    {messageId: 'directory', uiMessageId: 'directory-ui', role: 'assistant', order: 1, payload},
+    {messageId: 'after-user', uiMessageId: 'after-user-ui', role: 'user', order: 2, payload: {...payload, content: '后续用户消息'}},
+    {messageId: 'after-tool', uiMessageId: 'after-tool-ui', role: 'assistant', order: 3, payload: {...payload, content: '', toolCalls: [{id: 'after-directory-tool', name: 'synthetic_tool', status: 'finished'}]}},
+    {messageId: 'after-reply', uiMessageId: 'after-reply-ui', role: 'assistant', order: 4, payload: {...payload, content: '目录之后的回复'}},
+  ];
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  await enterFixtureChat(root);
+  const list = root.root.findByType(ConversationMessageList);
+  expect(list.props.messages.map((row: any) => row.uiMessageId)).toEqual(['directory-ui', 'after-user-ui', 'after-tool-ui', 'after-reply-ui']);
+  expect(JSON.stringify(root.toJSON())).toContain('后续用户消息');
+  expect(JSON.stringify(root.toJSON())).toContain('目录之后的回复');
+  expect(root.root.findAll(node => typeof node.type === 'string' && node.props.accessibilityLabel === '消息导航居中区域')).toHaveLength(1);
+  expect(root.root.findAllByType(ScrollView).find(node => node.props.accessibilityLabel === '代码横向滚动')?.props.removeClippedSubviews).toBe(false);
+  await act(async () => root.unmount());
 });
 
 

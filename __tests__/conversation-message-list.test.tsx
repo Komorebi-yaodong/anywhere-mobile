@@ -4,6 +4,9 @@ import {Pressable, ScrollView, Text} from 'react-native';
 import {ConversationMessageList, MessageLayoutInteractionContext, type ConversationMessageListHandle} from '../src/components/ConversationMessageList';
 import type {RemoteMessage} from '../src/remote/api';
 
+import {ConversationMarkdown} from '../src/components/ConversationMarkdown';
+import {directoryMessage} from '../test-fixtures/directoryTree';
+
 const mockScrollTo = jest.fn();
 jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
   const R = require('react');
@@ -58,6 +61,35 @@ async function fixture(count = 80) {
   });
   return {root, handle, unmount, pinned, rows, outer, rowHost};
 }
+
+test('the supplied directory code block cannot replace the following loaded messages or navigation targets', async () => {
+  const rows = Array.from({length: 8}, (_, index) => message(index));
+  rows[0] = {...rows[0], payload: {...rows[0].payload, content: directoryMessage}};
+  const handle = React.createRef<ConversationMessageListHandle>();
+  const request = jest.fn();
+  let root!: TestRenderer.ReactTestRenderer;
+  const renderMessage = (row: RemoteMessage) => <ConversationMarkdown value={String(row.payload.content)} desktopId="fixture" conversationId="fixture-conversation" request={request} />;
+  await act(async () => {root = TestRenderer.create(<ConversationMessageList ref={handle} messages={rows} onPinnedChange={() => {}} renderMessage={renderMessage} />);});
+  const outer = root.root.findAllByType(ScrollView).find(node => node.props.accessibilityLabel === '聊天消息列表')!;
+  const tail = root.root.findAll(node => node.props.testID === 'message-row-ui-7' && node.props.onLayout)[0];
+  await act(async () => {
+    outer.props.onLayout({nativeEvent: {layout: {height: 500}}});
+    rows.forEach((row, index) => root.root.findAll(node => node.props.testID === `message-row-${row.uiMessageId}` && node.props.onLayout)[0].props.onLayout({nativeEvent: {layout: {y: index === 0 ? 0 : 450 + (index - 1) * 100, height: index === 0 ? 450 : 100}}}));
+    outer.props.onContentSizeChange(390, 1150);
+  });
+  await flushFrames();
+  for (let index = 1; index < 8; index++) expect(JSON.stringify(root.toJSON())).toContain(`tail-fixture-${index}`);
+  await act(async () => {handle.current!.top(); handle.current!.adjacent(1);});
+  expect(mockScrollTo).toHaveBeenLastCalledWith({y: 450, animated: true});
+  await act(async () => handle.current!.bottom());
+  expect(mockScrollTo).toHaveBeenLastCalledWith({y: 650, animated: true});
+  await act(async () => root.update(<ConversationMessageList ref={handle} messages={[...rows, message(8)]} onPinnedChange={() => {}} renderMessage={renderMessage} />));
+  expect(root.root.findAll(node => node.props.testID === 'message-row-ui-7' && node.props.onLayout)[0]).toBe(tail);
+  expect(JSON.stringify(root.toJSON())).toContain('tail-fixture-8');
+  expect(request).not.toHaveBeenCalled();
+  await act(async () => root.unmount());
+});
+
 
 test('all loaded rows remain mounted when expanding an earlier tool; measured tail stays navigable', async () => {
   const f = await fixture();

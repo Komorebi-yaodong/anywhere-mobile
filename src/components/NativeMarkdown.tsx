@@ -5,6 +5,8 @@ import {MathRenderer, MathText, type RenderResult} from 'react-native-latex-text
 import {SvgXml} from 'react-native-svg';
 import {parseMarkdown, safeMarkdownLink, type MarkdownNode} from './markdownParser';
 
+import {MarkdownCodeBlock} from './MarkdownCodeBlock';
+
 const C = {text: '#292724', muted: '#79746C', line: '#DDD6CB', code: '#EAE5DC', primary: '#C96849', header: '#EDE8DE'};
 
 function InlineNodes({nodes}: {nodes: MarkdownNode[]}) {
@@ -141,7 +143,7 @@ function Blocks({nodes, color}: {nodes: MarkdownNode[]; color: string}) {
       case 'paragraph': case 'heading':
         return <Paragraph key={key} nodes={node.children.flatMap(child => child.type === 'inline' ? child.children : [child])} color={color} style={node.type === 'heading' ? node.tag === 'h1' ? styles.h1 : node.tag === 'h2' ? styles.h2 : styles.heading : undefined} />;
       case 'inline': return <Paragraph key={key} nodes={node.children} color={color} />;
-      case 'fence': case 'code_block': return <ScrollView key={key} horizontal style={styles.codeFrame} keyboardShouldPersistTaps="handled"><Text selectable style={styles.code}>{node.content.replace(/\n$/, '') || ' '}</Text></ScrollView>;
+      case 'fence': case 'code_block': return <MarkdownCodeBlock key={key} content={node.content} language={node.info} />;
       case 'blockquote': return <View key={key} style={styles.quote}><Blocks nodes={node.children} color={color} /></View>;
       case 'bullet_list': case 'ordered_list': return <View key={key} style={styles.list}>{node.children.map((item, itemIndex) => <View key={itemIndex} style={styles.listRow}><Text style={[styles.marker, {color}]}>{node.type === 'ordered_list' ? `${Number(node.attrs.start || 1) + itemIndex}.` : '•'}</Text><View style={styles.listBody}><Blocks nodes={item.children} color={color} /></View></View>)}</View>;
       case 'table': return <Table key={key} node={node} color={color} />;
@@ -166,8 +168,6 @@ const baseStyles = StyleSheet.create({
   link: {color: C.primary, textDecorationLine: 'underline'}, math: {marginVertical: 2, maxWidth: '100%'},
   displayMathFrame: {width: '100%', maxWidth: '100%', minWidth: 0, minHeight: 24, marginVertical: 2, alignItems: 'center', justifyContent: 'center', overflow: 'hidden'},
   mathLoading: {fontSize: 12, lineHeight: 20, opacity: 0.55},
-  codeFrame: {backgroundColor: C.code, borderRadius: 8, maxWidth: '100%'},
-  code: {fontFamily: 'monospace', color: C.text, padding: 10, fontSize: 12, lineHeight: 18},
   quote: {borderLeftWidth: 3, borderLeftColor: C.line, paddingLeft: 10, gap: 7},
   list: {gap: 5}, listRow: {flexDirection: 'row', gap: 7}, marker: {minWidth: 20, fontSize: 15, lineHeight: 23}, listBody: {flex: 1, minWidth: 0, gap: 5},
   rule: {height: 1, backgroundColor: C.line, marginVertical: 4},

@@ -5,12 +5,64 @@ import {fitDisplayMath, NativeMarkdown} from '../src/components/NativeMarkdown';
 import {parseMarkdown, safeMarkdownLink, type MarkdownNode} from '../src/components/markdownParser';
 import {parseConversationContent} from '../src/components/conversationMediaMarkup';
 
+import Clipboard from '@react-native-clipboard/clipboard';
+import {MarkdownCodeBlock, codeTextChunks, CODE_VIEWPORT_MAX_HEIGHT} from '../src/components/MarkdownCodeBlock';
+import {directoryTree, directoryMessage} from '../test-fixtures/directoryTree';
+
 const flatten = (nodes: MarkdownNode[]): MarkdownNode[] => nodes.flatMap(node => [node, ...flatten(node.children)]);
 async function render(value: string) {
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => { root = TestRenderer.create(<NativeMarkdown value={value} />); });
   return root;
 }
+
+it('keeps the supplied directory literal and bounds its native code viewport without losing following prose', async () => {
+  expect(parseConversationContent(directoryMessage)).toEqual([{kind: 'text', value: directoryMessage}]);
+  const fences = flatten(parseMarkdown(directoryMessage)).filter(node => node.type === 'fence');
+  expect(fences).toHaveLength(1);
+  expect(fences[0].content).toBe(directoryTree + '\n');
+  const root = await render(directoryMessage + '\n\n代码块之后的正文仍可见');
+  const block = root.root.findByType(MarkdownCodeBlock);
+  expect(codeTextChunks(directoryTree).join('\n')).toBe(directoryTree);
+  const codeNodes = block.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.fontFamily === 'monospace');
+  expect(codeNodes.map(node => node.props.children).join('\n')).toBe(directoryTree);
+  expect(codeNodes.length).toBeGreaterThan(1);
+  expect(codeNodes.every(node => node.props.allowFontScaling !== false)).toBe(true);
+  const horizontal = block.findAllByType(ScrollView).find(node => node.props.horizontal)!;
+  const vertical = block.findAllByType(ScrollView).find(node => !node.props.horizontal)!;
+  for (const viewport of [horizontal, vertical]) {
+    expect(StyleSheet.flatten(viewport.props.style)).toMatchObject({height: CODE_VIEWPORT_MAX_HEIGHT, flexGrow: 0, flexShrink: 0});
+    expect(viewport.props.nestedScrollEnabled).toBe(true);
+    expect(viewport.props.removeClippedSubviews).toBe(false);
+  }
+  expect(StyleSheet.flatten(horizontal.props.style).width).toBe('100%');
+  await act(async () => block.findAll(node => node.props.accessibilityLabel === '复制完整代码' && node.props.onPress)[0].props.onPress());
+  expect(Clipboard.setString).toHaveBeenLastCalledWith(directoryTree + '\n');
+  expect(JSON.stringify(root.toJSON())).toContain('代码块之后的正文仍可见');
+  await act(async () => root.unmount());
+});
+
+it('does not inflate short fences and preserves literal whitespace across code chunks', async () => {
+  for (const value of ['', 'a\n\n', '\n' + 'row\n'.repeat(70), 'very wide '.repeat(800)]) expect(codeTextChunks(value).join('\n')).toBe(value);
+  const root = await render('```text\nshort\n```');
+  const horizontal = root.root.findAllByType(ScrollView).find(node => node.props.horizontal)!;
+  expect(StyleSheet.flatten(horizontal.props.style).height).toBeLessThan(CODE_VIEWPORT_MAX_HEIGHT);
+  await act(async () => root.unmount());
+});
+
+
+it('bounds large-font code without disabling system font scaling', async () => {
+  const dimensions = jest.spyOn(require('react-native'), 'useWindowDimensions').mockReturnValue({width: 320, height: 640, scale: 3, fontScale: 2.5});
+  let root!: TestRenderer.ReactTestRenderer;
+  try {
+    root = await render('```text\n' + 'font-scaled line\n'.repeat(20) + '```');
+    const horizontal = root.root.findAllByType(ScrollView).find(node => node.props.horizontal)!;
+    expect(StyleSheet.flatten(horizontal.props.style).height).toBe(CODE_VIEWPORT_MAX_HEIGHT);
+    expect(root.root.findAllByType(Text).every(node => node.props.allowFontScaling !== false)).toBe(true);
+    expect(root.root.findAllByType(ScrollView).every(node => node.props.removeClippedSubviews === false)).toBe(true);
+  } finally {await act(async () => root?.unmount()); dimensions.mockRestore();}
+});
+
 
 it('parses real Markdown table structure with alignment, escaped pipes and inline formats', () => {
   const nodes = flatten(parseMarkdown('| 名称 | 值 |\n| :--- | ---: |\n| **项目** | `a\\|b` |\n| 测试 | 42 |'));
