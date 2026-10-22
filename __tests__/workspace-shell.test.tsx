@@ -30,6 +30,7 @@ const mockHandoffConversation = jest.fn(async () => undefined);
 const mockCloseConversation = jest.fn(async () => undefined);
 const mockRefreshOpenedSessions = jest.fn(async () => undefined);
 let mockOpenedSessions: Array<Record<string, unknown>> = [];
+let mockOpenedSessionsReady = true;
 let mockCatalog: Array<Record<string, any>> = [];
 let mockWorkspaceMessages: Array<Record<string, any>> = [];
 let mockConversationModel = '';
@@ -78,6 +79,8 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     tasks: [],
     pendingChoices: {},
     openedSessions: mockOpenedSessions,
+
+    openedSessionsReady: mockOpenedSessionsReady,
     canControlConversation: () => !mockOpenedSessions.length || mockOpenedSessions.some(item => item.controlledByThisDevice),
     selectConversation: mockSelectConversation,
     takeoverConversation: mockTakeoverConversation,
@@ -121,6 +124,8 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
 beforeEach(() => {
   mockOpenedSessions = [];
 
+  mockOpenedSessionsReady = true;
+
   mockCatalog = [];
 
   mockWorkspaceMessages = [];
@@ -144,6 +149,89 @@ function workspaceProps() {
     onHome: jest.fn(),
   };
 }
+
+function startTab(root: TestRenderer.ReactTestRenderer, label: string) {
+  return root.root.findAll(node => node.props.accessibilityRole === 'tab' && node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0];
+}
+
+test('defaults to new chat with no opened sessions and keeps only the top refresh action', async () => {
+ const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(true);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '刷新助手路由')).toHaveLength(0);
+ expect(root.root.findAllByType(Text).some(node => node.props.children === '开始新的聊天')).toBe(false);
+ const refresh = root.root.findAll(node => node.props.accessibilityLabel === '刷新' && typeof node.props.onPress === 'function');
+ expect(refresh).toHaveLength(1); mockRefreshOpenedSessions.mockClear();
+ await act(async () => refresh[0].props.onPress()); expect(mockRefreshOpenedSessions).toHaveBeenCalledTimes(1);
+ await act(async () => startTab(root, '打开的会话').props.onPress());
+ expect(root.root.findAllByType(Text).some(node => node.props.children === '暂无打开的会话')).toBe(true);
+ await act(async () => root.unmount());
+});
+
+test('defaults to opened sessions and preserves a manual new-chat selection during refreshes', async () => {
+ openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)).toHaveLength(1);
+ expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(false);
+ await act(async () => startTab(root, '新的聊天').props.onPress());
+ mockOpenedSessions = [...mockOpenedSessions, {conversationId: 'second-fixture', title: 'Second'}];
+ await act(async () => root.update(<WorkspaceShell {...props} />));
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ await act(async () => root.unmount());
+});
+
+test('chooses the default after the first opened-session response but never overrides an earlier tab click', async () => {
+ for (const manual of [false, true]) {
+  mockOpenedSessions = []; mockOpenedSessionsReady = false;
+  const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  if (manual) await act(async () => startTab(root, '新的聊天').props.onPress());
+  openConfigSession(); mockOpenedSessionsReady = true;
+  await act(async () => root.update(<WorkspaceShell {...props} />));
+  expect(startTab(root, manual ? '新的聊天' : '打开的会话').props.accessibilityState.selected).toBe(true);
+  await act(async () => root.unmount());
+ }
+});
+
+test('a confirmed empty default stays new when a background list later gains sessions', async () => {
+ const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ openConfigSession(); await act(async () => root.update(<WorkspaceShell {...props} />));
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ await act(async () => root.unmount());
+});
+
+test('reselects the appropriate default when returning from a chat or reopening the workspace', async () => {
+ openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ await act(async () => startTab(root, '新的聊天').props.onPress());
+ await act(async () => root.update(<WorkspaceShell {...props} visible={false} />));
+ await act(async () => root.update(<WorkspaceShell {...props} visible />));
+ expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)[0].props.onPress());
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
+ await act(async () => button(root, '新的聊天').props.onPress());
+ expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ mockOpenedSessions = [];
+ await act(async () => root.update(<WorkspaceShell {...props} visible={false} />));
+ await act(async () => root.update(<WorkspaceShell {...props} visible />));
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ await act(async () => root.unmount());
+});
+
+
+test('drawer opened-session entry routes to the tab page without opening a separate sheet', async () => {
+ const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话' && node.props.onPress)[0].props.onPress());
+ expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '键盘避让面板 已打开会话')).toHaveLength(0);
+ await act(async () => root.unmount());
+});
+
 
 test('attachment actions have identical natural row geometry, matching vector icons and explicit separation', async () => {
  openConfigSession(); let root!: TestRenderer.ReactTestRenderer;

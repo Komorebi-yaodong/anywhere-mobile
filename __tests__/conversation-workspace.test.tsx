@@ -89,6 +89,22 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it('marks opened sessions ready only after a successful first response, including an empty list', async () => {
+    const f = fixture(); const base = f.rpc.getMockImplementation()!; const opened = deferred<unknown>();
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.opened.list' ? opened.promise : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    expect(f.state.openedSessionsReady).toBe(false);
+    await act(async () => opened.resolve({ok: true, sessions: []}));
+    expect(f.state.openedSessionsReady).toBe(true); expect(f.state.openedSessions).toEqual([]);
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.opened.list' ? Promise.reject(new Error('offline')) : base(id, method, params));
+    await act(async () => f.state.refreshOpenedSessions());
+    expect(f.state.openedSessionsReady).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+
+
   it.each(['conversation.open', 'conversation.messages.list'])('removes a confirmed missing conversation and rejects stale control/catalog resurrection: %s', async failingMethod => {
     const f = fixture(); const base = f.rpc.getMockImplementation()!; let missing = false;
     f.rpc.mockImplementation((id, method, params) => missing && method === failingMethod && params?.conversationId === A

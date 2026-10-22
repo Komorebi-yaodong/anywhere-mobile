@@ -54,6 +54,8 @@ import {
 import { AppIcon } from './AppIcon';
 
 import {ModelLogo} from './ModelLogo';
+
+import {ChatStartTabs, type ChatStartTab} from './ChatStartTabs';
 import {KeyboardDock} from './KeyboardDock';
 
 
@@ -245,6 +247,16 @@ export function WorkspaceShell({
     [releaseWorkspaceConversation],
   );
   const [mode, setMode] = useState<ViewMode>('router');
+
+  const [startTab, setStartTab] = useState<ChatStartTab | null>(null);
+  const selectedStartTab = startTab ?? (workspace.openedSessions.length ? 'opened' : 'new');
+  useEffect(() => {setStartTab(null);}, [desktop.id]);
+  useEffect(() => {if (mode !== 'router' || !visible) setStartTab(null);}, [mode, visible]);
+  useEffect(() => {
+    if (mode === 'router' && visible && workspace.openedSessionsReady && startTab === null) {
+      setStartTab(workspace.openedSessions.length ? 'opened' : 'new');
+    }
+  }, [mode, visible, startTab, workspace.openedSessionsReady, workspace.openedSessions.length]);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
@@ -321,7 +333,7 @@ export function WorkspaceShell({
   }, [visible, cancelAudio, releaseSelectedConversation]);
 
   const [sheet, setSheet] = useState<
-    'session' | 'model' | 'reasoning' | 'voice' | 'tasks' | 'opened' | 'composer' | 'project' | 'management' | 'attachment' | null
+    'session' | 'model' | 'reasoning' | 'voice' | 'tasks' | 'composer' | 'project' | 'management' | 'attachment' | null
   >(null);
   const [showCamera, setShowCamera] = useState(false);
   const [conversationMenu, setConversationMenu] = useState<ConversationSummary | null>(null);
@@ -1045,7 +1057,7 @@ export function WorkspaceShell({
             }
             if (mode === 'chat') workspace.refreshMessages();
             else if (mode === 'settings') setSettingsRefreshSignal(current => current + 1);
-            else refreshWorkspace();
+            else {refreshWorkspace(); workspace.refreshOpenedSessions().catch(() => undefined);}
           }}
         />
         {mode === 'chat' ? (
@@ -1093,13 +1105,13 @@ export function WorkspaceShell({
           text="请先在 Desktop 完成会话保存位置配置。"
         />
       ) : mode === 'router' ? (
-        <AssistantRouter
-          assistants={routeAssistants}
-          avatarSources={agentAvatarSources}
-          loading={loadingWorkspace}
-          onSelect={openAssistant}
-          onRefresh={refreshWorkspace}
-        />
+        <View style={styles.chatStartPage}>
+          <ChatStartTabs selected={selectedStartTab} onSelect={setStartTab} />
+          {selectedStartTab === 'new' ? <AssistantRouter assistants={routeAssistants} avatarSources={agentAvatarSources} loading={loadingWorkspace} onSelect={openAssistant} /> :
+            <ScrollView accessibilityLabel="打开的会话列表" contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+              <OpenedSessionList sessions={workspace.openedSessions} onOpen={enterOpenedSession} onClose={closeOpenedSession} onHandoff={handoffOpenedSession} onTakeover={takeoverOpenedSession} />
+            </ScrollView>}
+        </View>
       ) : mode === 'settings' ? (
         <GlobalSettings
           desktopId={desktop.id}
@@ -1211,8 +1223,10 @@ export function WorkspaceShell({
         onConversationMenu={(item: ConversationSummary) => {setDrawerOpen(false); setConversationMenu(item);}}
         onNewChat={() => {
           leaveConversation();
+          setStartTab(null);
           setMode('router');
           setDrawerOpen(false);
+          workspace.refreshOpenedSessions().catch(() => undefined);
         }}
         onNewProject={() => {
           setDrawerOpen(false);
@@ -1223,67 +1237,16 @@ export function WorkspaceShell({
         onEditProject={beginProjectRename}
         onDeleteProject={removeProject}
         onOpenedSessions={() => {
+          leaveConversation();
+          setMode('router');
+          setStartTab('opened');
+          setDrawerOpen(false);
           workspace.refreshOpenedSessions().catch(() => undefined);
-          setSheet('opened');
         }}
         onSettings={openManagement}
       />
 
-      <Sheet
-        visible={sheet === 'opened'}
-        onClose={() => setSheet(null)}
-        title="已打开会话"
-      >
-        <View style={styles.openedSessionList}>
-          {workspace.openedSessions.length ? workspace.openedSessions.map((item: OpenedConversationSession) => (
-            <View key={item.conversationId} style={styles.openedSessionCard}>
-              <Pressable
-                style={styles.openedSessionCopy}
-                onPress={() => enterOpenedSession(item)}
-                accessibilityRole="button"
-                accessibilityLabel={`打开会话 ${item.title || '未命名会话'}`}
-              >
-                <Text numberOfLines={1} style={styles.openedSessionTitle}>{item.title || '未命名会话'}</Text>
-                <Text style={styles.openedSessionMeta}>
-                  {item.controlledByThisDevice ? 'Mobile 正在控制' : item.mobileControlled ? '其他设备正在控制' : 'Desktop 正在控制'}
-                  {item.visible ? ' · 桌面已打开' : ''}
-                  {item.busy ? ' · 处理中' : ''}
-                </Text>
-              </Pressable>
-              {item.controlledByThisDevice ? (
-                <View style={[styles.openedSessionControl, item.busy && styles.disabled]}>
-                  <Pressable
-                    accessibilityLabel="关闭会话"
-                    disabled={item.busy}
-                    onPress={() => closeOpenedSession(item)}
-                    style={({pressed}) => [styles.openedSessionSegment, pressed && {backgroundColor: C.primarySoft}]}
-                  >
-                    <Text style={styles.openedSessionCloseText}>关闭</Text>
-                  </Pressable>
-                  <View style={styles.openedSessionDivider} />
-                  <Pressable
-                    accessibilityLabel="交还 Desktop"
-                    disabled={item.busy}
-                    onPress={() => handoffOpenedSession(item)}
-                    style={({pressed}) => [styles.openedSessionSegment, pressed && {backgroundColor: C.primarySoft}]}
-                  >
-                    <Text style={styles.openedSessionSegmentText}>交还 Desktop</Text>
-                  </Pressable>
-                </View>
-              ) : item.mobileControlled ? null : (
-                <Pressable
-                  accessibilityLabel="接管"
-                  disabled={item.busy}
-                  onPress={() => takeoverOpenedSession(item)}
-                  style={[styles.openedSessionTakeover, item.busy && styles.disabled]}
-                >
-                  <Text style={styles.openedSessionSegmentText}>接管</Text>
-                </Pressable>
-              )}
-            </View>
-          )) : <Empty title="暂无已打开会话" text="在 Desktop 打开一个已保存的会话后，会显示在这里。" />}
-        </View>
-      </Sheet>
+
 
 
       <ConversationTaskSheet
@@ -1448,18 +1411,77 @@ export function WorkspaceShell({
   );
 }
 
+function OpenedSessionList({sessions, onOpen, onClose, onHandoff, onTakeover}: {
+  sessions: OpenedConversationSession[];
+  onOpen: (item: OpenedConversationSession) => void;
+  onClose: (item: OpenedConversationSession) => void;
+  onHandoff: (item: OpenedConversationSession) => void;
+  onTakeover: (item: OpenedConversationSession) => void;
+}) {
+  const styles = useThemedStyles(baseStyles);
+  return (
+    <View style={styles.openedSessionList}>
+      {sessions.length ? sessions.map((item: OpenedConversationSession) => (
+        <View key={item.conversationId} style={styles.openedSessionCard}>
+          <Pressable
+            style={styles.openedSessionCopy}
+            onPress={() => onOpen(item)}
+            accessibilityRole="button"
+            accessibilityLabel={`打开会话 ${item.title || '未命名会话'}`}
+          >
+            <Text numberOfLines={1} style={styles.openedSessionTitle}>{item.title || '未命名会话'}</Text>
+            <Text style={styles.openedSessionMeta}>
+              {item.controlledByThisDevice ? 'Mobile 正在控制' : item.mobileControlled ? '其他设备正在控制' : 'Desktop 正在控制'}
+              {item.visible ? ' · 桌面已打开' : ''}
+              {item.busy ? ' · 处理中' : ''}
+            </Text>
+          </Pressable>
+          {item.controlledByThisDevice ? (
+            <View style={[styles.openedSessionControl, item.busy && styles.disabled]}>
+              <Pressable
+                accessibilityLabel="关闭会话"
+                disabled={item.busy}
+                onPress={() => onClose(item)}
+                style={({pressed}) => [styles.openedSessionSegment, pressed && {backgroundColor: C.primarySoft}]}
+              >
+                <Text style={styles.openedSessionCloseText}>关闭</Text>
+              </Pressable>
+              <View style={styles.openedSessionDivider} />
+              <Pressable
+                accessibilityLabel="交还 Desktop"
+                disabled={item.busy}
+                onPress={() => onHandoff(item)}
+                style={({pressed}) => [styles.openedSessionSegment, pressed && {backgroundColor: C.primarySoft}]}
+              >
+                <Text style={styles.openedSessionSegmentText}>交还 Desktop</Text>
+              </Pressable>
+            </View>
+          ) : item.mobileControlled ? null : (
+            <Pressable
+              accessibilityLabel="接管"
+              disabled={item.busy}
+              onPress={() => onTakeover(item)}
+              style={[styles.openedSessionTakeover, item.busy && styles.disabled]}
+            >
+              <Text style={styles.openedSessionSegmentText}>接管</Text>
+            </Pressable>
+          )}
+        </View>
+      )) : <View style={styles.empty}><Text style={styles.emptyTitle}>暂无打开的会话</Text></View>}
+    </View>
+  );
+}
+
 function AssistantRouter({
   assistants,
   avatarSources,
   loading,
   onSelect,
-  onRefresh,
 }: {
   assistants: RemoteAssistant[];
   avatarSources: Record<string, string>;
   loading: boolean;
   onSelect: (item: RemoteAssistant) => void;
-  onRefresh: () => void;
 }) {
   const styles = useThemedStyles(baseStyles);
   const [query, setQuery] = useState('');
@@ -1469,10 +1491,6 @@ function AssistantRouter({
   }, [assistants, query]);
   return (
     <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-      <View style={styles.routerTopline}>
-        <View style={styles.routerCopy}><Text style={styles.heroTitle}>开始新的聊天</Text><Text style={styles.heroText}>选择一个 Agent 开始对话。</Text></View>
-        <Pressable style={styles.routerRefresh} accessibilityLabel="刷新助手路由" onPress={onRefresh}><AppIcon name="↻" size={18} color={C.primary} /></Pressable>
-      </View>
       <View style={styles.routerSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput value={query} onChangeText={setQuery} placeholder="搜索 Agent、模型或项目" placeholderTextColor={C.muted} style={styles.routerSearchInput} /></View>
       {loading ? <ActivityIndicator color={C.primary} /> : null}
       <View style={styles.assistantGrid}>
@@ -2517,9 +2535,6 @@ const baseStyles = StyleSheet.create({
   },
   noticeText: { color: '#8C432F', fontSize: 12 },
   page: { padding: 18, paddingBottom: 42, gap: 14 },
-  hero: { gap: 6, paddingVertical: 12 },
-  heroTitle: { fontSize: 22, fontWeight: '600', color: C.text },
-  heroText: { fontSize: 14, lineHeight: 21, color: C.muted },
   assistantGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   assistantCard: {
     width: '47%',
@@ -2888,9 +2903,7 @@ const baseStyles = StyleSheet.create({
     padding: 12,
     minHeight: 48,
   },
-  routerTopline: {flexDirection: 'row', alignItems: 'center', gap: 12},
-  routerCopy: {flex: 1, minWidth: 0},
-  routerRefresh: {width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surfaceMuted},
+  chatStartPage: {flex: 1, minHeight: 0},
   routerSearch: {minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 13, borderRadius: 16, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
   routerSearchInput: {flex: 1, minWidth: 0, color: C.text, fontSize: 14, paddingVertical: 8},
   assistantCardTop: {flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between'},

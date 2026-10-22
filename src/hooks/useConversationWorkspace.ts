@@ -87,6 +87,8 @@ export function useConversationWorkspace({
   const [conversationModel, setConversationModel] = useState('');
   const [conversationAssistant, setConversationAssistant] = useState({code: '', name: '', avatarUrl: ''});
   const [openedSessions, setOpenedSessions] = useState<OpenedConversationSession[]>([]);
+
+  const [openedSessionsDesktop, setOpenedSessionsDesktop] = useState('');
   const [controlledConversationIds, setControlledConversationIds] = useState<string[]>([]);
   const [pendingChoices, setPendingChoices] = useState<Record<string, {conversationId: string; questions: Array<{question: string; header: string; options: Array<{label: string; description: string}>}>}>>({});
   const [messagePage, setMessagePage] = useState<
@@ -428,6 +430,8 @@ export function useConversationWorkspace({
       if (epoch !== openedEpoch.current || scopeRef.current.desktopId !== desktopId) return;
       const sessions = (result.sessions || []).filter(item => !missingConversationIds.current.has(item.conversationId));
       setOpenedSessions(sessions);
+
+      setOpenedSessionsDesktop(desktopId);
       setControlledConversationIds(sessions
         .filter(item => item.controlledByThisDevice)
         .map(item => item.conversationId));
@@ -860,6 +864,8 @@ export function useConversationWorkspace({
     deletedUiMessageIdsRef.current.clear();
     setMessages([]);
     setOpenedSessions([]);
+
+    setOpenedSessionsDesktop('');
     setControlledConversationIds([]);
     setSelectedConversationId('');
     commitTurn(null);
@@ -1225,6 +1231,8 @@ export function useConversationWorkspace({
     conversationModel,
     conversationAssistant,
     openedSessions,
+
+    openedSessionsReady: openedSessionsDesktop === desktopId,
     authoritativeRuntime: authoritativeRuntime?.conversationId === selectedConversationId ? authoritativeRuntime : null,
     canControlConversation,
     takeoverConversation,
