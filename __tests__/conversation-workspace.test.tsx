@@ -89,6 +89,56 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it.each(['conversation.open', 'conversation.messages.list'])('removes a confirmed missing conversation and rejects stale control/catalog resurrection: %s', async failingMethod => {
+    const f = fixture(); const base = f.rpc.getMockImplementation()!; let missing = false;
+    f.rpc.mockImplementation((id, method, params) => missing && method === failingMethod && params?.conversationId === A
+      ? Promise.reject(Object.assign(new Error('remote_conversation_not_found'), {code: 'remote_conversation_not_found'})) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    expect(f.state.canControlConversation(A)).toBe(true);
+    missing = true;
+    await act(async () => {if (failingMethod === 'conversation.open') f.state.selectConversation(A); else await f.state.refreshMessages();});
+    expect(f.state.canControlConversation(A)).toBe(false);
+    expect(f.state.openedSessions.some(item => item.conversationId === A)).toBe(false);
+    expect(f.state.selectedConversationId).not.toBe(A);
+    expect(f.state.error).toBe('会话已不存在');
+    await act(async () => {await f.state.refreshOpenedSessions(); await f.state.refreshCatalog();});
+    expect(f.state.catalog.some(item => item.conversationId === A)).toBe(false);
+    expect(f.state.openedSessions.some(item => item.conversationId === A)).toBe(false);
+    expect(f.state.canControlConversation(B)).toBe(true);
+    expect(f.state.messagesLoading).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it('does not resurrect missing control when an older open response completes after not-found', async () => {
+    const f = fixture(); const base = f.rpc.getMockImplementation()!; const opened = deferred<unknown>(); let missing = false;
+    f.rpc.mockImplementation((id, method, params) => {
+      if (missing && method === 'conversation.open' && params?.conversationId === A) return opened.promise;
+      if (missing && method === 'conversation.messages.list' && params?.conversationId === A) return Promise.reject(Object.assign(new Error('missing'), {code: 'remote_conversation_not_found'}));
+      return base(id, method, params);
+    });
+    let root!: TestRenderer.ReactTestRenderer; await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    missing = true; await act(async () => {f.state.selectConversation(A); await f.state.refreshMessages();});
+    await act(async () => opened.resolve({mobileControlled: true}));
+    expect(f.state.canControlConversation(A)).toBe(false); expect(f.state.selectedConversationId).not.toBe(A);
+    expect(f.state.openedSessions.some(item => item.conversationId === A)).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+
+  it('does not retire a conversation after an ordinary connection failure', async () => {
+    const f = fixture(); const base = f.rpc.getMockImplementation()!; let offline = false;
+    f.rpc.mockImplementation((id, method, params) => offline && method === 'conversation.messages.list' ? Promise.reject(Object.assign(new Error('offline'), {code: 'remote_transport_closed'})) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    const before = f.state.messages; offline = true;
+    await act(async () => {await f.state.refreshMessages();});
+    expect(f.state.messages).toEqual(before); expect(f.state.canControlConversation(A)).toBe(true);
+    expect(f.state.openedSessions.some(item => item.conversationId === A)).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+
   it('uses negotiated runtime rather than stale windows, preserves history on sync failure and recovers writability', async () => {
     jest.useFakeTimers();
     const f = fixture();

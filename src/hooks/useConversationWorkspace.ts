@@ -170,6 +170,8 @@ export function useConversationWorkspace({
   // any stale in-flight refresh or older page. Cleared on conversation change.
   const deletedUiMessageIdsRef = useRef(new Set<string>());
 
+  const missingConversationIds = useRef(new Set<string>());
+
   // An opened Desktop window might not appear in the current catalog page.
   // Keep only its safe display title while Mobile opens/reads the target; this
   // is UI state, not a Desktop path or a claim of write control.
@@ -195,6 +197,29 @@ export function useConversationWorkspace({
     [],
   );
 
+  const forgetMissingConversation = useCallback((conversationId: string) => {
+    missingConversationIds.current.add(conversationId);
+    business.invalidate(conversationId);
+    catalogEpoch.current += 1;
+    setCatalogLoading(false);
+    setCatalog(current => current.filter(item => item.conversationId !== conversationId));
+    setOpenedSessions(current => current.filter(item => item.conversationId !== conversationId));
+    setControlledConversationIds(current => current.filter(item => item !== conversationId));
+    commitQueue(current => current.filter(item => item.conversationId !== conversationId));
+    commitTurn(current => current?.conversationId === conversationId ? null : current);
+    if (scopeRef.current.selectedConversationId === conversationId) {
+      messageEpoch.current += 1;
+      scopeRef.current.selectedConversationId = '';
+      selectedOpenedTitleRef.current = '';
+      messagesRef.current = [];
+      setSelectedConversationId(''); setMessages([]); setMessagesLoading(false);
+      setTasks([]); setConversationModel(''); setConversationAssistant({code: '', name: '', avatarUrl: ''});
+      setPendingChoices({}); setAuthoritativeRuntime(null);
+      setMessagePage({pageSize: 50, nextBeforeUiOrder: null, hasMore: false});
+    }
+  }, [business, commitQueue, commitTurn]);
+
+
   const refreshCatalog = useCallback(async () => {
     if (desktopStatus !== '在线') return;
     const epoch = ++catalogEpoch.current;
@@ -207,6 +232,7 @@ export function useConversationWorkspace({
       const result = await api.listConversations(100);
       if (!isCurrent()) return;
       setConfigured(result.configured);
+      result.conversations = result.conversations.filter(item => !missingConversationIds.current.has(item.conversationId));
       setCatalog(result.conversations);
       setCatalogPage(result.page);
       setSelectedConversationId(current => {
@@ -238,7 +264,7 @@ export function useConversationWorkspace({
         catalogPage.nextCursor,
       );
       setCatalog(current =>
-        mergeById(current, result.conversations, 'conversationId'),
+        mergeById(current, result.conversations, 'conversationId').filter(item => !missingConversationIds.current.has(item.conversationId)),
       );
       setCatalogPage(result.page);
     } catch (cause) {
@@ -303,6 +329,10 @@ export function useConversationWorkspace({
         });
       } catch (cause) {
         if (isCurrent()) {
+          if (errorCode(cause) === 'remote_conversation_not_found') {
+            forgetMissingConversation(conversationId); setError('会话已不存在'); return;
+          }
+
           // Keep history, but never treat a failed new-protocol read as fresh
           // permission. The next successful snapshot restores writability.
           if (business.usesView()) {
@@ -315,7 +345,7 @@ export function useConversationWorkspace({
         if (isCurrent()) setMessagesLoading(false);
       }
     },
-    [api, business, commitTurn, desktopId, desktopStatus, request],
+    [api, business, commitTurn, desktopId, desktopStatus, forgetMissingConversation, request],
   );
 
   const messageRefresh = useMemo(() => createConversationMessageRefresh(readMessages), [readMessages]);
@@ -331,7 +361,7 @@ export function useConversationWorkspace({
       try {
         if (await business.dirty(selectedConversationId) && active) await loadMessages(selectedConversationId);
       } catch (cause) {if (active) {
-
+        if (errorCode(cause) === 'remote_conversation_not_found') {forgetMissingConversation(selectedConversationId); setError('会话已不存在'); return;}
         business.invalidate(selectedConversationId);
         setAuthoritativeRuntime(current => current?.conversationId === selectedConversationId ? {...current, execution: {...current.execution, state: 'recovering'}, control: {...current.control, canWrite: false}} : current);
         setError(errorMessage(cause));
@@ -340,7 +370,7 @@ export function useConversationWorkspace({
     };
     const timer = setInterval(synchronize, 2500);
     return () => {active = false; clearInterval(timer);};
-  }, [business, desktopStatus, loadMessages, selectedConversationId]);
+  }, [business, desktopStatus, forgetMissingConversation, loadMessages, selectedConversationId]);
   useEffect(() => () => {
     messageEpoch.current += 1;
     messageRefresh.cancel();
@@ -379,12 +409,15 @@ export function useConversationWorkspace({
       );
       setMessagePage(result.page);
     } catch (cause) {
-      if (isCurrent()) setError(errorMessage(cause));
+      if (isCurrent()) {
+        if (errorCode(cause) === 'remote_conversation_not_found') forgetMissingConversation(selectedConversationId);
+        setError(errorMessage(cause));
+      }
     } finally {
       olderReadRunning.current = false;
       if (isCurrent()) setMessagesLoading(false);
     }
-  }, [api, desktopId, messagePage, messagesLoading, request, selectedConversationId]);
+  }, [api, desktopId, forgetMissingConversation, messagePage, messagesLoading, request, selectedConversationId]);
 
   const openedEpoch = useRef(0);
   const refreshOpenedSessions = useCallback(async () => {
@@ -393,8 +426,9 @@ export function useConversationWorkspace({
     try {
       const result = await api.listOpenedSessions();
       if (epoch !== openedEpoch.current || scopeRef.current.desktopId !== desktopId) return;
-      setOpenedSessions(result.sessions || []);
-      setControlledConversationIds((result.sessions || [])
+      const sessions = (result.sessions || []).filter(item => !missingConversationIds.current.has(item.conversationId));
+      setOpenedSessions(sessions);
+      setControlledConversationIds(sessions
         .filter(item => item.controlledByThisDevice)
         .map(item => item.conversationId));
     } catch {
@@ -440,11 +474,16 @@ export function useConversationWorkspace({
       api.openConversation(conversationId)
         .then(result => {
           if (scopeRef.current.selectedConversationId !== conversationId) return;
+          if (missingConversationIds.current.has(conversationId)) return;
           if (result.mobileControlled) setControlledConversationIds(current => [...new Set([...current, conversationId])]);
           else setControlledConversationIds(current => current.filter(id => id !== conversationId));
           refreshOpenedSessions().catch(() => undefined);
         })
-        .catch(cause => setError(errorMessage(cause)));
+        .catch(cause => {
+          if (scopeRef.current.desktopId !== desktopId) return;
+          if (errorCode(cause) === 'remote_conversation_not_found') forgetMissingConversation(conversationId);
+          if (scopeRef.current.selectedConversationId === conversationId || !scopeRef.current.selectedConversationId) setError(errorMessage(cause));
+        });
     }
     messageEpoch.current += 1;
     messageRefresh.cancel();
@@ -457,7 +496,7 @@ export function useConversationWorkspace({
     setPendingChoices({});
     setMessagePage({ pageSize: 50, nextBeforeUiOrder: null, hasMore: false });
     setSelectedConversationId(conversationId);
-  }, [api, desktopStatus, messageRefresh, refreshOpenedSessions, releaseConversation]);
+  }, [api, desktopId, desktopStatus, forgetMissingConversation, messageRefresh, refreshOpenedSessions, releaseConversation]);
 
   const createConversation = useCallback(
     async (promptCode: string) => {
@@ -816,6 +855,8 @@ export function useConversationWorkspace({
     setCatalog([]);
 
     selectedOpenedTitleRef.current = '';
+    missingConversationIds.current.clear();
+
     deletedUiMessageIdsRef.current.clear();
     setMessages([]);
     setOpenedSessions([]);
@@ -1118,22 +1159,9 @@ export function useConversationWorkspace({
 
 
   const removeConversationFromView = useCallback((conversationId: string) => {
-    catalogEpoch.current += 1;
-    setCatalog(current => current.filter(item => item.conversationId !== conversationId));
-    setOpenedSessions(current => current.filter(item => item.conversationId !== conversationId));
-    setControlledConversationIds(current => current.filter(item => item !== conversationId));
-    commitTurn(current => current?.conversationId === conversationId ? null : current);
-    if (scopeRef.current.selectedConversationId === conversationId) {
-      messageEpoch.current += 1;
-      messageRefresh.cancel();
-      scopeRef.current.selectedConversationId = '';
-      selectedOpenedTitleRef.current = '';
-      setSelectedConversationId('');
-      setMessages([]);
-      setPendingChoices({});
-      setAuthoritativeRuntime(null);
-    }
-  }, [commitTurn, messageRefresh]);
+    if (scopeRef.current.selectedConversationId === conversationId) messageRefresh.cancel();
+    forgetMissingConversation(conversationId);
+  }, [forgetMissingConversation, messageRefresh]);
 
 
   const removeMessageFromView = useCallback((uiMessageId: string) => {
@@ -1269,6 +1297,8 @@ function errorCode(value: unknown): string {
 function errorMessage(value: unknown): string {
   const code = errorCode(value);
   const messages: Record<string, string> = {
+    remote_conversation_not_found: '会话已不存在',
+
     remote_client_closed: '连接被重置，正在恢复。',
     remote_transport_closed: '连接已关闭，正在恢复。',
     remote_transport_error: '安全连接暂时不可用，正在重连。',
