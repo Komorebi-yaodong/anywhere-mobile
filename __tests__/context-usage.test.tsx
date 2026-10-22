@@ -18,9 +18,30 @@ it('shows numeric categories and the saved or draft threshold at the top of cont
   expect(StyleSheet.flatten(marker.props.style).left).toBe('90%');
   await act(async () => root.update(<ContextUsageBar usage={{...usage, status: 'stale'}} capacity={250} ratio={0.8} preview />));
   const output = JSON.stringify(root.toJSON());
-  expect(output).toContain('超出容量'); expect(output).toContain('待保存预览'); expect(output).toContain('过期');
+  expect(output).toContain('超出容量'); expect(output).toContain('待保存预览'); expect(output).not.toContain('过期');
   await act(async () => root.unmount());
 });
+it.each(['ready', 'calculating', 'stale', 'unavailable'] as const)('never adds estimate labels, timestamps or freshness notices for %s', async status => {
+  let root!: TestRenderer.ReactTestRenderer;
+  for (const estimated of [true, false]) {
+    await act(async () => {
+      const card = <ContextUsageBar usage={{...usage, status, estimated}} capacity={1000} ratio={0.9} />;
+      if (root) root.update(card); else root = TestRenderer.create(card);
+    });
+    const text = (value: any): string => typeof value === 'string' || typeof value === 'number' ? String(value) : Array.isArray(value) ? value.map(text).join('') : value ? text(value.children) : '';
+    const output = text(root.toJSON());
+    expect(output).toContain('当前上下文组成');
+    expect(output).toContain('500 / 1,000 tokens');
+    expect(output).toContain('系统提示词 100');
+    expect(output).toContain('对话 300');
+    expect(output).toContain('工具 100');
+    expect(output).toContain('剩余 500 tokens');
+    expect(output).not.toMatch(/估算|统计|更新于|过期|更新中|\d{1,2}:\d{2}/);
+  }
+  await act(async () => root.unmount());
+});
+
+
 it('uses a clear unavailable state for an old Desktop, not a fake empty context', async () => {
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => {root = TestRenderer.create(<ContextUsageBar usage={null} capacity={1000} ratio={0.9} />);});

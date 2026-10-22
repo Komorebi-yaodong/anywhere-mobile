@@ -22,7 +22,7 @@ export function ContextUsageBar({usage, capacity, ratio, preview = false, autoCo
   const colors = theme.dark ? ['#A9C5FF', '#A3D8B2', '#F0B89C'] : ['#4265A5', '#39734C', '#A14A32'];
   const names = ['系统提示词', '对话', '工具'];
   return <View style={s.card} accessibilityLabel="当前上下文组成">
-    <Text style={s.title}>当前上下文组成 · {usage.estimated ? '估算' : '统计'}</Text>
+    <Text style={s.title}>当前上下文组成</Text>
     <Text style={s.hint}>{layout.total.toLocaleString()} / {layout.capacity.toLocaleString()} tokens{preview ? ' · 待保存预览' : ''}</Text>
     <View style={s.track} accessibilityLabel="上下文占用条">
       {layout.widths.map((width, index) => <View key={names[index]} testID={`context-segment-${index}`} style={[s.segment, {width: `${width}%`, backgroundColor: colors[index]}]} />)}
@@ -31,9 +31,6 @@ export function ContextUsageBar({usage, capacity, ratio, preview = false, autoCo
     <Text style={s.hint}>压缩阈值 {Math.round(layout.threshold * 100)}% · {layout.thresholdTokens.toLocaleString()} tokens{autoCompact ? '' : '（自动压缩已关闭）'}</Text>
     <View style={s.legend}>{names.map((name, index) => <View key={name} style={s.legendItem}><View style={[s.dot, {backgroundColor: colors[index]}]} /><Text style={s.text}>{name} {layout.values[index].toLocaleString()}</Text></View>)}</View>
     <Text style={layout.over ? s.warning : s.hint}>{layout.over ? `超出容量 ${layout.over.toLocaleString()} tokens` : `剩余 ${layout.remaining.toLocaleString()} tokens`}</Text>
-    <Text style={s.hint}>更新于 {new Date(usage.updatedAt).toLocaleTimeString()}</Text>
-
-    {usage.status !== 'ready' ? <Text style={s.hint}>{usage.status === 'calculating' ? '更新中' : '统计已过期'}</Text> : null}
   </View>;
 }
 const styles = StyleSheet.create({
