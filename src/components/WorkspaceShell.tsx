@@ -56,6 +56,8 @@ import { AppIcon } from './AppIcon';
 import {ModelLogo} from './ModelLogo';
 
 import {ChatStartTabs, type ChatStartTab} from './ChatStartTabs';
+
+import {ChatStartSwipe} from './ChatStartSwipe';
 import {KeyboardDock} from './KeyboardDock';
 
 
@@ -70,7 +72,8 @@ import {mcpTransportSearchTerms} from './mcpPresentation';
 import {ContextUsageBar} from './ContextUsageBar';
 
 import {sessionSettingsPatch} from './sessionSettings';
-import { useThemedStyles } from './theme';
+import {useTheme, useThemedStyles} from './theme';
+import {AppearanceSettings} from './AppearanceSettings';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
 import { launchImageLibrary } from 'react-native-image-picker';
@@ -233,6 +236,8 @@ export function WorkspaceShell({
   visible = true,
 }: Props) {
   const styles = useThemedStyles(baseStyles);
+  const theme = useTheme();
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const workspace = useConversationWorkspace({
     desktopId: desktop.id,
     desktopStatus: desktop.status,
@@ -329,6 +334,8 @@ export function WorkspaceShell({
       setDrawerOpen(false);
       setSheet(null);
       setShowCamera(false);
+
+      setAppearanceOpen(false);
     }
   }, [visible, cancelAudio, releaseSelectedConversation]);
 
@@ -1047,6 +1054,8 @@ export function WorkspaceShell({
           </Text>
           {mode !== 'settings' && mode !== 'chat' ? <Text numberOfLines={1} style={styles.subtitle}>{desktop.status === '在线' ? '已连接' : desktop.status}</Text> : null}
         </Pressable>
+        {mode !== 'chat' ? <IconButton icon={theme.mode === 'system' ? 'system' : theme.dark ? 'moon' : 'sun'} label="主题设置" onPress={() => setAppearanceOpen(true)} /> : null}
+
         <IconButton
           icon="↻"
           label="刷新"
@@ -1105,13 +1114,13 @@ export function WorkspaceShell({
           text="请先在 Desktop 完成会话保存位置配置。"
         />
       ) : mode === 'router' ? (
-        <View style={styles.chatStartPage}>
+        <ChatStartSwipe selected={selectedStartTab} onSelect={setStartTab}>
           <ChatStartTabs selected={selectedStartTab} onSelect={setStartTab} />
           {selectedStartTab === 'new' ? <AssistantRouter assistants={routeAssistants} avatarSources={agentAvatarSources} loading={loadingWorkspace} onSelect={openAssistant} /> :
-            <ScrollView accessibilityLabel="打开的会话列表" contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+            <ScrollView accessibilityLabel="已打开会话列表" contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
               <OpenedSessionList sessions={workspace.openedSessions} onOpen={enterOpenedSession} onClose={closeOpenedSession} onHandoff={handoffOpenedSession} onTakeover={takeoverOpenedSession} />
             </ScrollView>}
-        </View>
+        </ChatStartSwipe>
       ) : mode === 'settings' ? (
         <GlobalSettings
           desktopId={desktop.id}
@@ -1131,7 +1140,6 @@ export function WorkspaceShell({
           userAvatar={desktop.avatarCache && isAvatarCacheValid(desktop.avatarCache) ? desktop.avatarCache.uri : bootstrap?.profile.avatarUrl}
           assistantName={activeAssistantIdentity.name}
           assistantAvatar={assistantAvatar}
-          model={workspace.conversationModel}
           composerModel={savedComposerModel?.conversationId === workspace.selectedConversationId ? savedComposerModel.model : workspace.conversationModel}
           messages={workspace.messages}
           activeTurn={activeTurn}
@@ -1223,7 +1231,7 @@ export function WorkspaceShell({
         onConversationMenu={(item: ConversationSummary) => {setDrawerOpen(false); setConversationMenu(item);}}
         onNewChat={() => {
           leaveConversation();
-          setStartTab(null);
+          setStartTab('new');
           setMode('router');
           setDrawerOpen(false);
           workspace.refreshOpenedSessions().catch(() => undefined);
@@ -1247,6 +1255,9 @@ export function WorkspaceShell({
       />
 
 
+
+
+      {appearanceOpen ? <AppearanceSettings visible onClose={() => setAppearanceOpen(false)} /> : null}
 
 
       <ConversationTaskSheet
@@ -1467,7 +1478,7 @@ function OpenedSessionList({sessions, onOpen, onClose, onHandoff, onTakeover}: {
             </Pressable>
           )}
         </View>
-      )) : <View style={styles.empty}><Text style={styles.emptyTitle}>暂无打开的会话</Text></View>}
+      )) : <View style={styles.empty}><Text style={styles.emptyTitle}>暂无已打开会话</Text></View>}
     </View>
   );
 }
@@ -1521,7 +1532,6 @@ const ChatPage = React.forwardRef<
     userAvatar?: string;
     assistantName: string;
     assistantAvatar?: string;
-    model: string;
     composerModel: string;
     messages: RemoteMessage[];
     activeTurn: any;
@@ -1565,7 +1575,6 @@ const ChatPage = React.forwardRef<
       userAvatar,
       assistantName,
       assistantAvatar,
-      model,
       composerModel,
       messages,
       activeTurn,
@@ -1654,7 +1663,6 @@ const ChatPage = React.forwardRef<
               userAvatar={userAvatar}
               assistantName={assistantName}
               assistantAvatar={assistantAvatar}
-              model={model}
               pendingChoices={pendingChoices}
               onSubmitChoice={(...args) => actions.current.onSubmitChoice(...args)}
               onEdit={() => actions.current.onEdit(item)}
@@ -1920,7 +1928,7 @@ function Drawer({
               <AppIcon name="▱" size={19} color={C.icon} />
               <Text style={styles.drawerActionText}>新建目录</Text>
             </Pressable>
-            <Pressable style={styles.drawerAction} onPress={onNewChat}>
+            <Pressable accessibilityRole="button" accessibilityLabel="新的聊天" style={styles.drawerAction} onPress={onNewChat}>
               <AppIcon name="chat" size={19} color={C.icon} />
               <Text style={styles.drawerActionText}>新的聊天</Text>
             </Pressable>
@@ -2142,7 +2150,6 @@ const MessageCard = React.memo(function MessageCardView({
   userAvatar,
   assistantName,
   assistantAvatar,
-  model,
   pendingChoices,
   onSubmitChoice,
   reask,
@@ -2160,7 +2167,6 @@ const MessageCard = React.memo(function MessageCardView({
   userAvatar?: string;
   assistantName: string;
   assistantAvatar?: string;
-  model: string;
   pendingChoices: Record<string, {conversationId: string; questions: Array<{question: string; header: string; options: Array<{label: string; description: string}>}>}>;
   onSubmitChoice: (toolCallId: string, responses: Array<Record<string, unknown>>) => Promise<void>;
   reask?: () => void;
@@ -2175,7 +2181,10 @@ const MessageCard = React.memo(function MessageCardView({
   const editableMessage = message.role === 'user' || message.role === 'assistant';
   const files = conversationFiles(message.payload.content);
   const content = renderText(withoutConversationFiles(message.payload.content));
-  const displayName = isUser ? userName || '你' : assistantName || message.payload.aiName || 'Assistant';
+  // Desktop freezes the reply's model label in aiName when it creates the message.
+  // Never substitute the mutable session/composer model for historical attribution.
+  const replyModel = typeof message.payload.aiName === 'string' ? message.payload.aiName.trim() : '';
+  const displayName = isUser ? userName || '你' : assistantName || 'Assistant';
   const timestamp = message.payload.timestamp || message.payload.completedTimestamp;
   const formattedTimestamp = formatTime(timestamp || '');
   const toolOnly = !isUser && !hasMessageBubble(message) && !String(message.payload.reasoningContent || '').trim() && Boolean(message.payload.toolCalls?.length);
@@ -2185,7 +2194,7 @@ const MessageCard = React.memo(function MessageCardView({
       <View style={[styles.messageIdentity, isUser && styles.messageIdentityRight]}>
         {!isUser ? <Avatar source={assistantAvatar} label={displayName} /> : null}
         <View style={[styles.messageIdentityCopy, isUser && styles.messageIdentityCopyRight]}>
-          <View style={[styles.messageNameLine, isUser && styles.messageNameLineRight]}><Text style={styles.messageRole}>{displayName}</Text>{!isUser && (model || message.payload.voiceName) ? <Text numberOfLines={1} style={styles.messageModel}>{model || message.payload.voiceName}</Text> : null}</View>
+          <View style={[styles.messageNameLine, isUser && styles.messageNameLineRight]}><Text style={styles.messageRole}>{displayName}</Text>{!isUser && replyModel ? <Text accessibilityLabel={`回复模型 ${message.uiMessageId}`} numberOfLines={1} style={styles.messageModel}>{replyModel}</Text> : null}</View>
           {formattedTimestamp ? <Text accessibilityLabel={isUser ? '用户消息时间' : 'AI 回复时间'} style={[styles.messageTime, isUser && styles.messageTimeRight]}>{formattedTimestamp}</Text> : null}
         </View>
         {isUser ? <Avatar source={userAvatar} label={displayName} /> : null}
@@ -2207,7 +2216,7 @@ const MessageCard = React.memo(function MessageCardView({
 }, (previous, next) => previous.message === next.message &&
   previous.desktopId === next.desktopId && previous.conversationId === next.conversationId &&
   previous.request === next.request && previous.userName === next.userName && previous.userAvatar === next.userAvatar &&
-  previous.assistantName === next.assistantName && previous.assistantAvatar === next.assistantAvatar && previous.model === next.model &&
+  previous.assistantName === next.assistantName && previous.assistantAvatar === next.assistantAvatar &&
   previous.pendingChoices === next.pendingChoices && previous.writable === next.writable && previous.choiceWritable === next.choiceWritable &&
   Boolean(previous.reask) === Boolean(next.reask) && Boolean(previous.resend) === Boolean(next.resend));
 

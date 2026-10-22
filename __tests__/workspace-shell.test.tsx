@@ -20,6 +20,11 @@ import {ConversationMessageList} from '../src/components/ConversationMessageList
 
 import {directoryMessage} from '../test-fixtures/directoryTree';
 
+import {ThemeProvider, palettes, themePreferenceStore} from '../src/components/theme';
+import {AppearanceSettings} from '../src/components/AppearanceSettings';
+
+import {ChatStartSwipe} from '../src/components/ChatStartSwipe';
+
 const mockCreate = jest.fn(async () => undefined);
 const mockCancel = jest.fn(async () => undefined);
 const mockSend = jest.fn(async () => undefined);
@@ -164,15 +169,15 @@ test('defaults to new chat with no opened sessions and keeps only the top refres
  const refresh = root.root.findAll(node => node.props.accessibilityLabel === '刷新' && typeof node.props.onPress === 'function');
  expect(refresh).toHaveLength(1); mockRefreshOpenedSessions.mockClear();
  await act(async () => refresh[0].props.onPress()); expect(mockRefreshOpenedSessions).toHaveBeenCalledTimes(1);
- await act(async () => startTab(root, '打开的会话').props.onPress());
- expect(root.root.findAllByType(Text).some(node => node.props.children === '暂无打开的会话')).toBe(true);
+ await act(async () => startTab(root, '已打开会话').props.onPress());
+ expect(root.root.findAllByType(Text).some(node => node.props.children === '暂无已打开会话')).toBe(true);
  await act(async () => root.unmount());
 });
 
 test('defaults to opened sessions and preserves a manual new-chat selection during refreshes', async () => {
  openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
- expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ expect(startTab(root, '已打开会话').props.accessibilityState.selected).toBe(true);
  expect(root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)).toHaveLength(1);
  expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(false);
  await act(async () => startTab(root, '新的聊天').props.onPress());
@@ -190,7 +195,7 @@ test('chooses the default after the first opened-session response but never over
   if (manual) await act(async () => startTab(root, '新的聊天').props.onPress());
   openConfigSession(); mockOpenedSessionsReady = true;
   await act(async () => root.update(<WorkspaceShell {...props} />));
-  expect(startTab(root, manual ? '新的聊天' : '打开的会话').props.accessibilityState.selected).toBe(true);
+  expect(startTab(root, manual ? '新的聊天' : '已打开会话').props.accessibilityState.selected).toBe(true);
   await act(async () => root.unmount());
  }
 });
@@ -209,11 +214,11 @@ test('reselects the appropriate default when returning from a chat or reopening 
  await act(async () => startTab(root, '新的聊天').props.onPress());
  await act(async () => root.update(<WorkspaceShell {...props} visible={false} />));
  await act(async () => root.update(<WorkspaceShell {...props} visible />));
- expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ expect(startTab(root, '已打开会话').props.accessibilityState.selected).toBe(true);
  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)[0].props.onPress());
  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
  await act(async () => button(root, '新的聊天').props.onPress());
- expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
  mockOpenedSessions = [];
  await act(async () => root.update(<WorkspaceShell {...props} visible={false} />));
  await act(async () => root.update(<WorkspaceShell {...props} visible />));
@@ -222,12 +227,77 @@ test('reselects the appropriate default when returning from a chat or reopening 
 });
 
 
+test('swiping and pressing bookmarks share one selection and show the corresponding page', async () => {
+ openConfigSession(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+ const swipe = () => root.root.findByType(ChatStartSwipe);
+ expect(swipe().props.selected).toBe('opened');
+ await act(async () => swipe().props.onSelect('new'));
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(true);
+ await act(async () => startTab(root, '已打开会话').props.onPress());
+ expect(swipe().props.selected).toBe('opened');
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)).toHaveLength(1);
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)[0].props.onPress());
+ expect(root.root.findAllByType(ChatStartSwipe)).toHaveLength(0);
+ await act(async () => root.unmount());
+});
+
+
+test('each drawer entry directly selects its own tab even when opened sessions exist', async () => {
+ openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '新的聊天' && node.props.accessibilityRole === 'button' && node.props.onPress)[0].props.onPress());
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话' && node.props.onPress)[0].props.onPress());
+ expect(startTab(root, '已打开会话').props.accessibilityState.selected).toBe(true);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '键盘避让面板 已打开会话')).toHaveLength(0);
+ expect(root.root.findAllByType(Text).some(node => node.props.children === '打开的会话')).toBe(false);
+ await act(async () => root.unmount());
+});
+
+test('keeps the theme shortcut out of conversation headers', async () => {
+ openConfigSession(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '主题设置' && node.props.onPress)).toHaveLength(1);
+ await enterFixtureChat(root);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '主题设置' && node.props.onPress)).toHaveLength(0);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '刷新' && node.props.onPress)).toHaveLength(1);
+ await act(async () => root.unmount());
+});
+
+
+test('top theme button sits before refresh and changes the global Mobile theme while offline', async () => {
+ const load = jest.spyOn(themePreferenceStore, 'load').mockResolvedValue('system');
+ const save = jest.spyOn(themePreferenceStore, 'save').mockResolvedValue(undefined);
+ const props = workspaceProps(); props.desktop.status = '离线';
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<ThemeProvider><WorkspaceShell {...props} /></ThemeProvider>);});
+ const topActions = root.root.findAll(node => typeof node.props.onPress === 'function' && ['主题设置', '刷新'].includes(node.props.accessibilityLabel));
+ expect(topActions.map(node => node.props.accessibilityLabel)).toEqual(['主题设置', '刷新']);
+ expect(topActions[0].props.disabled).not.toBe(true);
+ await act(async () => topActions[0].props.onPress());
+ expect(root.root.findByType(AppearanceSettings).props.visible).toBe(true);
+ for (const [label, mode] of [['深色', 'dark'], ['浅色', 'light'], ['跟随系统', 'system']] as const) {
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === `外观 ${label}` && node.props.onPress)[0].props.onPress());
+  expect(save).toHaveBeenLastCalledWith(mode);
+  expect(root.root.findAll(node => node.props.accessibilityLabel === `外观 ${label}` && node.props.onPress)[0].props.accessibilityState.checked).toBe(true);
+  if (mode !== 'system') expect(StyleSheet.flatten(root.root.findAll(node => node.props.accessibilityLabel === '外观设置' && node.props.style)[0].props.style).backgroundColor).toBe(palettes[mode].background);
+ }
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '关闭外观设置' && node.props.onPress)[0].props.onPress());
+ expect(root.root.findAllByType(AppearanceSettings)).toHaveLength(0);
+ await act(async () => root.unmount()); load.mockRestore(); save.mockRestore();
+});
+
+
 test('drawer opened-session entry routes to the tab page without opening a separate sheet', async () => {
  const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '打开侧边栏' && node.props.onPress)[0].props.onPress());
  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '已打开会话' && node.props.onPress)[0].props.onPress());
- expect(startTab(root, '打开的会话').props.accessibilityState.selected).toBe(true);
+ expect(startTab(root, '已打开会话').props.accessibilityState.selected).toBe(true);
  expect(root.root.findAll(node => node.props.accessibilityLabel === '键盘避让面板 已打开会话')).toHaveLength(0);
  await act(async () => root.unmount());
 });
@@ -299,6 +369,50 @@ test('renders document cards separately and edits only prose, never file labels 
   expect(editor.props.value).toBe('我正在写论文');
   expect(editor.props.value).not.toContain('fixture');
   await act(async () => root.unmount());
+});
+
+
+test('history model labels belong to each message across config changes, new replies and reentry', async () => {
+ openConfigSession(); mockConversationAssistant = {code: '', name: 'Fixture Assistant', avatarUrl: ''};
+ mockConversationModel = 'Current Provider | current-model';
+ const payload = {reasoningContent: '', toolCalls: [], timestamp: '', completedTimestamp: '', voiceName: ''};
+ mockWorkspaceMessages = [
+  {messageId: 'model-a', uiMessageId: 'model-a', role: 'assistant', order: 1, payload: {...payload, content: 'reply A', aiName: 'Provider A|model-a'}},
+  {messageId: 'model-b', uiMessageId: 'model-b', role: 'assistant', order: 2, payload: {...payload, content: 'reply B', aiName: 'Provider B | model-b'}},
+ ];
+ const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ const label = (id: string) => root.root.findAllByType(Text).filter(node => node.props.accessibilityLabel === `回复模型 ${id}`).map(node => node.props.children);
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ expect(label('model-a')).toEqual(['Provider A|model-a']); expect(label('model-b')).toEqual(['Provider B | model-b']);
+ const original = JSON.stringify(mockWorkspaceMessages);
+ mockConversationModel = 'Changed Provider | changed-model';
+ await act(async () => root.update(<WorkspaceShell {...props} />));
+ expect(label('model-a')).toEqual(['Provider A|model-a']); expect(label('model-b')).toEqual(['Provider B | model-b']);
+ expect(JSON.stringify(mockWorkspaceMessages)).toBe(original);
+ mockWorkspaceMessages = [...mockWorkspaceMessages, {messageId: 'model-c', uiMessageId: 'model-c', role: 'assistant', order: 3, payload: {...payload, content: 'reply C', aiName: mockConversationModel}}];
+ await act(async () => root.update(<WorkspaceShell {...props} />));
+ expect(label('model-a')).toEqual(['Provider A|model-a']); expect(label('model-c')).toEqual(['Changed Provider | changed-model']);
+ await act(async () => root.unmount());
+ mockWorkspaceMessages = JSON.parse(JSON.stringify(mockWorkspaceMessages));
+ mockConversationModel = 'Reopened Provider | later-model';
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ expect(label('model-a')).toEqual(['Provider A|model-a']); expect(label('model-b')).toEqual(['Provider B | model-b']); expect(label('model-c')).toEqual(['Changed Provider | changed-model']);
+ const {ModelLogo} = require('../src/components/ModelLogo');
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '选择模型' && node.props.onPress)[0].findByType(ModelLogo).props.model).toBe(mockConversationModel);
+ await act(async () => root.unmount());
+});
+
+test('history without a model snapshot never borrows the current model or invents a label', async () => {
+ openConfigSession(); mockConversationModel = 'Unrelated Provider | unrelated-model';
+ mockConversationAssistant = {code: '', name: 'Fixture Assistant', avatarUrl: ''};
+ mockWorkspaceMessages = [{messageId: 'legacy-no-model', uiMessageId: 'legacy-no-model', role: 'assistant', order: 1, payload: {content: 'legacy reply', reasoningContent: '', timestamp: '', completedTimestamp: '', toolCalls: [], aiName: '', voiceName: ''}}];
+ const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ expect(root.root.findAllByType(Text).some(node => node.props.children === mockConversationModel)).toBe(false);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '回复模型 legacy-no-model')).toHaveLength(0);
+ mockConversationModel = 'Changed Provider | changed-model'; await act(async () => root.update(<WorkspaceShell {...props} />));
+ expect(root.root.findAllByType(Text).some(node => node.props.children === mockConversationModel)).toBe(false);
+ await act(async () => root.unmount());
 });
 
 
@@ -1025,6 +1139,7 @@ test('shows the resolved Agent identity separately from the conversation model',
     order: 1,
     payload: {
       content: 'synthetic response',
+      aiName: 'CPA | deepseek-v4.1-flash',
       reasoningContent: '',
       timestamp: '2026-10-19T00:00:00.000Z',
       completedTimestamp: '',
