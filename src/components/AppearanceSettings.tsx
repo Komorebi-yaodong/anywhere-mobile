@@ -22,7 +22,6 @@ export function AppearanceSettings({visible, onClose}: {visible: boolean; onClos
           <View style={s.copy}><Text style={s.label}>{option.label}</Text><Text style={s.description}>{option.description}</Text></View>
           {theme.mode === option.mode ? <AppIcon name="✓" size={18} /> : null}
         </Pressable>)}
-        <Text style={s.hint}>仅保存在此设备，不修改 Desktop。文字大小仍遵循系统无障碍设置。</Text>
         {theme.error ? <Text accessibilityLabel="外观保存提示" style={s.error}>{theme.error}</Text> : null}
       </View>
     </View>

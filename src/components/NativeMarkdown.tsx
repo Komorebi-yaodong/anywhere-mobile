@@ -1,6 +1,6 @@
 import {useThemedStyles, useTheme} from './theme';
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {Linking, ScrollView, StyleSheet, Text, View, type TextStyle, type StyleProp, type ViewStyle} from 'react-native';
+import {Linking, ScrollView, StyleSheet, Text, View, type TextStyle} from 'react-native';
 import {MathRenderer, MathText, type RenderResult} from 'react-native-latex-text';
 import {SvgXml} from 'react-native-svg';
 import {parseMarkdown, safeMarkdownLink, type MarkdownNode} from './markdownParser';
@@ -119,8 +119,8 @@ function Table({node, color}: {node: MarkdownNode; color: string}) {
   const columns = Math.max(1, ...rows.map(row => row.children.length));
   const width = Math.max(112, Math.min(220, Math.floor(available / Math.min(columns, 3))));
   return <View accessibilityLabel="Markdown 表格" style={styles.tableFrame} onLayout={event => setAvailable(Math.max(1, event.nativeEvent.layout.width))}>
-    <ScrollView horizontal nestedScrollEnabled removeClippedSubviews={false} showsHorizontalScrollIndicator keyboardShouldPersistTaps="handled" style={[styles.tableScroll, contentHeight ? {height: contentHeight} : undefined]} contentContainerStyle={styles.tableContent}>
-      <View accessibilityLabel="表格内容" style={styles.table} onLayout={event => {
+    <ScrollView horizontal nestedScrollEnabled removeClippedSubviews={false} showsHorizontalScrollIndicator keyboardShouldPersistTaps="handled" style={[styles.tableScroll, {height: contentHeight || Math.max(1, rows.length) * 44}]} contentContainerStyle={styles.tableContent}>
+      <View accessibilityLabel="表格内容" style={[styles.table, {width: columns * width}]} onLayout={event => {
         const height = Math.ceil(event.nativeEvent.layout.height);
         if (Number.isFinite(height) && height > 0) setContentHeight(current => current === height ? current : height);
       }}>
@@ -157,29 +157,28 @@ function Blocks({nodes, color}: {nodes: MarkdownNode[]; color: string}) {
     }
   })}</>;
 }
-export function NativeMarkdown({value, color = C.text, surfaceStyle}: {value: string; color?: string; surfaceStyle?: StyleProp<ViewStyle>}) {
+export function NativeMarkdown({value, color = C.text}: {value: string; color?: string}) {
   const styles = useThemedStyles(baseStyles);
   const theme = useTheme();
   color = theme.color(color);
   const nodes = useMemo(() => parseMarkdown(value), [value]);
-  return <View style={styles.root}>{surfaceStyle ? nodes.map((node, index) => <View key={`${node.type}-${index}`} testID="markdown-surface-segment" collapsable={false} style={[surfaceStyle, styles.segment]}><Blocks nodes={[node]} color={color} /></View>) : <Blocks nodes={nodes} color={color} />}</View>;
+  return <View style={styles.root}><Blocks nodes={nodes} color={color} /></View>;
 }
 const baseStyles = StyleSheet.create({
-  root: {gap: 9, minWidth: 0, maxWidth: '100%', flexGrow: 0, flexShrink: 0},
-  segment: {flexGrow: 0, flexShrink: 0, minWidth: 0, maxWidth: '100%'},
-  text: {fontSize: 15, lineHeight: 23, flexShrink: 1},
+  root: {width: '100%', gap: 9, minWidth: 0, maxWidth: '100%', flexGrow: 0, flexShrink: 0},
+  text: {fontSize: 15, lineHeight: 23, flexGrow: 0, flexShrink: 0},
   bold: {fontWeight: '800'}, italic: {fontStyle: 'italic'}, strike: {textDecorationLine: 'line-through'},
   inlineCode: {fontFamily: 'monospace', fontSize: 13, color: '#80533E', backgroundColor: C.code},
   link: {color: C.primary, textDecorationLine: 'underline'}, math: {marginVertical: 2, maxWidth: '100%'},
   displayMathFrame: {width: '100%', maxWidth: '100%', minWidth: 0, minHeight: 24, marginVertical: 2, alignItems: 'center', justifyContent: 'center', overflow: 'hidden'},
   mathLoading: {fontSize: 12, lineHeight: 20, opacity: 0.55},
-  quote: {borderLeftWidth: 3, borderLeftColor: C.line, paddingLeft: 10, gap: 7},
-  list: {gap: 5}, listRow: {flexDirection: 'row', gap: 7}, marker: {minWidth: 20, fontSize: 15, lineHeight: 23}, listBody: {flex: 1, minWidth: 0, gap: 5},
+  quote: {minWidth: 0, flexGrow: 0, flexShrink: 0, borderLeftWidth: 3, borderLeftColor: C.line, paddingLeft: 10, gap: 7},
+  list: {minWidth: 0, flexGrow: 0, flexShrink: 0, gap: 5}, listRow: {flexDirection: 'row', alignItems: 'flex-start', flexGrow: 0, flexShrink: 0, gap: 7}, marker: {minWidth: 20, fontSize: 15, lineHeight: 23}, listBody: {flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, gap: 5},
   rule: {height: 1, backgroundColor: C.line, marginVertical: 4},
-  tableFrame: {maxWidth: '100%', minWidth: 0, borderWidth: 1, borderColor: C.line, borderRadius: 8, overflow: 'hidden'},
+  tableFrame: {width: '100%', maxWidth: '100%', minWidth: 0, flexGrow: 0, flexShrink: 0, borderWidth: 1, borderColor: C.line, borderRadius: 8, overflow: 'hidden'},
   tableContent: {alignItems: 'flex-start'},
 
-  tableScroll: {maxWidth: '100%', flexGrow: 0, flexShrink: 0}, table: {alignSelf: 'flex-start'}, tableRow: {flexDirection: 'row', alignItems: 'stretch'},
+  tableScroll: {maxWidth: '100%', flexGrow: 0, flexShrink: 0}, table: {alignSelf: 'flex-start', flexGrow: 0, flexShrink: 0}, tableRow: {flexDirection: 'row', alignItems: 'stretch'},
   cell: {padding: 9, borderRightWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: C.line, justifyContent: 'center'},
   headerCell: {backgroundColor: C.header},
   headerText: {fontWeight: '700'}, cellText: {fontWeight: '400'},

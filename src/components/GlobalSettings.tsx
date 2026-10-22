@@ -1012,7 +1012,6 @@ function AgentRoutesEditor({
           ) : (
             <>
               <Text style={s.sheetTitle}>默认Agent路由</Text>
-              <Text style={s.routesHint}>用于 Desktop 的通用、高级与快速默认模型路由。</Text>
               {(Object.keys(labels) as Array<keyof WorkspaceAgentRoutes>).map(route => (
                 <SelectRow
                   key={route}

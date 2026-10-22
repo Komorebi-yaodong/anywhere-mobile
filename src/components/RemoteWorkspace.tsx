@@ -118,7 +118,7 @@ export function RemoteWorkspace({
           </View>
           <TextInput style={styles.assistantSearch} value={assistantQuery} onChangeText={setAssistantQuery} placeholder="搜索 Desktop 快捷助手" placeholderTextColor="#72839f" />
           {assistantsLoading || workspace.creatingConversation ? <ActivityIndicator color="#70a7ff" /> : null}
-          {workspace.creatingConversation ? <Text style={styles.chatSubtitle}>Desktop 正在初始化并保存新会话…</Text> : null}
+          {workspace.creatingConversation ? <Text style={styles.chatSubtitle}>正在创建…</Text> : null}
           {assistantError ? <Text style={styles.errorBanner}>{assistantError}</Text> : null}
           <ScrollView>
             {assistants.filter(item => item.name.toLowerCase().includes(assistantQuery.toLowerCase())).map(item => (
@@ -137,7 +137,7 @@ export function RemoteWorkspace({
         </Pressable>
         <View style={styles.topbarTitle}>
           <Text style={styles.desktopName}>{desktop.name}</Text>
-          <Text style={styles.desktopStatus}>{desktop.status} · E2EE</Text>
+          <Text style={styles.desktopStatus}>{desktop.status}</Text>
         </View>
         <Pressable style={styles.iconButton} onPress={() => setShowSettings(true)}>
           <Text style={styles.iconText}>设置</Text>
@@ -150,13 +150,13 @@ export function RemoteWorkspace({
 
       {desktop.status !== '在线' ? (
         <View style={styles.centerCard}>
-          <Text style={styles.centerTitle}>正在等待 Remote v2 会话</Text>
+          <Text style={styles.centerTitle}>正在连接</Text>
           <Text style={styles.centerText}>{desktop.detail || '请确认 Desktop Remote 已开启且设备未被撤销。'}</Text>
         </View>
       ) : !workspace.configured ? (
         <View style={styles.centerCard}>
           <Text style={styles.centerTitle}>Desktop 尚未配置会话目录</Text>
-          <Text style={styles.centerText}>请先在 Anywhere Desktop 设置本地会话目录。Mobile 不会读取或提交 Desktop 文件路径。</Text>
+          <Text style={styles.centerText}>请先在桌面端设置会话目录。</Text>
         </View>
       ) : (
         <View style={styles.body}>
@@ -202,11 +202,6 @@ export function RemoteWorkspace({
             <View style={styles.chatHeader}>
               <View style={styles.chatTitleWrap}>
                 <Text numberOfLines={1} style={styles.chatTitle}>{selectedTitle}</Text>
-                <Text style={styles.chatSubtitle}>
-                  {workspace.selectedConversation?.window?.visible
-                    ? 'Desktop 窗口已打开'
-                    : '按需复用或创建隐藏 Writer'}
-                </Text>
               </View>
               <Pressable
                 disabled={!workspace.selectedConversationId}

@@ -19,6 +19,7 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState<{requestId: string; deleted: boolean} | null>(null);
   const [finished, setFinished] = useState(false);
+  const [activeAction, setActiveAction] = useState<'delete' | 'update' | null>(null);
   const submitting = useRef(false);
   const controller = useRef(new AbortController());
   useEffect(() => {
@@ -31,8 +32,8 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
       if (!active) return;
       setCapabilities(Array.isArray(status.capabilities) ? status.capabilities : []);
       const session = opened.sessions?.find(item => item.conversationId === conversation.conversationId);
-      setBlocked(!conversation.readable ? '此会话需先在 Desktop 迁移。' : session?.busy ? '会话仍在处理中，请结束后再操作。' : session && !session.controlledByThisDevice && !(session.hidden && !session.mobileControlled) ? '此会话由 Desktop 或其他设备控制，请先打开会话并接管。' : '');
-    }).catch(() => {if (active) setBlocked('无法确认 Desktop 能力和控制权，请关闭后重试。');})
+      setBlocked(!conversation.readable ? '此会话需先在 Desktop 迁移。' : session?.busy ? '会话仍在处理中，请结束后再操作。' : session && !session.controlledByThisDevice && !(session.hidden && !session.mobileControlled) ? '请先接管会话' : '');
+    }).catch(() => {if (active) setBlocked('加载失败，请重试');})
       .finally(() => {if (active) setChecking(false);});
     return () => {active = false; abortController.abort();};
   }, [conversation.conversationId, conversation.readable, desktopId, request]);
@@ -40,7 +41,9 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
     if (submitting.current || finished || checking || blocked || (pending && !recover)) return;
     submitting.current = true;
     setBusy(true);
-    setNotice('正在等待 Desktop 确认…');
+
+    setActiveAction(deleted ? 'delete' : 'update');
+    setNotice('');
     try {
       const receipt = recover && pending ? null : startCommand({desktopId, request, requestTracked, signal: controller.current.signal,
         method: deleted ? 'conversation.delete' : 'conversation.project.set',
@@ -58,14 +61,14 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
       if (controller.current.signal.aborted) return;
       if (cause instanceof RemoteCommandPendingError) {
         setPending({requestId: cause.requestId, deleted});
-        setNotice('正在自动确认操作结果，请稍候；不会重复提交。');
+        setNotice('');
       } else {
         setPending(null);
         // A failure can follow a partial persistence on older Desktop. Prevent
         // destructive retries inside the same confirmation.
         if (deleted) setFinished(true);
         const code = cause instanceof Error ? cause.message : '';
-        setNotice(code === 'remote_project_not_found' ? '目标项目已不存在，请关闭后刷新。' : code === 'remote_conversation_busy' ? 'Desktop 确认会话仍在处理，请稍后重试。' : code === 'remote_control_epoch_conflict' || code === 'remote_conversation_takeover_required' || code === 'remote_conversation_controlled_by_other_device' ? '控制权已变化，请先打开会话并接管。' : '未能确认操作完成，请关闭后刷新检查。');
+        setNotice(code === 'remote_project_not_found' ? '目标项目已不存在，请关闭后刷新。' : code === 'remote_conversation_busy' ? '会话处理中，请稍后重试' : code === 'remote_control_epoch_conflict' || code === 'remote_conversation_takeover_required' || code === 'remote_conversation_controlled_by_other_device' ? '控制权已变化，请先打开会话并接管。' : '未能确认操作完成，请关闭后刷新检查。');
       }
     } finally {submitting.current = false; if (!controller.current.signal.aborted) setBusy(false);}
   };
@@ -84,7 +87,7 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
     <View style={s.overlay}><View style={s.sheet}>
       <Text style={s.label}>会话</Text><Text selectable style={s.title}>{conversation.title || '未命名会话'}</Text>
       <Text style={s.label}>所属项目 · 当前：{conversation.project?.name || '未分组'}</Text>
-      {!checking && !canMove ? <Text style={s.hint}>此 Desktop 暂不支持修改会话项目，其他功能仍可使用。</Text> : null}
+      {!checking && !canMove ? <Text style={s.hint}>暂不支持更改项目</Text> : null}
       {choosingProject ? <>
         <Text style={s.title}>选择所属项目</Text>
         <ScrollView style={s.projects} keyboardShouldPersistTaps="handled">
@@ -92,10 +95,10 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
         </ScrollView>
         <Pressable accessibilityLabel="返回会话操作" style={s.button} onPress={() => setChoosingProject(false)}><Text style={s.text}>返回</Text></Pressable>
       </> : <Pressable accessibilityLabel="选择所属项目" disabled={disabled || !canMove} style={s.option} onPress={() => setChoosingProject(true)}><Text style={s.text}>{projectId ? projects.find(project => project.projectId === projectId)?.name || conversation.project?.name : '未分组'}</Text><Text style={s.text}>⌃</Text></Pressable>}
-      {checking || blocked || notice ? <Text accessibilityLabel="会话操作提示" style={s.hint}>{checking ? '正在检查 Desktop 能力…' : notice || blocked}</Text> : null}
+      {!checking && !busy && (blocked || notice) ? <Text accessibilityLabel="会话操作提示" style={s.hint}>{notice || blocked}</Text> : null}
       {!choosingProject ? <View style={s.actionRow}>
-      <Pressable accessibilityLabel="删除会话" disabled={disabled || !canDelete} style={[s.button, s.action, (disabled || !canDelete) && s.disabled]} onPress={() => Alert.alert('删除会话？', `将永久删除“${conversation.title || '未命名会话'}”及其 Desktop 本地历史，无法在本页撤销。`, [{text: '取消', style: 'cancel'}, {text: '删除', style: 'destructive', onPress: () => submit(true)}])}><Text style={s.danger}>删除会话</Text></Pressable>
-        <Pressable accessibilityLabel="保存到项目" disabled={disabled || !canMove || projectId === (conversation.project?.projectId || '')} style={[s.button, s.action, (disabled || !canMove) && s.disabled]} onPress={() => submit(false)}><Text style={s.text}>保存到项目</Text></Pressable>
+      <Pressable accessibilityLabel="删除会话" disabled={disabled || !canDelete} style={[s.button, s.action, (disabled || !canDelete) && s.disabled]} onPress={() => Alert.alert('删除会话？', `删除“${conversation.title || '未命名会话'}”？删除后无法恢复。`, [{text: '取消', style: 'cancel'}, {text: '删除', style: 'destructive', onPress: () => submit(true)}])}><Text style={s.danger}>{(busy || pending) && activeAction === 'delete' ? '正在删除' : '删除会话'}</Text></Pressable>
+        <Pressable accessibilityLabel="保存到项目" disabled={disabled || !canMove || projectId === (conversation.project?.projectId || '')} style={[s.button, s.action, (disabled || !canMove) && s.disabled]} onPress={() => submit(false)}><Text style={s.text}>{(busy || pending) && activeAction === 'update' ? '正在更新' : '保存到项目'}</Text></Pressable>
       </View> : null}
       <Pressable accessibilityLabel="关闭会话操作" style={s.button} onPress={onClose}><Text style={s.text}>关闭</Text></Pressable>
     </View></View>

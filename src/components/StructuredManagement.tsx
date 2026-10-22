@@ -381,7 +381,7 @@ export function StructuredManagement({
         {section === 'about' ? (
           <View style={s.card}>
             <Text style={s.name}>Anywhere Mobile</Text>
-            <Text style={s.meta}>{version} · Remote v2 · E2EE</Text>
+            <Text style={s.meta}>{version}</Text>
             <Pressable
               onPress={() =>
                 Linking.openURL(
@@ -426,7 +426,7 @@ export function StructuredManagement({
             ) : null}
             {editing?.localOnly ? (
               <Text style={s.meta}>
-                本地执行 MCP：命令与路径仅可在 Desktop 编辑。
+                请在桌面端编辑此 MCP。
               </Text>
             ) : null}
             {editing?.schema.map(render)}

@@ -748,7 +748,7 @@ function ProviderEditor({
             <View style={s.headersHeading}>
               <View>
                 <Text style={s.fieldLabel}>自定义请求头</Text>
-                <Text style={s.headerHint}>已保存的请求头值不会显示；填写同名键和值可覆盖。</Text>
+                <Text style={s.headerHint}>留空保持不变</Text>
               </View>
               <Pressable style={s.smallAdd} onPress={() => set('headers', [...form.headers, {rowId: `new-${Date.now()}`, originalName: '', name: '', value: ''}])}>
                 <AppIcon name="＋" size={17} color={C.primary} />

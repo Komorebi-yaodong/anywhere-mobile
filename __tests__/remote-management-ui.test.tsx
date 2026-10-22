@@ -79,6 +79,9 @@ describe('Remote destructive confirmation and business revision UI', () => {
     await act(async () => { confirm(); confirm(); });
     expect(tracked).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(root.toJSON())).not.toContain('request-internal-delete-secret');
+    expect(root.root.findAllByType(Text).filter(node => node.props.children === '正在删除')).toHaveLength(1);
+    expect(JSON.stringify(root.toJSON())).not.toContain('正在删除消息');
+    expect(JSON.stringify(root.toJSON())).not.toContain('正在等待');
     expect(JSON.stringify(root.toJSON())).not.toContain('原请求');
     await act(async () => { release({ok: true}); });
     expect(completed).toHaveBeenCalledTimes(1);
@@ -86,7 +89,8 @@ describe('Remote destructive confirmation and business revision UI', () => {
     await act(async () => root.unmount());
   });
 
-  it('queries the same pending delete without another mutation or user-visible request ID', async () => {
+  it('automatically queries the same pending delete without another mutation or user-visible request ID', async () => {
+    jest.useFakeTimers();
     const tracked = jest.fn(() => ({requestId: 'request-pending-delete-internal', response: Promise.resolve({ok: true})}));
     const request = jest.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue({terminal: true, event: 'conversation.operation.completed'});
     const completed = jest.fn();
@@ -94,11 +98,13 @@ describe('Remote destructive confirmation and business revision UI', () => {
     await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={completed} />); });
     await act(async () => button(root, '确认').props.onPress());
     expect(JSON.stringify(root.toJSON())).not.toContain('request-pending-delete-internal');
-    await act(async () => button(root, '检查删除结果').props.onPress());
+    expect(button(root, '正在删除').props.disabled).toBe(true);
+    await act(async () => {jest.advanceTimersByTime(2500);});
     expect(request).toHaveBeenLastCalledWith('desktop-fixture', 'conversation.request.get', {requestId: 'request-pending-delete-internal'});
     expect(tracked).toHaveBeenCalledTimes(1);
     expect(completed).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
+    jest.useRealTimers();
   });
 
   it('does not offer another destructive confirmation after a terminal failure', async () => {

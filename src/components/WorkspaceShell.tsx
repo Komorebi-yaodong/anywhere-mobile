@@ -61,6 +61,8 @@ import {ConversationMenu} from './ConversationMenu';
 
 import {sortByName} from './nameSort';
 
+import {mcpTransportSearchTerms} from './mcpPresentation';
+
 import {ContextUsageBar} from './ContextUsageBar';
 
 import {sessionSettingsPatch} from './sessionSettings';
@@ -183,7 +185,7 @@ export function filterSessionMcpServers(
     if (quickFilter === 'selected' && !selected.has(item.id)) return false;
     if (quickFilter === 'preset' && !item.preset) return false;
     if (!keyword) return true;
-    return [item.name, item.id, ...tags]
+    return [item.name, item.id, ...tags, ...mcpTransportSearchTerms(item.transport || (/builtin/i.test([item.id, item.name, ...tags].join(' ')) ? 'builtin' : ''))]
       .join(' ')
       .toLocaleLowerCase('zh-CN')
       .includes(keyword);
@@ -612,7 +614,7 @@ export function WorkspaceShell({
     }
   }, [selectedOpenedSession, workspace.activeTurn, workspace.selectedConversationId]);
   const requireControl = () => {
-    if (!connected) { setNotice('连接正在恢复，已保留当前页面；请连接成功后再操作。'); return false; }
+    if (!connected) { setNotice('正在连接，请稍候'); return false; }
     if (controlledByMobile) return true;
     setNotice('该会话正在由 Desktop 控制，请先点击“接管会话”。');
     return false;
@@ -719,7 +721,7 @@ export function WorkspaceShell({
       setSessionOptions(result.options);
       setContextUsage(result.contextUsage || null);
       setContextLengthEdited(false);
-      if (result.deferred) setNotice('设置已保存，将在下一轮发送时生效；本轮请求保持原配置。');
+      if (result.deferred) setNotice('已保存，下轮生效');
       if (closeAfterSave) setSheet(null);
     } catch (error) {
       setSessionNotice(workspaceNotice(error, '保存会话设置失败。'));
@@ -762,7 +764,7 @@ export function WorkspaceShell({
       setSessionConfig((current: any) => current ? {...current, compact: {...current.compact, contextLength: compact.contextLength, contextLengthSource: 'api', contextLengthManual: false}} : current);
       setContextLengthDraft(String(compact.contextLength));
       setContextLengthEdited(false);
-      setSessionNotice('已获取并保存当前模型的上下文长度，其他修改仍待保存。');
+      setSessionNotice('上下文长度已更新');
     } catch (error) {
       setSessionNotice(workspaceNotice(error, '上下文检索失败，已保留原值。'));
     } finally { sessionOperation.current = false; setSessionBusy(false); }
@@ -850,7 +852,7 @@ export function WorkspaceShell({
     try {
       await workspace.takeoverConversation(workspace.selectedConversationId);
       setConfigExecutionBusy(false);
-      setNotice('已接管会话，Desktop 将实时观察更新。');
+      setNotice('');
     } catch (error) {
       setNotice(workspaceNotice(error, '暂时无法接管会话。'));
     }
@@ -864,7 +866,7 @@ export function WorkspaceShell({
     }
     try {
       await workspace.handoffConversation(workspace.selectedConversationId);
-      setNotice('已交还 Desktop，会话将继续由 Desktop 控制。');
+      setNotice('');
     } catch (error) {
       setNotice(workspaceNotice(error, '当前会话仍在执行，暂时无法交还。'));
     }
@@ -1024,15 +1026,7 @@ export function WorkspaceShell({
               ? settingsTitle(settingsSection)
               : desktop.name}
           </Text>
-          {mode !== 'settings' ? (
-            <Text numberOfLines={1} style={styles.subtitle}>
-              {mode === 'chat'
-                ? controlledByMobile ? '点击重命名会话' : 'Desktop 实时观察中'
-                : desktop.status === '在线'
-                ? '已连接'
-                : desktop.status}
-            </Text>
-          ) : null}
+          {mode !== 'settings' && mode !== 'chat' ? <Text numberOfLines={1} style={styles.subtitle}>{desktop.status === '在线' ? '已连接' : desktop.status}</Text> : null}
         </Pressable>
         <IconButton
           icon="↻"
@@ -1079,7 +1073,7 @@ export function WorkspaceShell({
           <Text style={styles.noticeText}>{notice}</Text>
         </Pressable>
       ) : null}
-      {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在恢复连接…'} · 已保留当前页面，连接后继续同步。</Text></View> : null}
+      {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在连接…'}</Text></View> : null}
       <View style={styles.retainedWorkspace} pointerEvents={!connected && mode !== 'chat' ? 'none' : 'auto'}>
       {!connected && !bootstrap && mode !== 'chat' && mode !== 'settings' ? (
         <Empty
@@ -1232,9 +1226,6 @@ export function WorkspaceShell({
         onClose={() => setSheet(null)}
         title="已打开会话"
       >
-        <Text style={styles.sheetText}>
-          移动端接管后，桌面端会话进入只读模式，直到移动端交还
-        </Text>
         <View style={styles.openedSessionList}>
           {workspace.openedSessions.length ? workspace.openedSessions.map((item: OpenedConversationSession) => (
             <View key={item.conversationId} style={styles.openedSessionCard}>
@@ -1247,7 +1238,7 @@ export function WorkspaceShell({
                 <Text numberOfLines={1} style={styles.openedSessionTitle}>{item.title || '未命名会话'}</Text>
                 <Text style={styles.openedSessionMeta}>
                   {item.controlledByThisDevice ? 'Mobile 正在控制' : item.mobileControlled ? '其他设备正在控制' : 'Desktop 正在控制'}
-                  {item.hidden ? ' · 隐藏 Writer' : item.visible ? ' · Desktop 已显示' : ''}
+                  {item.visible ? ' · 桌面已打开' : ''}
                   {item.busy ? ' · 处理中' : ''}
                 </Text>
               </Pressable>
@@ -1299,9 +1290,6 @@ export function WorkspaceShell({
         onClose={() => setSheet(null)}
         title="新建目录"
       >
-        <Text style={styles.sheetText}>
-          目录会作为 Desktop 项目分组保存，不会创建或暴露真实本地路径。
-        </Text>
         <TextInput
           value={projectName}
           onChangeText={setProjectName}
@@ -1325,7 +1313,6 @@ export function WorkspaceShell({
         }}
         title="修改项目名称"
       >
-        <Text style={styles.sheetText}>项目仅用于整理 Desktop 会话，不对应本地文件夹。</Text>
         <TextInput
           value={projectName}
           onChangeText={setProjectName}
@@ -1360,9 +1347,6 @@ export function WorkspaceShell({
           <Text style={styles.mediaChoiceIcon}>▤</Text>
           <View>
             <Text style={styles.settingsListTitle}>选择文件</Text>
-            <Text style={styles.settingsListMeta}>
-              从系统文件选择器添加内容
-            </Text>
           </View>
         </Pressable>
         <Pressable
@@ -1375,9 +1359,6 @@ export function WorkspaceShell({
           <Text style={styles.mediaChoiceIcon}>◉</Text>
           <View>
             <Text style={styles.settingsListTitle}>拍照发送</Text>
-            <Text style={styles.settingsListMeta}>
-              拍摄后作为加密图片附件上传
-            </Text>
           </View>
         </Pressable>
       </Sheet>
@@ -1405,7 +1386,7 @@ export function WorkspaceShell({
         {sessionNotice ? <Text accessibilityLabel="会话设置操作结果" style={styles.sessionHint}>{sessionNotice}</Text> : null}
 
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置；现在保存的修改将在下一轮发送时生效。</Text> : null}
+
         {sessionBusy && !sessionConfig ? (
           <ActivityIndicator color={C.primary} />
         ) : sessionConfig ? (
@@ -1416,7 +1397,7 @@ export function WorkspaceShell({
               <Tag label="Skill" active={sessionTab === 'skill'} onPress={() => setSessionTab('skill')} />
               <Tag label="上下文" active={sessionTab === 'compact'} onPress={() => setSessionTab('compact')} />
             </ScrollView>
-            {!controlledByMobile ? <Text style={styles.sessionHint}>当前由 Desktop 控制。设置可查看，接管会话后才可修改。</Text> : null}
+            {!controlledByMobile ? <Text style={styles.sessionHint}>接管后可编辑</Text> : null}
             {sessionTab === 'prompt' ? <View style={styles.sessionSection}>
               <SheetTextInput value={sessionConfig.systemPrompt || ''} editable={canEditSession} onChangeText={systemPrompt => setSessionConfig({...sessionConfig, systemPrompt})} multiline style={[styles.input, styles.systemPromptInput]} placeholder="输入本次会话的系统提示词" placeholderTextColor={C.muted} textAlignVertical="top" />
             </View> : null}
@@ -1463,19 +1444,19 @@ export function WorkspaceShell({
       <Sheet visible={sheet === 'model'} onClose={() => setSheet(null)} title="选择模型">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置，修改将在下一轮发送时生效。</Text> : null}
+
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.models || []).map(item => <Pressable key={item.value} style={[styles.sessionSelectRow, sessionConfig?.model === item.value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, model: item.value}); saveSessionPatch({model: item.value}).catch(() => undefined); }}><Text numberOfLines={1} style={styles.sessionSelectTitle}>{formatModelOption(item.label)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.model === item.value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'reasoning'} onClose={() => setSheet(null)} title="思维深度">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置，修改将在下一轮发送时生效。</Text> : null}
+
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{(sessionOptions?.reasoningEfforts || []).map(value => <Pressable key={value} style={[styles.sessionSelectRow, sessionConfig?.reasoningEffort === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, reasoningEffort: value}); saveSessionPatch({reasoningEffort: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{reasoningLabel(value)}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.reasoningEffort === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
       <Sheet visible={sheet === 'voice'} onClose={() => setSheet(null)} title="语音">
         {sessionNotice ? <Text style={styles.sessionHint}>{sessionNotice}</Text> : null}
         {sessionReadError ? <Text style={styles.sessionHint}>{sessionReadError}</Text> : null}
-        {executionBusy ? <Text style={styles.sessionHint}>本轮继续使用原配置，修改将在下一轮发送时生效。</Text> : null}
+
         {sessionBusy && !sessionConfig ? <ActivityIndicator color={C.primary} /> : <View style={styles.sessionSelectList}>{['', ...(sessionOptions?.voices || [])].map(value => <Pressable key={value || '__default_voice__'} style={[styles.sessionSelectRow, sessionConfig?.voice === value && styles.sessionSelectRowActive]} disabled={!canEditSession} onPress={() => { setSessionConfig({...sessionConfig, voice: value}); saveSessionPatch({voice: value}).catch(() => undefined); }}><Text style={styles.sessionSelectTitle}>{value || '关闭'}</Text><Text style={styles.toolSelectCheck}>{sessionConfig?.voice === value ? '✓' : ''}</Text></Pressable>)}</View>}
       </Sheet>
     </SafeAreaView>
@@ -1732,7 +1713,7 @@ const ChatPage = React.forwardRef<
         ))}
         {connected && !writable ? (
           <View style={styles.observerBanner}>
-            <Text style={styles.observerText}>Desktop 正在控制此会话；内容会实时同步。</Text>
+            <Text style={styles.observerText}>桌面端控制中</Text>
           </View>
         ) : null}
         <View style={[styles.composer, !writable && styles.composerReadOnly]}>
@@ -2205,10 +2186,8 @@ const MessageCard = React.memo(function MessageCardView({
         {isUser ? <Avatar source={userAvatar} label={displayName} /> : null}
       </View>
       {message.payload.reasoningContent ? <FoldCard title="思考过程" text={message.payload.reasoningContent} /> : null}
-      {hasMessageBubble(message) ? content.length > 1800 || content.split('\n').length > 50
-        ? <ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} surfaceStyle={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]} />
-        : <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}><ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} /></View> : null}
-      {files.length ? <View accessibilityLabel="消息文件附件" style={styles.toolList}>{files.map((file, index) => <View key={`${index}-${file.name}`} style={styles.toolCard}><View style={styles.toolHeaderCopy}><AppIcon name="▤" size={17} color={C.primary} /><Text numberOfLines={2} selectable style={styles.toolName}>{file.name || '文件'}</Text></View><Text style={styles.sessionHint}>文件内容已保留在 Desktop，编辑正文不会修改附件</Text></View>)}</View> : null}
+      {hasMessageBubble(message) ? <View testID={`message-bubble-${message.uiMessageId}`} collapsable={false} style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}><ConversationMarkdown value={content} desktopId={desktopId} conversationId={conversationId} request={request} color={C.text} /></View> : null}
+      {files.length ? <View accessibilityLabel="消息文件附件" style={styles.toolList}>{files.map((file, index) => <View key={`${index}-${file.name}`} style={styles.toolCard}><View style={styles.fileHeader}><AppIcon name="▤" size={17} color={C.primary} /><Text numberOfLines={2} selectable style={styles.toolName}>{file.name || '文件'}</Text></View></View>)}</View> : null}
 
       {message.payload.toolCalls?.length ? <View style={[styles.toolList, toolOnly && styles.toolListFullWidth]}>{message.payload.toolCalls.map(tool => <ToolCallCard key={tool.id || tool.name} tool={tool} pending={pendingChoices[tool.id]} writable={choiceWritable ?? writable} onSubmit={onSubmitChoice} />)}</View> : null}
       <View style={[styles.messageTools, isUser && styles.messageToolsRight]}>
@@ -2241,7 +2220,7 @@ function ToolCallCard({tool, pending, writable = true, onSubmit}: {tool: RemoteM
   return <View style={styles.toolCard}>
     <Pressable accessibilityLabel={`查看工具 ${tool.name || '工具'} 详情`} style={styles.toolHeader} onPress={() => { beforeLayoutChange(); setOpen(current => !current); }}><View style={styles.toolHeaderCopy}><AppIcon name="mcp" size={16} color={C.primary} /><Text numberOfLines={1} style={styles.toolName}>调用 {tool.name || '工具'}</Text></View><Text style={styles.toolState}>{tool.status === 'choosing' || pending ? '等待选择' : tool.status || (tool.result !== undefined ? '已完成' : '处理中')}</Text></Pressable>
     {open ? <View style={styles.toolBody}>
-      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView accessibilityLabel={`工具 ${tool.name || '工具'} 输入输出`} nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{tool.arguments === '[参数已隐藏]' ? '实时执行中，等待安全详情同步…' : formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>等待工具完成并同步安全详情…</Text>}</ScrollView>}
+      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView accessibilityLabel={`工具 ${tool.name || '工具'} 输入输出`} nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{tool.arguments === '[参数已隐藏]' ? '加载中…' : formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>执行中…</Text>}</ScrollView>}
     </View> : null}
   </View>;
 }
@@ -2719,7 +2698,7 @@ const baseStyles = StyleSheet.create({
   chatViewport: {flex: 1, minHeight: 0, position: 'relative'},
   chatMessages: {flex: 1, minHeight: 0},
   messageList: {padding: 16, paddingBottom: 14, gap: 16},
-  messageWrap: {maxWidth: '94%', minWidth: 0, flexGrow: 0, flexShrink: 0, gap: 7},
+  messageWrap: {width: '94%', maxWidth: '94%', minWidth: 0, flexGrow: 0, flexShrink: 0, gap: 7},
   messageLeft: {alignSelf: 'flex-start'},
 
   toolOnlyWrap: {alignSelf: 'stretch', maxWidth: '100%', gap: 7},
@@ -2743,7 +2722,7 @@ const baseStyles = StyleSheet.create({
   messageModel: {maxWidth: 150, color: C.muted, fontSize: 10},
   messageTime: {fontSize: 10, color: C.muted, fontVariant: ['tabular-nums']},
   messageTimeRight: {textAlign: 'right'},
-  messageBubble: {borderRadius: 20, padding: 13, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line},
+  messageBubble: {width: '100%', minWidth: 0, flexGrow: 0, flexShrink: 0, borderRadius: 20, padding: 13, borderWidth: StyleSheet.hairlineWidth, borderColor: C.line},
   userBubble: {backgroundColor: C.user, borderTopRightRadius: 6},
   assistantBubble: {backgroundColor: C.surface, borderTopLeftRadius: 6},
   foldCard: {borderRadius: 14, overflow: 'hidden', backgroundColor: C.surfaceMuted},
@@ -2754,6 +2733,8 @@ const baseStyles = StyleSheet.create({
   toolList: {gap: 7},
   toolCard: {borderWidth: StyleSheet.hairlineWidth, borderColor: C.line, borderRadius: 15, overflow: 'hidden', backgroundColor: C.surfaceMuted},
   toolHeader: {minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 11},
+  fileHeader: {flexDirection: 'row', alignItems: 'center', minWidth: 0, flexGrow: 0, flexShrink: 0, gap: 7, padding: 11},
+
   toolHeaderCopy: {flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 7},
   toolName: {flex: 1, color: C.text, fontSize: 12, fontWeight: '600'},
   toolState: {color: C.muted, fontSize: 10},

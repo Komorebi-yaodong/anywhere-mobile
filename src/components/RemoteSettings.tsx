@@ -26,12 +26,14 @@ export function RemoteSettings({desktopId, conversationId, request, requestTrack
   const [notice, setNotice] = useState('');
   const [pendingId, setPendingId] = useState('');
   const controller = useRef(new AbortController());
+  const submitting = useRef(false);
   useEffect(() => () => controller.current.abort(), []);
 
   const run = async (method: string, params: Record<string, unknown>, recover = false) => {
-    if (busy || (pendingId && !recover) || (!conversationId && !recover)) return;
+    if (submitting.current || busy || (pendingId && !recover) || (!conversationId && !recover)) return;
+    submitting.current = true;
     setBusy(true);
-    setNotice('正在等待 Desktop Writer 确认…');
+    setNotice('');
     try {
       const receipt = recover ? null : startCommand({desktopId, method, params, request, requestTracked, signal: controller.current.signal});
       if (receipt) setPendingId(receipt.requestId);
@@ -43,19 +45,29 @@ export function RemoteSettings({desktopId, conversationId, request, requestTrack
         setResult(value);
         setConfig(value.config);
       }
-      setNotice('Desktop 已确认完成。');
+      setNotice('');
       onChanged();
     } catch (error) {
       if (!controller.current.signal.aborted) {
         setPendingId(error instanceof RemoteCommandPendingError ? error.requestId : '');
         setNotice(error instanceof RemoteCommandPendingError
-          ? `${error.message}\n原请求：${error.requestId}`
+          ? ''
           : error instanceof Error ? error.message : '操作失败');
       }
     } finally {
+      submitting.current = false;
       if (!controller.current.signal.aborted) setBusy(false);
     }
   };
+
+  const recover = useRef(run);
+  recover.current = run;
+  useEffect(() => {
+    if (!pendingId || busy) return;
+    const timer = setTimeout(() => {recover.current('', {}, true);}, 2500);
+    return () => clearTimeout(timer);
+  }, [pendingId, busy]);
+
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose}>
@@ -70,11 +82,10 @@ export function RemoteSettings({desktopId, conversationId, request, requestTrack
         </View>
         {tab === 'business' ? <BusinessEditor desktopId={desktopId} request={request} /> : (
           <ScrollView contentContainerStyle={styles.page}>
-            <Text style={styles.description}>配置命令由 Desktop 唯一 Writer 执行；读取及保存会等待终态，忙碌会话不会强行覆盖。</Text>
-            <Button label="读取当前配置" disabled={busy} onPress={() => run('conversation.config.get', {conversationId})} />
-            {notice ? <Text selectable style={styles.notice}>{notice}</Text> : null}
+            <Button label={busy || pendingId ? '处理中…' : '读取当前配置'} disabled={busy || Boolean(pendingId)} onPress={() => run('conversation.config.get', {conversationId})} />
+            {notice && !busy ? <Text selectable style={styles.notice}>{notice}</Text> : null}
 
-            {pendingId ? <Button label="查询原请求（不重发）" disabled={busy} onPress={() => run('', {}, true)} /> : null}
+
             {config && result ? <>
               <Text style={styles.label}>模型</Text>
               {result.options.models.map(item => <Choice key={item.value} label={item.label} active={config.model === item.value} onPress={() => setConfig({...config, model: item.value})} />)}
@@ -95,12 +106,12 @@ export function RemoteSettings({desktopId, conversationId, request, requestTrack
               <NumberField label="保留轮数（0–100）" value={config.compact.keepRecentRounds} onChange={keepRecentRounds => setConfig({...config, compact: {...config.compact, keepRecentRounds}})} />
               <Text style={styles.label}>压缩 prompt</Text>
               <TextInput multiline style={styles.textarea} value={config.compact.compactPrompt} onChangeText={compactPrompt => setConfig({...config, compact: {...config.compact, compactPrompt}})} />
-              <Button label="保存会话配置" disabled={busy} onPress={() => Alert.alert('保存当前会话配置？', '将更新此会话模型、工具、提示词及压缩设置。', [
+              <Button label="保存会话配置" disabled={busy || Boolean(pendingId)} onPress={() => Alert.alert('保存当前会话配置？', '将更新此会话模型、工具、提示词及压缩设置。', [
                 {text: '取消', style: 'cancel'},
                 {text: '保存', onPress: () => run('conversation.config.patch', {conversationId, patch: config})},
               ])} />
             </> : null}
-            <Button label="立即压缩" disabled={busy} onPress={() => Alert.alert('压缩当前会话？', 'Desktop 将生成摘要并更新会话历史。', [
+            <Button label="立即压缩" disabled={busy || Boolean(pendingId)} onPress={() => Alert.alert('压缩当前会话？', 'Desktop 将生成摘要并更新会话历史。', [
               {text: '取消', style: 'cancel'},
               {text: '压缩', onPress: () => run('conversation.compact', {conversationId})},
             ])} />

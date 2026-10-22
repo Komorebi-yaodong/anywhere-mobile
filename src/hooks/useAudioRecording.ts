@@ -52,7 +52,7 @@ export function useAudioRecording(
         (await PermissionsAndroid.check(permission)) ||
         (await PermissionsAndroid.request(permission, {
           title: '允许录音',
-          message: '用于录制并加密发送音频附件。',
+          message: '用于录制语音消息。',
           buttonPositive: '允许',
           buttonNegative: '取消',
         })) === PermissionsAndroid.RESULTS.GRANTED;

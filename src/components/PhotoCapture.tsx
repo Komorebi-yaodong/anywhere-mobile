@@ -72,7 +72,6 @@ export function PhotoCapture({
             <View style={styles.shutterInner} />
           )}
         </Pressable>
-        <Text style={styles.hint}>拍摄后将作为加密图片附件发送</Text>
       </View>
     </View>
   );

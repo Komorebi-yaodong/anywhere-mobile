@@ -38,7 +38,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
     if (submitting.current || settled.current || (pendingId && !recover)) return;
     submitting.current = true;
     setBusy(true);
-    setNotice(isMessageDelete ? '正在删除消息…' : '正在等待操作完成…');
+    setNotice('');
     try {
       let completion: Promise<ConversationRequestState>;
       if (recover) {
@@ -56,7 +56,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
       const state = await completion;
       if (controller.current.signal.aborted) return;
       setPendingId('');
-      setNotice(isMessageDelete ? '消息已删除。' : '操作已完成。');
+      setNotice('');
       settled.current = true;
       setFinished('success');
       onCompleted(state);
@@ -64,7 +64,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
       if (controller.current.signal.aborted) return;
       if (error instanceof RemoteCommandPendingError) {
         setPendingId(error.requestId);
-        setNotice(isMessageDelete ? '删除结果尚待确认，请检查原操作结果，勿重复删除。' : '操作结果尚待确认，请检查原操作结果，勿重复提交。');
+        setNotice('');
       } else {
         setPendingId('');
         // A failed result can follow an applied mutation (older Desktop builds).
@@ -72,21 +72,29 @@ export function ConversationActions({desktopId, conversationId, action, request,
         if (destructive) { settled.current = true; setFinished('failed'); }
         const code = error instanceof Error ? error.message : '';
         const messages: Record<string, string> = {
-          remote_message_state_changed: '消息状态已变化，请关闭弹窗并刷新会话后检查结果。',
-          remote_message_not_found: '消息已不存在，请关闭弹窗并刷新会话。',
-          remote_conversation_save_failed: '保存结果未能确认，请关闭后刷新检查，不要重复删除。',
-          remote_conversation_busy: '本轮仍在生成或执行工具，请结束后再操作。',
+          remote_message_state_changed: '消息已变化，请刷新',
+          remote_message_not_found: '消息已不存在',
+          remote_conversation_save_failed: '保存失败，请刷新检查',
+          remote_conversation_busy: '会话处理中',
         };
-        setNotice(messages[code] || '操作未完成，请关闭后刷新会话检查。');
+        setNotice(messages[code] || '操作失败，请刷新检查');
       }
     } finally {
       submitting.current = false;
       if (!controller.current.signal.aborted) setBusy(false);
     }
   };
+  const retry = useRef(submit);
+  retry.current = submit;
+  useEffect(() => {
+    if (!pendingId || busy || finished) return;
+    const timer = setTimeout(() => {retry.current(true);}, 2500);
+    return () => clearTimeout(timer);
+  }, [pendingId, busy, finished]);
+
   const confirm = () => Alert.alert(`${label}？`, destructive
-    ? '此操作会改变 Desktop 的真实历史记录，不能通过本页撤销。确认后将交由 Desktop 唯一 Writer 执行。'
-    : '将修改 Desktop 当前会话的持久化内容，请确认。', [
+    ? '删除后无法恢复。'
+    : '确认保存修改？', [
     {text: '取消', style: 'cancel'},
     {text: '确认', style: destructive ? 'destructive' : 'default', onPress: () => submit()},
   ]);
@@ -94,17 +102,17 @@ export function ConversationActions({desktopId, conversationId, action, request,
     <View style={styles.backdrop}>
       <View style={styles.panel}>
         <Text style={styles.title}>{title}</Text>
-        {isMessageDelete ? <Text style={styles.subtitle}>删除后将无法找回</Text> : null}
+        {isMessageDelete && !busy && !pendingId && !finished ? <Text style={styles.subtitle}>删除后将无法找回</Text> : null}
         {!destructive ? <TextInput multiline={action.method === 'conversation.message.edit'} style={styles.input} value={draft} onChangeText={setDraft} editable={!busy && !pendingId} placeholder={action.method === 'conversation.message.edit' ? '输入消息内容' : '会话名称'} placeholderTextColor="#A9A29A" maxLength={action.method === 'conversation.rename' ? 240 : 131072} /> : null}
-        {destructive && !isMessageDelete ? <Text style={styles.subtitle}>删除后将无法找回</Text> : null}
-        {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+
+        {notice && !busy ? <Text style={styles.notice}>{notice}</Text> : null}
         <View style={styles.actions}>
           <Pressable
-            disabled={busy || Boolean(finished) || (!destructive && !draft.trim())}
-            style={[styles.button, styles.primaryButton, (busy || finished || (!destructive && !draft.trim())) && styles.disabled]}
+            disabled={busy || Boolean(pendingId) || Boolean(finished) || (!destructive && !draft.trim())}
+            style={[styles.button, styles.primaryButton, (busy || pendingId || finished || (!destructive && !draft.trim())) && styles.disabled]}
             onPress={pendingId ? () => submit(true) : isMessageDelete ? () => submit() : confirm}
           >
-            <Text style={styles.primaryText}>{busy ? (isMessageDelete ? '正在删除…' : '处理中…') : pendingId ? (isMessageDelete ? '检查删除结果' : '检查操作结果') : finished ? finished === 'success' ? '已完成' : '请关闭后刷新' : '确认'}</Text>
+            <Text style={styles.primaryText}>{busy || pendingId ? (destructive ? '正在删除' : '正在更新') : finished ? finished === 'success' ? '已完成' : '请关闭后刷新' : '确认'}</Text>
           </Pressable>
           <Pressable style={[styles.button, styles.secondaryButton]} onPress={onClose}>
             <Text style={styles.secondaryText}>{pendingId || finished ? '关闭' : '取消'}</Text>

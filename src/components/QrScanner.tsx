@@ -52,7 +52,6 @@ export function QrScanner({onScanned, onCancel}: Props) {
       <Camera style={StyleSheet.absoluteFill} device={device} isActive codeScanner={scanner} />
       <View style={styles.overlay}>
         <Text style={styles.title}>扫描桌面端配对二维码</Text>
-        <Text style={styles.text}>仅扫描配对信息，不访问桌面文件或会话内容。</Text>
         <View style={styles.frame} />
         <Pressable style={styles.secondaryButton} onPress={onCancel}><Text style={styles.buttonText}>取消扫描</Text></Pressable>
       </View>

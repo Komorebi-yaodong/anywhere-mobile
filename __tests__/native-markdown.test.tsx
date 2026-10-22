@@ -16,13 +16,12 @@ async function render(value: string) {
   return root;
 }
 
-it('draws many-fence/table replies in independent non-growing surfaces and retains the ending', async () => {
+it('keeps many-fence/table replies in one continuous unstyled content root and retains the ending', async () => {
   const source = Array.from({length: 32}, (_, i) => `## Section ${i}\n\n正文 ${i}\n\n\`\`\`text\nrow-${i}\n\`\`\`\n\n`).join('') + '| A | B |\n|---|---|\n| x | y |\n\n最后正文完整';
   let root!: TestRenderer.ReactTestRenderer;
-  await act(async () => {root = TestRenderer.create(<NativeMarkdown value={source} surfaceStyle={{backgroundColor: '#fff'}} />);});
+  await act(async () => {root = TestRenderer.create(<NativeMarkdown value={source} />);});
   const surfaces = root.root.findAll(node => node.props.testID === 'markdown-surface-segment' && node.props.style);
-  expect(surfaces.length).toBeGreaterThan(32);
-  expect(surfaces.every(node => StyleSheet.flatten(node.props.style).flexGrow === 0 && StyleSheet.flatten(node.props.style).flexShrink === 0)).toBe(true);
+  expect(surfaces).toHaveLength(0);
   expect(root.root.findAllByType(MarkdownCodeBlock)).toHaveLength(32);
   const table = root.root.findAll(node => node.props.accessibilityLabel === 'Markdown 表格')[0];
   expect(StyleSheet.flatten(table.findByType(ScrollView).props.style)).toMatchObject({flexGrow: 0, flexShrink: 0});

@@ -153,14 +153,14 @@ export function SimpleManagementSettings({
       <View style={s.root}>
         {error ? <Text style={s.error}>{error}</Text> : null}
         <AppearanceSettings visible={appearanceOpen} onClose={() => setAppearanceOpen(false)} />
-        <Pressable accessibilityLabel="外观设置" style={s.itemCard} onPress={() => setAppearanceOpen(true)}><AppIcon name="sun" size={20} /><View style={s.itemCopy}><Text style={s.itemName}>外观</Text><Text style={s.profileMeta}>跟随系统 · 浅色 · 深色</Text></View><AppIcon name="›" size={18} /></Pressable>
+        <Pressable accessibilityLabel="外观设置" style={s.itemCard} onPress={() => setAppearanceOpen(true)}><AppIcon name="sun" size={20} /><View style={s.itemCopy}><Text style={s.itemName}>外观</Text></View><AppIcon name="›" size={18} /></Pressable>
 
         {!general && busy ? <ActivityIndicator color={C.primary} /> : null}
         {general ? (
           <View style={s.generalPage}>
             <View style={s.profileCard}>
               <View style={s.avatar}><Text style={s.avatarText}>{(nickname || 'U').slice(0, 1).toUpperCase()}</Text></View>
-              <View style={s.profileCopy}><Text style={s.profileTitle}>昵称</Text><Text style={s.profileMeta}>用于 Desktop 与移动端显示</Text></View>
+              <View style={s.profileCopy}><Text style={s.profileTitle}>昵称</Text></View>
             </View>
             <View style={s.field}><Text style={s.fieldLabel}>昵称</Text><TextInput value={nickname} onChangeText={setNickname} maxLength={12} placeholder="输入昵称" placeholderTextColor={C.muted} style={s.input} /></View>
             <Pressable disabled={busy || !nickname.trim()} style={[s.save, (busy || !nickname.trim()) && s.disabled]} onPress={saveNickname}>

@@ -272,7 +272,6 @@ export function ManagementSettings({
       <View style={s.headerRow}>
         <View style={s.headerCopy}>
           <Text style={s.pageTitle}>{copy[section].title}</Text>
-          <Text style={s.pageHint}>{copy[section].hint}</Text>
         </View>
         <Pressable accessibilityLabel={`刷新${copy[section].title}`} style={s.refresh} onPress={load}>
           <AppIcon name="↻" size={18} color={C.primary} />
@@ -326,9 +325,8 @@ function GeneralPreview({draft}: {draft: Record<string, unknown>}) {
   const s = useThemedStyles(styles);
   return (
     <View style={s.generalCard}>
-      <View style={s.generalTop}><View style={s.generalAvatar}><Text style={s.generalAvatarText}>{(stringValue(draft.nickname) || 'U').slice(0, 1).toUpperCase()}</Text></View><View><Text style={s.itemTitle}>{stringValue(draft.nickname) || 'User'}</Text><Text style={s.itemMeta}>Desktop 公开资料</Text></View></View>
+      <View style={s.generalTop}><View style={s.generalAvatar}><Text style={s.generalAvatarText}>{(stringValue(draft.nickname) || 'U').slice(0, 1).toUpperCase()}</Text></View><View><Text style={s.itemTitle}>{stringValue(draft.nickname) || 'User'}</Text></View></View>
       <View style={s.divider} />
-      <Text style={s.generalLabel}>更改语言、主题与公开资料后，使用下方“保存通用设置”同步到 Desktop。</Text>
     </View>
   );
 }
@@ -361,13 +359,13 @@ function ManagementEditor({
       {editor.creating ? (
         <View style={s.field}><Text style={s.label}>唯一 ID</Text><TextInput value={stringValue(editor.draft.__editorId)} onChangeText={id => onChange({...editor.draft, __editorId: id})} placeholder="例如 remote-search" placeholderTextColor={C.muted} style={s.input} autoCapitalize="none" autoCorrect={false} /></View>
       ) : null}
-      {editor.detail.localOnly ? <View style={s.localNotice}><AppIcon name="mcp" size={18} color={C.primary} /><Text style={s.localText}>这是本地 MCP。命令、环境变量、路径和凭据不会同步到 Mobile，请在 Desktop 编辑。</Text></View> : null}
+      {editor.detail.localOnly ? <View style={s.localNotice}><AppIcon name="mcp" size={18} color={C.primary} /><Text style={s.localText}>请在桌面端编辑此 MCP。</Text></View> : null}
       {(editor.detail.schema || []).map(field => {
         const value = editor.draft[field.key];
         if (editor.detail.localOnly && !['name', 'isActive'].includes(field.key)) return null;
         if (field.type === 'boolean') return <Pressable key={field.key} style={s.toggleRow} onPress={() => update(field.key, value !== true)}><Text style={s.label}>{field.label}</Text><Switch value={value === true} disabled={busy} trackColor={{false: C.line, true: '#B9D8C3'}} thumbColor={value === true ? C.success : C.surface} onValueChange={next => update(field.key, next)} /></Pressable>;
         if (field.type === 'select' || optionsFor(field).length) return <Pressable key={field.key} style={s.selectRow} onPress={() => setPicker(field)}><Text style={s.label}>{field.label}</Text><View style={s.selectValue}><Text numberOfLines={1} style={s.itemMeta}>{optionsFor(field).find(option => option.value === value)?.label || stringValue(value) || '请选择'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>;
-        if (field.type === 'pairs') return <View key={field.key} style={s.field}><Text style={s.label}>{field.label}</Text><Text style={s.protectedHint}>已保存的值不会显示。若需覆盖，请输入 JSON 对象；留空保持不变。</Text><TextInput value={stringValue(value)} onChangeText={text => update(field.key, text)} placeholder='{"X-Header":"new-value"}' placeholderTextColor={C.muted} style={[s.input, s.multiline]} multiline autoCapitalize="none" autoCorrect={false} /></View>;
+        if (field.type === 'pairs') return <View key={field.key} style={s.field}><Text style={s.label}>{field.label}</Text><Text style={s.protectedHint}>留空保持不变。</Text><TextInput value={stringValue(value)} onChangeText={text => update(field.key, text)} placeholder='{"X-Header":"new-value"}' placeholderTextColor={C.muted} style={[s.input, s.multiline]} multiline autoCapitalize="none" autoCorrect={false} /></View>;
         const multiline = field.type === 'multiline';
         return <View key={field.key} style={s.field}><Text style={s.label}>{field.label}</Text><TextInput value={value == null ? '' : String(value)} onChangeText={text => update(field.key, text)} secureTextEntry={field.type === 'secret'} placeholder={field.type === 'secret' ? '留空不修改' : field.label} placeholderTextColor={C.muted} style={[s.input, multiline && s.multiline]} multiline={multiline} textAlignVertical={multiline ? 'top' : 'center'} autoCapitalize={field.type === 'url' || field.type === 'secret' ? 'none' : 'sentences'} autoCorrect={false} /></View>;
       })}
@@ -391,7 +389,7 @@ function ManagementEditor({
 
 function Empty({title}: {title: string}) {
   const s = useThemedStyles(styles);
-  return <View style={s.empty}><Text style={s.emptyTitle}>{title}</Text><Text style={s.emptyText}>可通过底部按钮创建，或在 Desktop 中继续配置。</Text></View>;
+  return <View style={s.empty}><Text style={s.emptyTitle}>{title}</Text></View>;
 }
 
 function AboutCard() {

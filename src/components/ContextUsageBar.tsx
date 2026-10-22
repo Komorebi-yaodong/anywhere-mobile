@@ -17,7 +17,7 @@ export function ContextUsageBar({usage, capacity, ratio, preview = false, autoCo
   const s = useThemedStyles(styles);
   const theme = useTheme();
   const valid = usage && ['ready', 'calculating', 'stale', 'unavailable'].includes(usage.status) && [usage.systemTokens, usage.conversationTokens, usage.toolTokens, usage.updatedAt].every(value => Number.isFinite(value) && value >= 0);
-  if (!valid || !usage || !usage.updatedAt) return <View style={s.card}><Text style={s.title}>当前上下文组成</Text><Text style={s.hint}>统计暂不可用；旧版 Desktop 可能不支持，现有设置仍可使用。</Text></View>;
+  if (!valid || !usage || !usage.updatedAt) return <View style={s.card}><Text style={s.title}>当前上下文组成</Text><Text style={s.hint}>统计暂不可用</Text></View>;
   const layout = contextUsageLayout(usage, capacity, ratio);
   const colors = theme.dark ? ['#A9C5FF', '#A3D8B2', '#F0B89C'] : ['#4265A5', '#39734C', '#A14A32'];
   const names = ['系统提示词', '对话', '工具'];
@@ -33,7 +33,7 @@ export function ContextUsageBar({usage, capacity, ratio, preview = false, autoCo
     <Text style={layout.over ? s.warning : s.hint}>{layout.over ? `超出容量 ${layout.over.toLocaleString()} tokens` : `剩余 ${layout.remaining.toLocaleString()} tokens`}</Text>
     <Text style={s.hint}>更新于 {new Date(usage.updatedAt).toLocaleTimeString()}</Text>
 
-    {usage.status !== 'ready' ? <Text style={s.hint}>{usage.status === 'calculating' ? '统计更新中，当前显示上次结果。' : '统计可能已过期，当前显示上次结果。'}</Text> : null}
+    {usage.status !== 'ready' ? <Text style={s.hint}>{usage.status === 'calculating' ? '更新中' : '统计已过期'}</Text> : null}
   </View>;
 }
 const styles = StyleSheet.create({

@@ -11,8 +11,6 @@ import {
   StyleSheet,
   Text,
   View,
-  type StyleProp,
-  type ViewStyle,
 } from 'react-native';
 import {Dirs, FileSystem} from 'react-native-file-access';
 import Video, {type VideoRef} from 'react-native-video';
@@ -253,7 +251,7 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
       style={styles.imagePress}
     >
       <Image accessibilityLabel="聊天图片" source={{uri: state.uri}} resizeMode="contain" style={styles.image} onError={onError} />
-      <View pointerEvents="none" style={styles.imageHint}><Text style={styles.imageHintText}>点击放大 · 长按保存</Text></View>
+
     </Pressable>
     <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
       <View style={styles.imageModal}>
@@ -264,7 +262,6 @@ function ImagePreview({state, onError}: {state: MediaState; onError: () => void}
           <Pressable accessibilityLabel="保存当前图片" style={styles.saveButton} onPress={save}><Text style={styles.saveButtonText}>{saving ? '保存中' : '保存'}</Text></Pressable>
           <Pressable accessibilityLabel="关闭图片预览" style={styles.closeButton} onPress={close}><Text style={styles.closeButtonText}>关闭</Text></Pressable>
         </View>
-        <Text style={styles.imageGestureHint}>按钮缩放 · 放大后拖动 · 双击复位</Text>
         <View accessibilityLabel="图片预览画布" onLayout={event => setViewport({width: event.nativeEvent.layout.width, height: event.nativeEvent.layout.height})} style={styles.imageGestureSurface} {...panResponder.panHandlers}>
           <View pointerEvents="none" style={styles.imageFullscreen}>
             <Animated.Image source={{uri: state.uri}} resizeMode="contain" style={[styles.imageFullscreen, {transform: [{translateX: pan.x}, {translateY: pan.y}, {scale}]}]} onError={onError} />
@@ -317,7 +314,7 @@ function AudioPlayer({state, onError}: {state: MediaState; opaque: boolean; onEr
   </View>;
 }
 
-function VideoPlayer({state, opaque, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
+function VideoPlayer({state, onError}: {state: MediaState; opaque: boolean; onError: () => void}) {
   const styles = useThemedStyles(baseStyles);
   const ref = useRef<VideoRef>(null);
   const [playing, setPlaying] = useState(false);
@@ -348,7 +345,7 @@ function VideoPlayer({state, opaque, onError}: {state: MediaState; opaque: boole
       {!playing ? <View style={styles.videoPlayBadge}><Text style={styles.videoPlayText}>▶</Text></View> : null}
     </Pressable>
     <View style={styles.videoFooter}>
-      <View style={styles.videoFooterCopy}><Text style={styles.videoEyebrow}>{opaque ? '受限缓存视频' : 'HTTPS 视频'}</Text><View style={styles.videoProgressTrack}><View style={[styles.videoProgressFill, {width: `${progress}%`}]} /></View><Text style={styles.videoTime}>{formatTime(position)} / {formatTime(duration)}</Text></View>
+      <View style={styles.videoFooterCopy}><View style={styles.videoProgressTrack}><View style={[styles.videoProgressFill, {width: `${progress}%`}]} /></View><Text style={styles.videoTime}>{formatTime(position)} / {formatTime(duration)}</Text></View>
       <Pressable accessibilityLabel="视频全屏播放" style={styles.fullscreenButton} onPress={() => ref.current?.presentFullscreenPlayer()}><Text style={styles.fullscreenButtonText}>全屏</Text></Pressable>
     </View>
   </View>;
@@ -374,14 +371,14 @@ function MediaPreview({media, desktopId, conversationId, request}: {media: Conve
     return () => { active = false; };
   }, [conversationId, desktopId, media.opaque, media.uri, request]);
   if (error) return <View style={styles.mediaPlaceholder}><Text style={styles.mediaError}>{error}</Text></View>;
-  if (!state) return <View style={styles.mediaPlaceholder}><ActivityIndicator color={C.primary} /><Text style={styles.mediaHint}>正在验证并获取加密媒体…</Text></View>;
+  if (!state) return <View style={styles.mediaPlaceholder}><ActivityIndicator accessibilityLabel="正在加载" color={C.primary} /></View>;
   if (media.kind === 'image') return <ImagePreview state={state} onError={() => setError('图片加载失败')} />;
   if (media.kind === 'video') return <VideoPlayer state={state} opaque={media.opaque} onError={() => setError('视频播放失败')} />;
   return <AudioPlayer state={state} opaque={media.opaque} onError={() => setError('音频播放失败')} />;
 }
 
 /** Render constrained Markdown/HTML media. Direct media is HTTPS-only; local Desktop media must use opaque IDs. */
-export function ConversationMarkdown({value, desktopId, conversationId, request, color, surfaceStyle}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string; surfaceStyle?: StyleProp<ViewStyle>}) {
+export function ConversationMarkdown({value, desktopId, conversationId, request, color}: {value: string; desktopId: string; conversationId: string; request: RemoteRequest; color?: string}) {
   const styles = useThemedStyles(baseStyles);
   const theme = useTheme();
   color = color ? theme.color(color) : theme.colors.text;
@@ -389,13 +386,13 @@ export function ConversationMarkdown({value, desktopId, conversationId, request,
   const blocks = useMemo(() => file ? [] : parseConversationContent(value), [file, value]);
   if (file) return <View style={styles.root}><Text selectable style={{color: color || C.text}}>{file}</Text></View>;
   return <View style={styles.root}>{blocks.map(block => block.kind === 'text'
-    ? <NativeMarkdown key={`text-${block.value.slice(0, 32)}-${blocks.indexOf(block)}`} value={block.value} color={color} surfaceStyle={surfaceStyle} />
-    : <View key={block.media.key} collapsable={false} style={surfaceStyle}><MediaPreview media={block.media} desktopId={desktopId} conversationId={conversationId} request={request} /></View>,
+    ? <NativeMarkdown key={`text-${block.value.slice(0, 32)}-${blocks.indexOf(block)}`} value={block.value} color={color} />
+    : <MediaPreview key={block.media.key} media={block.media} desktopId={desktopId} conversationId={conversationId} request={request} />,
   )}</View>;
 }
 
 const baseStyles = StyleSheet.create({
-  root: {gap: 9, minWidth: 0, maxWidth: '100%', flexGrow: 0, flexShrink: 0},
+  root: {width: '100%', gap: 9, minWidth: 0, maxWidth: '100%', flexGrow: 0, flexShrink: 0},
   mediaPlaceholder: {minHeight: 68, alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 14, backgroundColor: C.mutedSurface},
   mediaHint: {fontSize: 12, color: C.muted},
   mediaError: {fontSize: 12, color: C.danger},

@@ -45,6 +45,23 @@ it('uses a sorted project picker and places delete left of save in one row', asy
 });
 
 
+it('uses only the action button for updating progress with no duplicate confirmation notice', async () => {
+ const f = fixture(); let resolve!: (value: unknown) => void;
+ f.tracked.mockImplementation(() => ({requestId: 'menu-operation-fixture', response: new Promise(yes => {resolve = yes;}) as Promise<any>}));
+ const root = await render(f.props);
+ await act(async () => button(root, '选择所属项目').props.onPress());
+ await act(async () => button(root, '项目 新项目').props.onPress());
+ await act(async () => {button(root, '保存到项目').props.onPress();});
+ const {Text} = require('react-native');
+ expect(root.root.findAllByType(Text).filter(node => node.props.children === '正在更新')).toHaveLength(1);
+ expect(JSON.stringify(root.toJSON())).not.toContain('正在等待');
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '会话操作提示')).toHaveLength(0);
+ await act(async () => resolve({ok: true}));
+ expect(f.completed).toHaveBeenCalledWith(false);
+ await act(async () => root.unmount());
+});
+
+
 it('requires explicit destructive confirmation and deletes only the target conversation', async () => {
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
   const f = fixture(); const root = await render(f.props);

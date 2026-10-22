@@ -182,6 +182,26 @@ test('renders document cards separately and edits only prose, never file labels 
 });
 
 
+test('document attachments have natural vertical height and assistant replies remain in one full-width bubble', async () => {
+ openConfigSession();
+ const reply = '> 文档分析\n\n' + Array.from({length: 7}, (_, i) => `- 第${i}项\n  - 子项正文\n\n`).join('') + '| 章节 | 内容 | 状态 | 原文 | 建议 |\n|---|---|---|---|---|\n| A | B | C | D | E |\n\n回复末尾保留';
+ const base = {reasoningContent: '', toolCalls: [], timestamp: '', completedTimestamp: ''};
+ mockWorkspaceMessages = [{messageId: 'doc-user', uiMessageId: 'doc-user', role: 'user', order: 1, payload: {...base, content: [{type: 'text', text: '分析文档'}, {type: 'file', name: 'synthetic.docx'}]}}, {messageId: 'doc-assistant', uiMessageId: 'doc-assistant', role: 'assistant', order: 2, payload: {...base, content: [{type: 'text', text: reply}]}}];
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+ await enterFixtureChat(root);
+ const {View} = require('react-native');
+ const bubble = root.root.findAllByType(View).filter(node => node.props.testID === 'message-bubble-doc-assistant');
+ expect(bubble).toHaveLength(1); expect(StyleSheet.flatten(bubble[0].props.style)).toMatchObject({width: '100%', flexGrow: 0, flexShrink: 0});
+ const attachment = root.root.findAllByType(Text).find(node => node.props.children === 'synthetic.docx')!;
+ expect(StyleSheet.flatten(attachment.parent!.props.style)).toMatchObject({flexDirection: 'row', flexGrow: 0, flexShrink: 0});
+ const output = JSON.stringify(root.toJSON());
+ expect(output).toContain('回复末尾保留'); expect(output).not.toContain('文件内容已保留'); expect(output).not.toContain('编辑正文不会');
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '复制消息' && typeof node.props.onPress === 'function')).toHaveLength(2);
+ await act(async () => root.unmount());
+});
+
+
 test('long multi-block replies keep one message identity and the following message visible', async () => {
  openConfigSession();
  const long = Array.from({length: 32}, (_, i) => `## Section ${i}\n\n正文\n\n\`\`\`text\nrow-${i}\n\`\`\`\n\n`).join('') + '| A | B |\n|---|---|\n| x | y |\n\n长回复末尾';
@@ -190,7 +210,8 @@ test('long multi-block replies keep one message identity and the following messa
  let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
  await enterFixtureChat(root);
- expect(root.root.findAll(node => node.props.testID === 'markdown-surface-segment' && node.props.style).length).toBeGreaterThan(32);
+ expect(root.root.findAll(node => node.props.testID === 'markdown-surface-segment')).toHaveLength(0);
+ expect(root.root.findAllByType(require('react-native').View).filter(node => node.props.testID === 'message-bubble-long-fixture')).toHaveLength(1);
  expect(root.root.findAll(node => node.props.testID === 'message-row-after-long-fixture').length).toBeGreaterThan(0);
  expect(JSON.stringify(root.toJSON())).toContain('长回复末尾'); expect(JSON.stringify(root.toJSON())).toContain('后续消息仍在');
  await act(async () => root.unmount());
@@ -201,6 +222,14 @@ test('sorts session MCP and Skill by display name without mutating source', () =
  expect(filterSessionMcpServers(items, ['z']).map(item => item.id)).toEqual(['a2', 'a10', 'z']);
  expect(filterSessionSkills(items).map(item => item.id)).toEqual(['a2', 'a10', 'z']);
  expect(items.map(item => item.id)).toEqual(['z', 'a10', 'a2']);
+});
+
+
+test('session MCP type aliases match 内置 and builtin equally with and without newer metadata', () => {
+ const servers = [{id: 'tools', name: '工具', tags: [], preset: false, transport: 'builtin'}, {id: 'builtin_files', name: '文件', tags: [], preset: false}, {id: 'other', name: '远程', tags: [], preset: true, transport: 'sse'}];
+ for (const query of ['内置', 'builtin', 'BUILTIN']) expect(filterSessionMcpServers(servers, [], {query}).map(item => item.id)).toEqual(['tools', 'builtin_files']);
+ expect(filterSessionMcpServers(servers, ['tools'], {query: '内置', quickFilter: 'selected'}).map(item => item.id)).toEqual(['tools']);
+ expect(filterSessionMcpServers(servers, [], {query: '内置', quickFilter: 'preset'})).toHaveLength(0);
 });
 
 
@@ -591,6 +620,25 @@ test('long pressing a sidebar row opens the target conversation menu, not a name
   await act(async () => root.unmount());
 });
 
+test('session MCP settings search finds builtin services with the Chinese 内置 alias', async () => {
+ openConfigSession(); const props = configFixture(); const mockedRequest = props.request as jest.Mock; const base = mockedRequest.getMockImplementation()!;
+ mockedRequest.mockImplementation(async (id: string, method: string, params?: Record<string, unknown>) => {
+  const value = await base(id, method, params) as any;
+  if (method === 'conversation.request.get') value.result.options.mcpServers = [{id: 'public-tools-fixture', name: '工具集', transport: 'builtin', tags: [], preset: false}, {id: 'http-tools-fixture', name: '远程工具', transport: 'sse', tags: [], preset: false}];
+  return value;
+ });
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置' && node.props.onPress)[0].props.onPress());
+ await act(async () => button(root, 'MCP').props.onPress());
+ const search = root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '搜索会话 MCP')!;
+ await act(async () => search.props.onChangeText('内置'));
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '选择会话 MCP 工具集').length).toBeGreaterThan(0);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '选择会话 MCP 远程工具')).toHaveLength(0);
+ await act(async () => root.unmount());
+});
+
+
 test('context settings render the Desktop usage summary above the controls', async () => {
   openConfigSession();
   const props = configFixture();
@@ -785,7 +833,7 @@ test('allows model configuration while generating without changing the current r
   expect(props.tracked).toHaveBeenCalledWith(expect.any(String), 'conversation.config.get', {conversationId: 'conversation-shell-fixture'}, 30_000);
   const modelRows = root.root.findAll(node => node.props.disabled === false && typeof node.props.onPress === 'function' && node.findAll(child => child.props.children === 'Fixture').length > 0);
   expect(modelRows.length).toBeGreaterThan(0);
-  expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('下一轮发送时生效'))).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('下一轮发送时生效'))).toBe(false);
   await act(async () => modelRows[0].props.onPress());
   expect(props.tracked.mock.calls.some(([, method]) => method === 'conversation.config.patch')).toBe(true);
   await act(async () => root.unmount());

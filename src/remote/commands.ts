@@ -129,7 +129,7 @@ export type ConversationConfigResult = {
     models: Array<{value: string; label: string}>;
     reasoningEfforts: string[];
     voices: string[];
-    mcpServers: Array<{id: string; name: string; tags: string[]; preset: boolean}>;
+    mcpServers: Array<{id: string; name: string; tags: string[]; preset: boolean; transport?: string}>;
     skills: Array<{id: string; name: string}>;
   };
 };
