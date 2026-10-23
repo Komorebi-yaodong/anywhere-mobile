@@ -1,10 +1,10 @@
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
-import {AccessibilityInfo, ActivityIndicator, Animated, StyleSheet, Text, View} from 'react-native';
+import {AccessibilityInfo, ActivityIndicator, Animated, Image, StyleSheet, Text, View} from 'react-native';
 import {Rect} from 'react-native-svg';
 import {ConversationLoading} from '../src/components/ConversationLoading';
 import {DesktopBrandMark} from '../src/components/DesktopBrandMark';
-import {ThemeProvider, palettes, themePreferenceStore} from '../src/components/theme';
+import {ThemeProvider, themePreferenceStore} from '../src/components/theme';
 
 beforeEach(() => {jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(false);});
 afterEach(() => jest.restoreAllMocks());
@@ -17,12 +17,19 @@ it.each(['light', 'dark'] as const)('centers a text-free moving brand with reada
  expect(StyleSheet.flatten(host.props.style)).toMatchObject({width: '100%', alignItems: 'center', justifyContent: 'center', minHeight: 76});
  expect(root.root.findAllByType(Text)).toHaveLength(0);
  expect(root.root.findAllByType(ActivityIndicator)).toHaveLength(0);
- const brand = root.root.findByType(DesktopBrandMark);
- expect(brand.props).toMatchObject({size: 44, bodyColor: palettes[mode].primary, faceColor: palettes[mode].background, showEyes: false});
- expect(brand.findAllByType(Rect)).toHaveLength(8); // Body + mouth, eyes have independent motion.
+ const brand = root.root.findByType(Image);
+ expect(brand.props.source).toBe(require('../android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png'));
+ expect(StyleSheet.flatten(brand.props.style)).toMatchObject({width: 44, height: 44});
+ expect(StyleSheet.flatten(brand.props.style).tintColor).toBeUndefined();
+ expect(brand.props.tintColor).toBeUndefined();
+ expect(root.root.findAllByType(DesktopBrandMark)).toHaveLength(0);
+ for (const id of ['loading-brand-eye-mask-left', 'loading-brand-eye-mask-right']) {
+  const mask = root.root.findAllByType(View).find(node => node.props.testID === id)!;
+  expect(StyleSheet.flatten(mask.props.style).backgroundColor).toBe('#000000');
+ }
  for (const id of ['loading-brand-eye-left', 'loading-brand-eye-right']) {
   const eye = root.root.findAllByType(View).find(node => node.props.testID === id)!;
-  expect(StyleSheet.flatten(eye.props.style).backgroundColor).toBe(palettes[mode].background);
+  expect(StyleSheet.flatten(eye.props.style)).toMatchObject({backgroundColor: '#FFFFFF', borderRadius: 4 * 44 / 192, width: 18 * 44 / 192, height: 23 * 44 / 192});
  }
  await act(async () => root.unmount());
 });
@@ -50,7 +57,7 @@ it('respects initial reduce motion and live changes, stops old motion and remove
  const stop = jest.fn(); const loop = jest.spyOn(Animated, 'loop').mockReturnValue({start: jest.fn(), stop, reset: jest.fn()});
  let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<ConversationLoading />);});
- expect(loop).not.toHaveBeenCalled(); expect(root.root.findAllByType(DesktopBrandMark)).toHaveLength(1);
+ expect(loop).not.toHaveBeenCalled(); expect(root.root.findAllByType(Image)).toHaveLength(1);
  const change = subscription.mock.calls.filter(([event]) => String(event) === 'reduceMotionChanged').at(-1)![1] as unknown as (value: boolean) => void;
  expect(subscription.mock.calls[0][0]).toBe('reduceMotionChanged');
  await act(async () => change(false)); expect(loop).toHaveBeenCalledTimes(1);

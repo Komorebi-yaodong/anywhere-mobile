@@ -32,6 +32,17 @@ describe('Android Desktop brand asset boundary', () => {
     expect(mark).toContain("bodyColor = '#000000', faceColor = '#FFFFFF', showEyes = true");
   });
 
+  it('uses the actual rounded black-and-white PNG for loading, never a theme-tinted legacy SVG', () => {
+    const loading = fs.readFileSync(path.join(root, 'src', 'components', 'ConversationLoading.tsx'), 'utf8');
+    expect(loading).toContain("require('../../android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png')");
+    expect(loading).not.toContain('DesktopBrandMark');
+    expect(loading).not.toContain('theme.colors');
+    expect(loading).not.toContain('tintColor');
+    expect(loading).toContain("backgroundColor: '#000000'");
+    expect(loading).toContain("backgroundColor: '#FFFFFF'");
+    expect(loading).toContain('borderRadius: 4 * unit');
+  });
+
   it('uses Anywhere Mobile as the launcher display name in every Android variant', () => {
     const strings = fs.readFileSync(
       path.join(root, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'),
