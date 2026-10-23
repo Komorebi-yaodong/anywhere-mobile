@@ -17,6 +17,19 @@ const desktops = fs.readFileSync(
 );
 
 describe('Remote connection liveness boundaries', () => {
+  it('aligns bounded native transports and private recording reads with 512 KiB uploads', () => {
+    const media = fs.readFileSync(path.join(root, 'android', 'app', 'src', 'main', 'java', 'com', 'anywheremobile', 'MediaCaptureModule.kt'), 'utf8');
+    expect(android).toContain('MAX_SOCKET_BYTES = 1024 * 1024');
+    expect(android).toContain('MAX_RESPONSE_BYTES = 512L * 1024L');
+    expect(ios).toContain('socket.maximumMessageSize = 1024 * 1024');
+    expect(ios).toContain('maxResponseBytes = 512 * 1024');
+    expect(media).toContain('length>524288');
+    expect(media).not.toContain('length>131072');
+    expect(ios).toContain('length<=524288');
+    expect(ios).not.toContain('length<=131072');
+  });
+
+
   it('uses transport pings for WebSocket idle liveness without weakening HTTPS timeouts', () => {
     expect(android).toContain('transportClient(options, endpoint, webSocket = true)');
     expect(android).toContain('transportClient(options, endpoint, webSocket = true)');

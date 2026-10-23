@@ -1,4 +1,5 @@
 import {createP256KeyPair, randomBase64Url} from '../src/remote/crypto';
+import {encodeBase64Url, REMOTE_MAX_FRAME_BYTES} from '../src/remote/protocol';
 import type {
   RemoteCryptoSession,
   SessionHello,
@@ -148,12 +149,27 @@ describe('RemoteClient encrypted transport boundary', () => {
   });
 
 
+  it('sends an actual 512 KiB chunk inside a bounded encrypted frame and keeps ping working', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    try {
+      await client.connect();
+      const data = encodeBase64Url(new Uint8Array(512 * 1024).fill(7));
+      await expect(client.request('attachment.chunk', {uploadId: 'upload-client-boundary-0001', index: 0, data})).resolves.toMatchObject({method: 'attachment.chunk', e2ee: true});
+      const encrypted = mockSentTexts.map(text => JSON.parse(text)).find(frame => frame.type === 'remote.encrypted');
+      const bytes = JSON.stringify(encrypted).length;
+      expect(bytes).toBeGreaterThan(512 * 1024);
+      expect(bytes).toBeLessThanOrEqual(REMOTE_MAX_FRAME_BYTES);
+      await expect(client.request('remote.ping')).resolves.toMatchObject({e2ee: true});
+    } finally {await client.close();}
+  });
+
+
   it('rejects a locally oversized frame without disconnecting or consuming its send sequence', async () => {
     const statuses: string[] = [];
     const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onStatus: value => statuses.push(value)});
     try {
       await client.connect();
-      await expect(client.request('attachment.chunk', {data: 'a'.repeat(210000)})).rejects.toMatchObject({code: 'remote_payload_size_invalid'});
+      await expect(client.request('attachment.chunk', {data: 'a'.repeat(REMOTE_MAX_FRAME_BYTES * 3 / 4)})).rejects.toMatchObject({code: 'remote_payload_size_invalid'});
       expect(statuses.at(-1)).toBe('online');
       await expect(client.request('remote.ping')).resolves.toMatchObject({e2ee: true});
       const frames = mockSentTexts.map(text => JSON.parse(text)).filter(item => item.type === 'remote.encrypted');

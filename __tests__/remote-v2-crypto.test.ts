@@ -15,6 +15,7 @@ import {
 } from '../src/remote/session';
 import {
   decodeBase64Url,
+  REMOTE_MAX_FRAME_BYTES,
   RemoteProtocolError,
   stableStringify,
 } from '../src/remote/protocol';
@@ -283,11 +284,11 @@ describe('Remote v2 Desktop interoperability vectors', () => {
       receiveDirection: 'desktop-to-client',
     });
     expectCode(
-      () => session.encrypt({content: 'x'.repeat(300 * 1024)}),
+      () => session.encrypt({content: 'x'.repeat(REMOTE_MAX_FRAME_BYTES + 1)}),
       'remote_payload_size_invalid',
     );
-    // Plaintext fits but its Base64 ciphertext envelope exceeds 256 KiB.
-    expectCode(() => session.encrypt({data: 'a'.repeat(210000)}), 'remote_payload_size_invalid');
+    // Plaintext fits but its Base64 ciphertext envelope exceeds 1 MiB.
+    expectCode(() => session.encrypt({data: 'a'.repeat(REMOTE_MAX_FRAME_BYTES * 3 / 4)}), 'remote_payload_size_invalid');
 
     expect(session.encrypt({kind: 'request'}).sequence).toBe(1);
   });

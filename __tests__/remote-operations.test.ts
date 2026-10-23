@@ -40,28 +40,60 @@ describe('Remote attachment protocol', () => {
     expect(JSON.stringify(rpc.mock.calls)).not.toMatch(/file:\/\/|content:\/\/|localUri/);
   });
 
-  it('keeps only three ordered chunks in flight and finishes only after every validated receipt', async () => {
-    const data = new Uint8Array(400000).fill(7); const sha = sha256Base64Url(data);
+  it.each([65536, 512 * 1024])('keeps only three ordered %i-byte chunks in flight and finishes only after every validated receipt', async chunkSize => {
+    const data = new Uint8Array(chunkSize * 6 + 17).fill(7); const sha = sha256Base64Url(data);
     const receipts: Array<() => void> = []; const indices: number[] = []; let completed = false;
     const metadata = {name: 'large.jpg', type: 'image/jpeg', size: data.length, sha256: sha};
     const rpc = jest.fn((_id, method, params = {}) => {
       if (method === 'attachment.chunk') {
         const index = (params as any).index; indices.push(index);
-        return new Promise(resolve => receipts.push(() => resolve({ok: true, upload: {...metadata, uploadId, receivedBytes: Math.min(data.length, (index + 1) * 65536), nextChunkIndex: index + 1}})));
+        return new Promise(resolve => receipts.push(() => resolve({ok: true, upload: {...metadata, uploadId, receivedBytes: Math.min(data.length, (index + 1) * chunkSize), nextChunkIndex: index + 1}})));
       }
       if (method === 'attachment.complete') completed = true;
-      return Promise.resolve({ok: true, upload: {...metadata, uploadId, maxChunkBytes: 65536, receivedBytes: completed ? data.length : 0, nextChunkIndex: 0, state: completed ? 'completed' : 'uploading'}});
+      return Promise.resolve({ok: true, upload: {...metadata, uploadId, maxChunkBytes: chunkSize, receivedBytes: completed ? data.length : 0, nextChunkIndex: 0, state: completed ? 'completed' : 'uploading'}});
     });
     const nativeHash = jest.fn(async () => sha); const read = jest.fn(async () => new Uint8Array());
     const upload = uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {...metadata, read, hash: nativeHash, readBase64: async (offset, length) => require('base64-js').fromByteArray(data.slice(offset, offset + length))}});
     const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();};
     await flush(); expect(indices).toEqual([0, 1, 2]); expect(completed).toBe(false); expect(read).not.toHaveBeenCalled();
-    for (let index = 0; index < Math.ceil(data.length / 65536); index++) {
+    for (let index = 0; index < Math.ceil(data.length / chunkSize); index++) {
       receipts[index](); await flush();
       expect(indices.length - index - 1).toBeLessThanOrEqual(3);
     }
     await expect(upload).resolves.toMatchObject({state: 'completed'});
     expect(indices).toEqual([0, 1, 2, 3, 4, 5, 6]); expect(nativeHash).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([128 * 1024, 512 * 1024])('honors the peer chunk size %i, including older Desktops, without changing the file cap', async chunkSize => {
+    const data = new Uint8Array(512 * 1024 + 1).fill(9);
+    const lengths: number[] = [];
+    const read = jest.fn(async (offset: number, length: number) => {
+      expect(length).toBeLessThanOrEqual(512 * 1024);
+      return data.slice(offset, offset + length);
+    });
+    let metadata: Record<string, unknown> = {}; let received = 0; let next = 0;
+    const rpc = jest.fn(async (_id, method, params: Record<string, unknown> = {}) => {
+      if (method === 'attachment.begin') metadata = params;
+      if (method === 'attachment.chunk') {
+        const bytes = decodeBase64Url(params.data);
+        expect(params.index).toBe(next++); expect(bytes.length).toBeLessThanOrEqual(chunkSize);
+        lengths.push(bytes.length); received += bytes.length;
+      }
+      return {ok: true, upload: {...metadata, uploadId, maxChunkBytes: chunkSize, receivedBytes: received, nextChunkIndex: next, state: method === 'attachment.complete' ? 'completed' : 'uploading'}};
+    });
+    await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'boundary.wav', type: 'audio/wav', size: data.length, read}})).resolves.toMatchObject({state: 'completed'});
+    expect(lengths).toEqual([...Array(512 * 1024 / chunkSize).fill(chunkSize), 1]);
+    expect(() => validateAttachment({name: 'limit.bin', type: 'application/octet-stream', size: 25 * 1024 * 1024})).not.toThrow();
+    expect(() => validateAttachment({name: 'limit.bin', type: 'application/octet-stream', size: 25 * 1024 * 1024 + 1})).toThrow();
+  });
+
+  it('rejects a peer advertising more than 512 KiB before reading or sending upload chunks', async () => {
+    const read = jest.fn(async () => new Uint8Array());
+    const rpc = jest.fn(async () => ({upload: {uploadId, maxChunkBytes: 512 * 1024 + 1, receivedBytes: 0, nextChunkIndex: 0}}));
+    await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'fixture.bin', type: 'application/octet-stream', size: 1, read, hash: async () => sha256Base64Url(new Uint8Array([1]))}})).rejects.toMatchObject({code: 'remote_upload_response_invalid'});
+    expect(read).not.toHaveBeenCalled();
+    expect(rpc).toHaveBeenLastCalledWith(desktopId, 'attachment.abort', {uploadId});
+    expect(rpc).toHaveBeenCalledTimes(2);
   });
 
   it('drains in-flight chunks before aborting a refused upload and never retries', async () => {

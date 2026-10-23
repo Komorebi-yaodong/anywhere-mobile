@@ -6,7 +6,8 @@ export const REMOTE_PAIR_START_PATH = '/api/v2/pair/start';
 export const REMOTE_PAIR_CONFIRM_PATH = '/api/v2/pair/confirm';
 export const REMOTE_SOCKET_PATH = '/api/v2/socket';
 export const REMOTE_HEALTH_PATH = '/health';
-export const REMOTE_MAX_FRAME_BYTES = 256 * 1024;
+// 512 KiB attachment bytes expand twice through Base64URL + encrypted JSON.
+export const REMOTE_MAX_FRAME_BYTES = 1024 * 1024;
 export const REMOTE_MAX_REQUEST_BYTES = 128 * 1024;
 
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;

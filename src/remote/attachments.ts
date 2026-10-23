@@ -4,7 +4,7 @@ import type {RemoteRequest} from './api';
 import {decodeBase64Url, encodeBase64Url, normalizeIdentifier, remoteError} from './protocol';
 
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-export const MAX_ATTACHMENT_CHUNK_BYTES = 128 * 1024;
+export const MAX_ATTACHMENT_CHUNK_BYTES = 512 * 1024;
 const uploadWindow = 3;
 export type AttachmentSource = {
   name: string;

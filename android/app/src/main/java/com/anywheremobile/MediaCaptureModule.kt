@@ -66,7 +66,7 @@ class MediaCaptureModule(private val context: ReactApplicationContext) : ReactCo
   }
   @ReactMethod fun cancelAudio(promise: Promise) = synchronized(lock){cleanup(true);promise.resolve(null)}
   @ReactMethod fun readCaptureChunk(id:String,offset:Double,length:Double,promise:Promise){
-    try{val file=resolve(id);if(!offset.isFinite()||!length.isFinite()||offset%1.0!=0.0||length%1.0!=0.0||offset<0||length<1||length>131072||offset+length>file.length())throw IllegalArgumentException()
+    try{val file=resolve(id);if(!offset.isFinite()||!length.isFinite()||offset%1.0!=0.0||length%1.0!=0.0||offset<0||length<1||length>524288||offset+length>file.length())throw IllegalArgumentException()
       val bytes=ByteArray(length.toInt());RandomAccessFile(file,"r").use{it.seek(offset.toLong());it.readFully(bytes)}
       promise.resolve(android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP));bytes.fill(0)
     }catch(_:Exception){promise.reject("MEDIA_READ_FAILED","录音读取失败。")}
