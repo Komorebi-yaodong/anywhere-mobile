@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import {Image, ScrollView, Text, TextInput, StyleSheet} from 'react-native';
+import {Image, ScrollView, Text, TextInput, StyleSheet, View} from 'react-native';
 import {
   filterSessionMcpServers,
   filterSessionSkills,
@@ -18,6 +18,8 @@ import {ManagementSettings} from '../src/components/ManagementSettings';
 
 import {ConversationMessageList} from '../src/components/ConversationMessageList';
 
+import {ConversationLoading} from '../src/components/ConversationLoading';
+
 import {directoryMessage} from '../test-fixtures/directoryTree';
 
 import {ThemeProvider, palettes, themePreferenceStore} from '../src/components/theme';
@@ -28,6 +30,8 @@ import {ChatStartSwipe} from '../src/components/ChatStartSwipe';
 const mockCreate = jest.fn(async () => undefined);
 const mockCancel = jest.fn(async () => undefined);
 const mockSend = jest.fn(async () => undefined);
+
+const mockReaskLastAssistant = jest.fn(async () => undefined);
 const mockResendLastUser = jest.fn(async () => undefined);
 const mockSelectConversation = jest.fn();
 const mockTakeoverConversation = jest.fn(async () => undefined);
@@ -76,7 +80,7 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     refreshMessages: jest.fn(),
     removeMessageFromView: jest.fn(),
     removeQueuedSend: jest.fn(),
-    reaskLastAssistant: jest.fn(),
+    reaskLastAssistant: mockReaskLastAssistant,
     resendLastUser: mockResendLastUser,
     messagePage: {hasMore: false},
     conversationModel: mockConversationModel,
@@ -118,13 +122,14 @@ jest.mock('../src/hooks/useAudioRecording', () => ({
 }));
 
 function button(root: TestRenderer.ReactTestRenderer, label: string) {
-  const text = root.root
-    .findAllByType(Text)
-    .find(node => node.props.children === label);
-  let node = text?.parent;
-  while (node && typeof node.props.onPress !== 'function') node = node.parent;
-  if (!node) throw new Error(`Missing button ${label}`);
-  return node;
+  // A closing drawer can still contain a non-actionable profile name that
+  // matches a sheet option. Never depend on its 180ms animation finishing.
+  for (const text of root.root.findAllByType(Text).filter(node => node.props.children === label)) {
+    let node = text.parent;
+    while (node && typeof node.props.onPress !== 'function') node = node.parent;
+    if (node) return node;
+  }
+  throw new Error(`Missing button ${label}`);
 }
 beforeEach(() => {
   mockOpenedSessions = [];
@@ -137,6 +142,9 @@ beforeEach(() => {
   mockConversationModel = '';
   mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
   mockActiveTurn = null;
+
+  mockSend.mockReset().mockResolvedValue(undefined);
+  mockReaskLastAssistant.mockReset().mockResolvedValue(undefined);
   mockResendLastUser.mockClear();
   mockSelectConversation.mockClear();
   mockTakeoverConversation.mockClear();
@@ -318,9 +326,11 @@ test('attachment actions have identical natural row geometry, matching vector ic
  await act(async () => root.unmount());
 });
 
-test('shows the current model logo in the composer and a logo on the left of each model choice', async () => {
+test('shows the current model logo and selects the actionable model despite an exiting drawer with the same profile name', async () => {
  openConfigSession(); mockConversationModel = 'provider|gpt-fixture'; const props = configFixture(); let root!: TestRenderer.ReactTestRenderer;
- await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ // Keep the colliding profile text mounted deterministically, as SlidingDrawer
+ // does until its close-animation callback; Linux can reach the sheet first.
+ await act(async () => {root = TestRenderer.create(<View><Text>Fixture</Text><WorkspaceShell {...props} /></View>);}); await enterFixtureChat(root);
  const {ModelLogo} = require('../src/components/ModelLogo');
  const composer = root.root.findAll(node => node.props.accessibilityLabel === '选择模型' && node.props.onPress)[0];
  expect(composer.findByType(ModelLogo).props.model).toBe('provider|gpt-fixture');
@@ -331,6 +341,67 @@ test('shows the current model logo in the composer and a logo on the left of eac
  expect(rows.some(node => JSON.stringify(node).includes('Fixture'))).toBe(true);
  await act(async () => row.props.onPress());
  expect(root.root.findAll(node => node.props.accessibilityLabel === '选择模型' && node.props.onPress)[0].findByType(ModelLogo).props.model).toBe('fixture|model');
+ await act(async () => root.unmount());
+});
+
+
+test.each(['send', 'reask'] as const)('shows one inline loading indicator immediately after %s, without creating or hiding message bubbles', async action => {
+ openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ mockWorkspaceMessages = [{messageId: 'previous-reply', uiMessageId: 'previous-reply', role: 'assistant', order: 1, payload: {content: 'previous full reply', aiName: 'Previous Model', toolCalls: [], reasoningContent: '', timestamp: '', completedTimestamp: ''}}];
+ let resolveReceipt!: () => void;
+ const receipt = new Promise<void>(resolve => {resolveReceipt = resolve;});
+ const operation = action === 'send' ? mockSend : mockReaskLastAssistant;
+ operation.mockImplementationOnce(async () => {
+  mockActiveTurn = {requestId: 'loading-request', conversationId: 'conversation-shell-fixture', event: 'conversation.command.pending', terminal: false};
+  root.update(<WorkspaceShell {...props} />);
+  await receipt;
+ });
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ const indicators = () => root.root.findAllByType(ConversationLoading);
+ expect(indicators()).toHaveLength(0);
+ let dispatched: Promise<void> | undefined;
+ if (action === 'send') {
+  await act(async () => root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入消息与 AI 聊天')!.props.onChangeText('new request'));
+  await act(async () => {dispatched = root.root.findAll(node => node.props.accessibilityLabel === '发送' && typeof node.props.onPress === 'function')[0].props.onPress();});
+ } else {
+  await act(async () => {dispatched = root.root.findAll(node => node.props.accessibilityLabel === '重答' && node.props.onPress)[0].props.onPress();});
+ }
+ expect(indicators()).toHaveLength(1);
+ expect(root.root.findByType(ConversationMessageList).props.messages).toHaveLength(1);
+ expect(JSON.stringify(root.toJSON())).toContain('previous full reply');
+ expect(root.root.findAllByType(View).filter(node => node.props.testID === 'message-bubble-previous-reply')).toHaveLength(1);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === '停止' && typeof node.props.onPress === 'function')[0].props.disabled).not.toBe(true);
+ await act(async () => {resolveReceipt(); await dispatched;});
+ expect(indicators()).toHaveLength(1); // An ACK is not the end of generation.
+ mockActiveTurn = {...mockActiveTurn, event: 'assistant.delta', text: 'incoming', terminal: false};
+ await act(async () => root.update(<WorkspaceShell {...props} />)); expect(indicators()).toHaveLength(1);
+ mockActiveTurn = {...mockActiveTurn, event: 'assistant.completed', terminal: true};
+ await act(async () => root.update(<WorkspaceShell {...props} />)); expect(indicators()).toHaveLength(0);
+ expect(root.root.findByType(ConversationMessageList).props.messages).toEqual(mockWorkspaceMessages);
+ await act(async () => root.unmount());
+});
+
+test.each(['assistant.failed', 'assistant.cancelled', 'conversation.operation.failed'])('removes reply loading on %s without removing existing content', async event => {
+ openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ mockActiveTurn = {requestId: 'active-loading', conversationId: 'conversation-shell-fixture', terminal: false};
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ const loading = () => root.root.findAllByType(ConversationLoading);
+ expect(loading()).toHaveLength(1);
+ mockActiveTurn = {...mockActiveTurn, event, terminal: true};
+ await act(async () => root.update(<WorkspaceShell {...props} />)); expect(loading()).toHaveLength(0);
+ await act(async () => root.unmount());
+});
+
+test('hides loading while offline or viewing a different conversation, then restores a still-active request on reconnect', async () => {
+ openConfigSession(); const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+ mockActiveTurn = {requestId: 'active-loading', conversationId: 'conversation-shell-fixture', terminal: false};
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);}); await enterFixtureChat(root);
+ const loading = () => root.root.findAllByType(ConversationLoading);
+ expect(loading()).toHaveLength(1);
+ await act(async () => root.update(<WorkspaceShell {...props} desktop={{...props.desktop, status: '离线'}} />)); expect(loading()).toHaveLength(0);
+ await act(async () => root.update(<WorkspaceShell {...props} />)); expect(loading()).toHaveLength(1);
+ mockActiveTurn = {...mockActiveTurn, conversationId: 'other-conversation'};
+ await act(async () => root.update(<WorkspaceShell {...props} />)); expect(loading()).toHaveLength(0);
  await act(async () => root.unmount());
 });
 
@@ -424,7 +495,6 @@ test('document attachments have natural vertical height and assistant replies re
  let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
  await enterFixtureChat(root);
- const {View} = require('react-native');
  const bubble = root.root.findAllByType(View).filter(node => node.props.testID === 'message-bubble-doc-assistant');
  expect(bubble).toHaveLength(1); expect(StyleSheet.flatten(bubble[0].props.style)).toMatchObject({width: '100%', flexGrow: 0, flexShrink: 0});
  const attachment = root.root.findAllByType(Text).find(node => node.props.children === 'synthetic.docx')!;

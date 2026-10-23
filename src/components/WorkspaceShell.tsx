@@ -63,6 +63,8 @@ import {KeyboardDock} from './KeyboardDock';
 
 import {ConversationMessageList, MessageLayoutInteractionContext, type ConversationMessageListHandle} from './ConversationMessageList';
 
+import {ConversationLoading} from './ConversationLoading';
+
 import {ConversationMenu} from './ConversationMenu';
 
 import {sortByName} from './nameSort';
@@ -1653,6 +1655,7 @@ const ChatPage = React.forwardRef<
               </Pressable>
             ) : null
           }
+          footer={connected && activeTurn && !activeTurn.terminal ? <ConversationLoading /> : null}
           renderMessage={item => (
             <MessageCard
               message={item}

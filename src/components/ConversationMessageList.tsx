@@ -24,12 +24,13 @@ export const ConversationMessageList = React.forwardRef<ConversationMessageListH
   messages: RemoteMessage[];
   renderMessage: (message: RemoteMessage) => React.ReactNode;
   header?: React.ReactNode;
+  footer?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
   onPinnedChange: (pinned: boolean) => void;
   onOlder?: () => void;
   hasOlder?: boolean;
-}>(function ConversationMessageListView({messages, renderMessage, header, style, contentContainerStyle, onPinnedChange, onOlder, hasOlder}, ref) {
+}>(function ConversationMessageListView({messages, renderMessage, header, footer, style, contentContainerStyle, onPinnedChange, onOlder, hasOlder}, ref) {
   const host = useRef<ScrollView>(null);
   const rows = useRef(messages);
   rows.current = messages;
@@ -190,6 +191,7 @@ export const ConversationMessageList = React.forwardRef<ConversationMessageListH
           restoreAnchor();
         }}
       >{renderMessage(message)}</View>)}
+      {footer}
     </ScrollView>
   </MessageLayoutInteractionContext.Provider>;
 });

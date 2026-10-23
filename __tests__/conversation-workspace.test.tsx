@@ -89,6 +89,26 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it.each(['send', 'reask'] as const)('publishes %s progress before ACK and first token, then retires it on failure/cancellation/completion', async action => {
+    for (const terminal of ['assistant.completed', 'assistant.cancelled', 'assistant.failed']) {
+      const f = fixture(); const base = f.rpc.getMockImplementation()!;
+      f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A
+        ? Promise.resolve({...page(A), messages: [{uiMessageId: 'reply-to-reask', role: 'assistant', order: 1, payload: {content: 'unchanged reply'}}]}) : base(id, method, params));
+      let root!: TestRenderer.ReactTestRenderer; let operation!: Promise<void>;
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => {operation = action === 'send' ? f.state.sendMessage('new') : f.state.reaskLastAssistant('reply-to-reask');});
+      expect(f.state.activeTurn).toMatchObject({conversationId: A, terminal: false, event: 'conversation.command.pending', text: ''});
+      expect(f.tracked).toHaveBeenCalledTimes(1);
+      expect(f.state.messages[0].uiMessageId).toBe('reply-to-reask');
+      await act(async () => {f.response.resolve({ok: true}); await operation;});
+      expect(f.state.activeTurn?.terminal).toBe(false);
+      await act(async () => f.emit(terminal, 1));
+      expect(f.state.activeTurn).toMatchObject({terminal: true, event: terminal});
+      await act(async () => root.unmount());
+    }
+  });
+
+
   it('marks opened sessions ready only after a successful first response, including an empty list', async () => {
     const f = fixture(); const base = f.rpc.getMockImplementation()!; const opened = deferred<unknown>();
     f.rpc.mockImplementation((id, method, params) => method === 'conversation.opened.list' ? opened.promise : base(id, method, params));

@@ -62,6 +62,23 @@ async function fixture(count = 80) {
   return {root, handle, unmount, pinned, rows, outer, rowHost};
 }
 
+test('request loading is a footer, never a message or navigation row, and keeps history mounted', async () => {
+ const rows = [message(0), message(1)]; const unmount = jest.fn(); let root!: TestRenderer.ReactTestRenderer;
+ const render = (loading: boolean) => <ConversationMessageList messages={rows} renderMessage={row => <ExpandingRow message={row} unmount={unmount} />} onPinnedChange={() => {}} footer={loading ? <Text testID="request-footer">loading-fixture</Text> : null} />;
+ await act(async () => {root = TestRenderer.create(render(false));});
+ const row = root.root.findAll(node => node.props.testID === 'message-row-ui-1' && node.props.onLayout)[0];
+ await act(async () => root.update(render(true)));
+ const outer = root.root.findAllByType(ScrollView).find(node => node.props.accessibilityLabel === '聊天消息列表')!;
+ expect(outer.findAllByType(Text).map(node => node.props.children)).toContain('loading-fixture');
+ expect(root.root.findAll(node => node.props.testID === 'message-row-ui-1' && node.props.onLayout)[0]).toBe(row);
+ expect(root.root.findByType(ConversationMessageList).props.messages).toBe(rows);
+ await act(async () => root.update(render(false)));
+ expect(root.root.findAllByType(Text).some(node => node.props.children === 'loading-fixture')).toBe(false);
+ expect(unmount).not.toHaveBeenCalled();
+ await act(async () => root.unmount());
+});
+
+
 test('loads earlier history when the user scrolls to the top, not on initial layout', async () => {
  const onOlder = jest.fn(); let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<ConversationMessageList messages={[message(1)]} renderMessage={row => <Text>{String(row.payload.content)}</Text>} onPinnedChange={() => {}} hasOlder onOlder={onOlder} />);});
