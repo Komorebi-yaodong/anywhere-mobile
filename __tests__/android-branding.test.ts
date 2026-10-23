@@ -24,10 +24,12 @@ describe('Android Desktop brand asset boundary', () => {
       '<rect x="70" y="85" width="20" height="8"/>',
     ]) expect(source).toContain(fragment);
     for (const fragment of [
-      'x="20" y="40" width="120" height="80" fill="#000000"',
-      'x="45" y="60" width="15" height="15" fill="#FFFFFF"',
-      'x="70" y="85" width="20" height="8" fill="#FFFFFF"',
+      'x="20" y="40" width="120" height="80" fill={bodyColor}',
+      'x="45" y="60" width="15" height="15" fill={faceColor}',
+      'x="70" y="85" width="20" height="8" fill={faceColor}',
     ]) expect(mark).toContain(fragment);
+
+    expect(mark).toContain("bodyColor = '#000000', faceColor = '#FFFFFF', showEyes = true");
   });
 
   it('uses Anywhere Mobile as the launcher display name in every Android variant', () => {

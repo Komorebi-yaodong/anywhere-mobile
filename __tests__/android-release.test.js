@@ -107,6 +107,21 @@ it('push builds artifacts only; only manual publication receives contents write'
   expect(JSON.stringify(workflow)).not.toContain('macos'); expect(JSON.stringify(workflow)).not.toContain('xcodebuild');
 });
 
+it('explicitly installs supported SDK packages instead of setup-android v3 retired tools default', () => {
+  const setup = workflow.jobs.android.steps.find(step => step.uses === 'android-actions/setup-android@v3');
+  expect(setup.with.packages.split(/\s+/)).toEqual([
+    'platform-tools', 'platforms;android-36', 'build-tools;36.0.0', 'ndk;27.1.12297006', 'cmake;3.22.1',
+  ]);
+  expect(setup.with.packages.split(/\s+/)).not.toContain('tools');
+  expect(setup.with['log-accepted-android-sdk-licenses']).toBe(false);
+  const android = fs.readFileSync(path.join(root, 'android', 'build.gradle'), 'utf8');
+  for (const version of ['36.0.0', '27.1.12297006']) expect(setup.with.packages).toContain(version);
+  expect(android).toContain('compileSdkVersion = 36');
+  expect(android).toContain('ndkVersion = "27.1.12297006"');
+  expect(workflow.jobs.android.steps.some(step => step.name === 'Install Android SDK components')).toBe(false);
+});
+
+
 it('keeps signing secrets out of preview steps, clears temporary keys, and publishes only verified assets', () => {
   const steps = workflow.jobs.android.steps;
   for (const step of steps.filter(candidate => JSON.stringify(candidate).includes('${{ secrets.'))) expect(step.if).toBe("github.event_name == 'workflow_dispatch'");

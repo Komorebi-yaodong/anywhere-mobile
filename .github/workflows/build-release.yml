@@ -63,13 +63,15 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # v3 defaults to the retired "tools" package. Install only supported packages.
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.1.12297006 cmake;3.22.1'
+          log-accepted-android-sdk-licenses: false
       - uses: gradle/actions/setup-gradle@v4
       - run: pnpm install --frozen-lockfile
       - name: Resolve APK metadata
         id: metadata
         run: node scripts/android-release.cjs metadata
-      - name: Install Android SDK components
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
       - name: Restore production signing key
         if: github.event_name == 'workflow_dispatch'
         env:
