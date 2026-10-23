@@ -16,6 +16,7 @@ let mockRpcErrorCode: string | undefined;
 
 let mockV11 = false;
 let mockTransfer = false;
+let mockAdaptive = false;
 let mockTransferResult: unknown;
 let mockHoldChunk: Promise<void> | undefined;
 const mockTransferSnapshots = new Map<string, {bytes: Uint8Array; ref: any}>();
@@ -26,7 +27,7 @@ function mockSnapshot(value: unknown) {
   const {canonicalBytes} = require('../src/remote/protocol');
   const {sha256} = require('@noble/hashes/sha2.js');
   const bytes = canonicalBytes(value);
-  const ref = {id: randomBase64Url(24), totalBytes: bytes.length, sha256: Array.from(sha256(bytes) as Uint8Array, b => b.toString(16).padStart(2, '0')).join(''), chunkBytes: 48 * 1024};
+  const ref = {id: randomBase64Url(24), totalBytes: bytes.length, sha256: Array.from(sha256(bytes) as Uint8Array, b => b.toString(16).padStart(2, '0')).join(''), chunkBytes: mockAdaptive ? 512 * 1024 : 48 * 1024, ...(mockAdaptive ? {adaptive: true, maxChunkBytes: 8 * 1024 * 1024} : {})};
   mockTransferSnapshots.set(ref.id, {bytes, ref});
   return ref;
 }
@@ -70,7 +71,7 @@ jest.mock('../src/native/PinnedGateway', () => ({
                 protocolVersion: 2,
                 desktopId: mockDesktop.id,
                 device: {deviceId: mockIdentity.deviceId},
-                capabilities: mockTransfer ? ['remote.transfer.v1'] : mockV11 ? ['remote.contract.negotiate', 'resource.get', 'command.submit', 'operation.status.get'] : {},
+                capabilities: mockTransfer ? ['remote.transfer.v1', ...(mockAdaptive ? ['remote.transfer.adaptive.v1'] : [])] : mockV11 ? ['remote.contract.negotiate', 'resource.get', 'command.submit', 'operation.status.get'] : {},
               },
             }),
           ),
@@ -90,12 +91,15 @@ jest.mock('../src/native/PinnedGateway', () => ({
         }
         let transfer;
         if (mockTransfer) {
-          if (request?.method === 'remote.transfer.negotiate') value = {capabilities: ['remote.transfer.v1']};
+          if (request?.method === 'remote.transfer.negotiate') {
+            if (mockAdaptive) mockServerSession?.enableAdaptiveTransfers();
+            value = {capabilities: ['remote.transfer.v1', ...(mockAdaptive ? ['remote.transfer.adaptive.v1'] : [])]};
+          }
           if (request?.method === 'conversation.view.get') transfer = mockSnapshot(mockTransferResult);
           if (request?.method === 'remote.transfer.chunk') {
             if (mockHoldChunk) {await mockHoldChunk; mockHoldChunk = undefined;}
             const snapshot = mockTransferSnapshots.get(params.id)!;
-            const bytes = snapshot.bytes.slice(params.offset, params.offset + snapshot.ref.chunkBytes);
+            const bytes = snapshot.bytes.slice(params.offset, params.offset + (mockAdaptive ? params.length : snapshot.ref.chunkBytes));
             value = {...snapshot.ref, offset: params.offset, byteLength: bytes.length, data: require('../src/remote/protocol').encodeBase64Url(bytes)};
           }
           if (request?.method === 'remote.transfer.release') {mockTransferSnapshots.delete(params.id); value = {ok: true};}
@@ -155,8 +159,24 @@ describe('RemoteClient encrypted transport boundary', () => {
 
     mockV11 = false; mockMethods.length = 0; mockOperationItems.length = 0;
 
-    mockTransfer = false; mockTransferResult = undefined; mockHoldChunk = undefined; mockTransferSnapshots.clear();
+    mockTransfer = false; mockAdaptive = false; mockTransferResult = undefined; mockHoldChunk = undefined; mockTransferSnapshots.clear();
   });
+
+  it('explicitly negotiates adaptive transfers before consuming larger response chunks', async () => {
+    mockTransfer = true; mockAdaptive = true;
+    const full = {text: '完整协商结果'.repeat(150000)}; mockTransferResult = full;
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    try {
+      await client.connect();
+      await expect(client.request('conversation.view.get', {conversationId: 'conversation-adaptive-negotiation'})).resolves.toEqual(full);
+      expect(mockMethods[0]).toBe('remote.transfer.negotiate');
+      const encrypted = mockSentTexts.map(text => JSON.parse(text)).filter(frame => frame.type === 'remote.encrypted');
+      expect(encrypted.map(frame => frame.sequence)).toEqual(encrypted.map((_, index) => index + 1));
+      expect(mockMethods.filter(method => method === 'conversation.view.get')).toHaveLength(1);
+      await expect(client.request('remote.ping')).resolves.toMatchObject({e2ee: true});
+    } finally {await client.close();}
+  });
+
 
   it('transparently restores an entire large view while preserving the original request ID and connection', async () => {
     mockTransfer = true;

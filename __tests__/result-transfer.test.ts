@@ -14,6 +14,29 @@ function fixture(value: unknown) {
   return {ref, request, bytes};
 }
 
+it('uses adaptive lengths only for an explicitly negotiated adaptive reference', async () => {
+  const f = fixture({text: '自适应完整😀'.repeat(250000)});
+  const ref = {...f.ref, chunkBytes: 512 * 1024, maxChunkBytes: 8 * 1024 * 1024, adaptive: true};
+  const lengths: number[] = [];
+  let clock = 1000; const time = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+  f.request.mockImplementation(async (method, params) => {
+    if (method === 'remote.transfer.release') return {ok: true};
+    const offset = Number(params.offset), length = Number(params.length); lengths.push(length);
+    clock += 50;
+    const bytes = f.bytes.slice(offset, offset + length);
+    return {...ref, offset, byteLength: bytes.length, data: encodeBase64Url(bytes)};
+  });
+  try {
+    await expect(createResultTransferReader(f.request).read(ref)).rejects.toMatchObject({code: 'remote_transfer_invalid'});
+    expect(f.request).not.toHaveBeenCalled();
+    await expect(createResultTransferReader(f.request, true).read(ref)).resolves.toEqual(JSON.parse(require('../src/remote/protocol').decodeUtf8(f.bytes)));
+    expect(lengths.slice(0, 2)).toEqual([512 * 1024, 512 * 1024]);
+    expect(lengths.some(length => length >= 1024 * 1024)).toBe(true);
+    expect(lengths.every(length => length <= 8 * 1024 * 1024)).toBe(true);
+  } finally {time.mockRestore();}
+});
+
+
 it('fully restores large multilingual results and tasks without modifying caller data', async () => {
   const original = {text: '完整回复中文😀'.repeat(20000), tasks: Array.from({length: 10}, () => ({content: '中'.repeat(1200), steps: Array.from({length: 6}, () => ({content: '中'.repeat(1200)}))}))};
   const f = fixture(original);
@@ -63,6 +86,7 @@ it('deduplicates concurrent reads and drops disconnected results', async () => {
   f.request.mockImplementation(async (method, params) => {if (method === 'remote.transfer.chunk') await wait; return base(method, params);});
   const reader = createResultTransferReader(f.request);
   const a = reader.read(f.ref); const b = reader.read(f.ref);
+  await Promise.resolve();
   expect(f.request).toHaveBeenCalledTimes(1);
   reader.close(); resume();
   await expect(a).rejects.toMatchObject({code: 'remote_client_closed'});

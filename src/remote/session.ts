@@ -10,6 +10,7 @@ import {
   randomBase64Url,
   sha256Bytes,
 } from './crypto';
+import {TRANSFER_MAX_FRAME_BYTES} from './adaptiveTransfer';
 import {
   buildFrameAad,
   canonicalBytes,
@@ -71,6 +72,7 @@ export interface RemoteCryptoSession {
   readonly expectedReceiveSequence: number;
   encrypt(payload: Record<string, unknown>, nonce?: Uint8Array): EncryptedFrame;
   decrypt(frame: EncryptedFrame | Record<string, unknown>): Record<string, unknown>;
+  enableAdaptiveTransfers(): void;
   close(): void;
 }
 
@@ -346,6 +348,7 @@ export function createRemoteCryptoSession({
   let nextSendSequence = 1;
   let nextReceiveSequence = 1;
   let closed = false;
+  let maxFrameBytes = REMOTE_MAX_FRAME_BYTES;
 
   const assertOpen = () => {
     if (closed) {
@@ -368,11 +371,13 @@ export function createRemoteCryptoSession({
       ownedSendKey.fill(0);
       ownedReceiveKey.fill(0);
     },
+    enableAdaptiveTransfers() {assertOpen(); maxFrameBytes = TRANSFER_MAX_FRAME_BYTES;},
+
     encrypt(payload, nonce) {
       assertOpen();
       const sequence = nextSendSequence;
       const plaintext = canonicalBytes(payload);
-      if (plaintext.length > REMOTE_MAX_FRAME_BYTES) {
+      if (plaintext.length > maxFrameBytes) {
         plaintext.fill(0);
         throw remoteError('remote_payload_size_invalid');
       }
@@ -397,7 +402,7 @@ export function createRemoteCryptoSession({
         };
         // The envelope fields are ASCII (Base64URL/identifiers/numbers), so
         // string length is its UTF-8 byte length without allocating another copy.
-        if (JSON.stringify(frame).length > REMOTE_MAX_FRAME_BYTES) throw remoteError('remote_payload_size_invalid');
+        if (JSON.stringify(frame).length > maxFrameBytes) throw remoteError('remote_payload_size_invalid');
         nextSendSequence += 1;
         return frame;
       } finally {
@@ -407,6 +412,8 @@ export function createRemoteCryptoSession({
     },
     decrypt(frame) {
       assertOpen();
+
+      if (JSON.stringify(frame).length > maxFrameBytes) throw remoteError('remote_payload_size_invalid');
       if (
         !frame ||
         frame.type !== 'remote.encrypted' ||
@@ -440,11 +447,11 @@ export function createRemoteCryptoSession({
         ciphertext: typeof frame.ciphertext === 'string' ? frame.ciphertext : '',
         tag: typeof frame.tag === 'string' ? frame.tag : '',
         aad,
-        maxCiphertextBytes: REMOTE_MAX_FRAME_BYTES,
+        maxCiphertextBytes: maxFrameBytes,
       });
       try {
         const payload = parseJsonBytes(plaintext, {
-          maxBytes: REMOTE_MAX_FRAME_BYTES,
+          maxBytes: maxFrameBytes,
           code: 'remote_frame_payload_invalid',
         });
         nextReceiveSequence += 1;

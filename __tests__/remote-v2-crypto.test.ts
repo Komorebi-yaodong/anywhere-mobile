@@ -291,5 +291,11 @@ describe('Remote v2 Desktop interoperability vectors', () => {
     expectCode(() => session.encrypt({data: 'a'.repeat(REMOTE_MAX_FRAME_BYTES * 3 / 4)}), 'remote_payload_size_invalid');
 
     expect(session.encrypt({kind: 'request'}).sequence).toBe(1);
+
+    session.enableAdaptiveTransfers();
+    expectCode(() => session.encrypt({content: 'x'.repeat(16 * 1024 * 1024 + 1)}), 'remote_payload_size_invalid');
+    expectCode(() => session.encrypt({data: 'a'.repeat(12 * 1024 * 1024)}), 'remote_payload_size_invalid');
+    expect(session.encrypt({kind: 'request'}).sequence).toBe(2);
+
   });
 });

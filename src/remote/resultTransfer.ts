@@ -1,5 +1,6 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {decodeBase64Url, decodeUtf8, remoteError} from './protocol';
+import {createAdaptiveChunkSizer, transferBudget, TRANSFER_MIN_CHUNK_BYTES, TRANSFER_MAX_CHUNK_BYTES} from './adaptiveTransfer';
 
 export const RESULT_TRANSFER_CAPABILITY = 'remote.transfer.v1';
 const maxResultBytes = 32 * 1024 * 1024;
@@ -7,11 +8,11 @@ const maxActiveBytes = 64 * 1024 * 1024;
 const chunkBytes = 48 * 1024;
 const deadlineMs = 120_000;
 type Request = (method: string, params: Record<string, unknown>) => Promise<any>;
-type Reference = {id: string; totalBytes: number; sha256: string; chunkBytes: number};
+type Reference = {id: string; totalBytes: number; sha256: string; chunkBytes: number; maxChunkBytes?: number; adaptive?: boolean};
 const invalid = () => remoteError('remote_transfer_invalid');
 
 /** Reads immutable JSON, never re-dispatches the originating operation. */
-export function createResultTransferReader(request: Request) {
+export function createResultTransferReader(request: Request, adaptiveEnabled = false) {
   let closed = false;
   let activeBytes = 0;
   const pending = new Map<string, Promise<unknown>>();
@@ -19,7 +20,7 @@ export function createResultTransferReader(request: Request) {
     const ref = value as Reference;
     if (!ref || typeof ref !== 'object' || typeof ref.id !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(ref.id) ||
         !Number.isSafeInteger(ref.totalBytes) || ref.totalBytes < 1 || ref.totalBytes > maxResultBytes ||
-        typeof ref.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(ref.sha256) || ref.chunkBytes !== chunkBytes) throw invalid();
+        typeof ref.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(ref.sha256) || (ref.adaptive === true ? !adaptiveEnabled || ref.chunkBytes !== TRANSFER_MIN_CHUNK_BYTES || ref.maxChunkBytes !== TRANSFER_MAX_CHUNK_BYTES : ref.chunkBytes !== chunkBytes)) throw invalid();
     return ref;
   }
   async function read(value: unknown): Promise<unknown> {
@@ -32,6 +33,7 @@ export function createResultTransferReader(request: Request) {
     if (activeBytes + ref.totalBytes > maxActiveBytes) throw remoteError('remote_transfer_capacity');
     activeBytes += ref.totalBytes;
     const started = Date.now();
+    const sizing = ref.adaptive ? createAdaptiveChunkSizer() : null;
     const check = () => {
       if (closed) throw remoteError('remote_client_closed');
       if (Date.now() - started >= deadlineMs) throw remoteError('remote_transfer_timeout');
@@ -41,18 +43,25 @@ export function createResultTransferReader(request: Request) {
       try {
         for (let offset = 0; offset < bytes.length;) {
           check();
-          let reply;
-          // Retry only an identical read. Never retry a command or allocate a new snapshot.
-          for (let attempt = 0; ; attempt++) {
-            try {reply = await request('remote.transfer.chunk', {id: ref.id, offset}); break;}
-            catch (cause) {check(); if (attempt || (cause as {code?: string})?.code !== 'remote_request_timeout') throw cause;}
-          }
-          check();
-          const length = Math.min(chunkBytes, bytes.length - offset);
-          if (reply?.id !== ref.id || reply.offset !== offset || reply.totalBytes !== ref.totalBytes ||
-              reply.sha256 !== ref.sha256 || reply.byteLength !== length) throw invalid();
-          const chunk = decodeBase64Url(reply.data, 'transfer.data', {minBytes: length, maxBytes: length});
-          bytes.set(chunk, offset); chunk.fill(0); offset += length;
+          const length = sizing ? sizing.next(bytes.length - offset) : Math.min(chunkBytes, bytes.length - offset);
+          const release = await transferBudget.acquire(length);
+          const tick = Date.now();
+          try {
+            check();
+            let reply;
+            const params = {id: ref.id, offset, ...(sizing ? {length} : {})};
+            for (let attempt = 0; ; attempt++) {
+              try {reply = await request('remote.transfer.chunk', params); break;}
+              catch (cause) {check(); sizing?.slow(); if (attempt || (cause as {code?: string})?.code !== 'remote_request_timeout') throw cause;}
+            }
+            check();
+            if (reply?.id !== ref.id || reply.offset !== offset || reply.totalBytes !== ref.totalBytes ||
+                reply.sha256 !== ref.sha256 || reply.byteLength !== length) throw invalid();
+            const processing = Date.now();
+            const chunk = decodeBase64Url(reply.data, 'transfer.data', {minBytes: length, maxBytes: length});
+            bytes.set(chunk, offset); chunk.fill(0); offset += length;
+            sizing?.observe(length, Date.now() - tick, Date.now() - processing);
+          } finally {release();}
         }
         check();
         const digest = Array.from(sha256(bytes), byte => byte.toString(16).padStart(2, '0')).join('');

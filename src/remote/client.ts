@@ -2,6 +2,7 @@ import type {PairedDesktop} from '../domain/pairing';
 
 import {createBusinessRouter} from './businessRouter';
 import {createResultTransferReader, RESULT_TRANSFER_CAPABILITY} from './resultTransfer';
+import {ADAPTIVE_TRANSFER_CAPABILITY} from './adaptiveTransfer';
 import {
   GatewayEvent,
   PinnedGateway,
@@ -360,8 +361,10 @@ export class RemoteClient {
       if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes(RESULT_TRANSFER_CAPABILITY)) {
         const generation = this.eventGeneration;
         this.transferEnabled = true; // The request below explicitly opts in before any ready event can arrive.
-        this.transfers = createResultTransferReader((method, params) => this.rawRequestTracked(method, params, 20_000).response);
-        this.rawRequestTracked<{capabilities: string[]}>('remote.transfer.negotiate', {capabilities: [RESULT_TRANSFER_CAPABILITY]}).response.then(reply => {
+        const adaptive = event.payload.capabilities.includes(ADAPTIVE_TRANSFER_CAPABILITY);
+        if (adaptive) this.cryptoSession?.enableAdaptiveTransfers();
+        this.transfers = createResultTransferReader((method, params) => this.rawRequestTracked(method, params, 20_000).response, adaptive);
+        this.rawRequestTracked<{capabilities: string[]}>('remote.transfer.negotiate', {capabilities: [RESULT_TRANSFER_CAPABILITY, ...(adaptive ? [ADAPTIVE_TRANSFER_CAPABILITY] : [])]}).response.then(reply => {
           if (generation !== this.eventGeneration || this.status !== 'online') return;
           this.transferEnabled = reply?.capabilities?.includes(RESULT_TRANSFER_CAPABILITY) === true;
           this.finishConnect();

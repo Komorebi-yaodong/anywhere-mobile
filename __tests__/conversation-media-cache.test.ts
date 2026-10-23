@@ -39,6 +39,28 @@ test('failed downloads discard their partial file and can be retried without acc
 });
 
 
+test('downloads negotiated media in adaptive chunks and writes exactly the requested contiguous bytes', async () => {
+  const total = 4 * 1024 * 1024 + 17;
+  const sha256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+  const lengths: number[] = []; let next = 0, clock = 1000;
+  const time = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+  (FileSystem.readFile as jest.Mock).mockResolvedValue('');
+  (FileSystem.exists as jest.Mock).mockResolvedValue(false);
+  (FileSystem.stat as jest.Mock).mockResolvedValue({size: total, type: 'file'});
+  const rpc = jest.fn(async (_desktop, _method, params: any = {}) => {
+    const length = Number(params.length); clock += 50;
+    if (length) {expect(params.offset).toBe(next); next += length; lengths.push(length);}
+    return {ok: true, adaptive: true, maxChunkBytes: 8 * 1024 * 1024, mediaId: params.mediaId, mimeType: 'audio/wav', totalBytes: total, sha256, offset: params.offset, byteLength: length, data: length ? require('../src/remote/protocol').encodeBase64Url(new Uint8Array(length)) : ''};
+  });
+  try {
+    await expect(getConversationMediaCache({desktopId: 'desktop-adaptive-cache', conversationId, mediaId: 'media_adaptive_cache_0001', request: rpc as RemoteRequest})).resolves.toMatchObject({totalBytes: total});
+    expect(lengths[0]).toBe(512 * 1024); expect(lengths[1]).toBe(512 * 1024);
+    expect(lengths.some(length => length >= 1024 * 1024)).toBe(true);
+    expect(next).toBe(total);
+  } finally {time.mockRestore();}
+});
+
+
 test('downloads opaque local media only through the conversation-bound chunk API', async () => {
   const sha256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
   const requestMock = jest.fn(async (_desktopId: string, method: string, params?: Record<string, unknown>) => {

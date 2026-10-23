@@ -51,7 +51,7 @@ source = source.replace(/\/\/ RESULT_TRANSFER_READER_START[\s\S]*?\/\/ RESULT_TR
     });
     if (method === 'remote.transfer.release') cleanup = response;
     return response;
-  });
+  }, ref.adaptive === true);
   const result = await reader.read(ref);
   await cleanup;
   return result;

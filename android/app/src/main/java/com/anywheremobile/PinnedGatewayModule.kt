@@ -333,7 +333,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   companion object {
     private const val EVENT_NAME = "AnywhereGatewayEvent"
     private const val MAX_RESPONSE_BYTES = 512L * 1024L
-    private const val MAX_SOCKET_BYTES = 1024 * 1024
+    private const val MAX_SOCKET_BYTES = 16 * 1024 * 1024
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
   }
 }

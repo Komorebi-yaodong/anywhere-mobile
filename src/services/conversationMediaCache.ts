@@ -1,6 +1,7 @@
 import {Dirs, FileSystem} from 'react-native-file-access';
 
 import {ensureCacheDirectory} from './cacheDirectory';
+import {createAdaptiveChunkSizer, transferBudget, TRANSFER_MAX_CHUNK_BYTES} from '../remote/adaptiveTransfer';
 
 import type {RemoteRequest} from '../remote/api';
 import {decodeBase64Url, normalizeIdentifier} from '../remote/protocol';
@@ -19,6 +20,8 @@ type MediaReply = {
   offset: number;
   byteLength: number;
   data: string;
+  adaptive?: boolean;
+  maxChunkBytes?: number;
 };
 
 type CacheEntry = {uri: string; expiresAt: string; mimeType: string; totalBytes: number; sha256: string};
@@ -114,6 +117,10 @@ export async function getConversationMediaCache({
     if (!metadata.ok || metadata.mediaId !== safeMediaId || !Number.isSafeInteger(metadata.totalBytes) || metadata.offset !== 0 || metadata.byteLength !== 0 || metadata.data !== '' || metadata.totalBytes < 1 || metadata.totalBytes > maxBytes || !validSha256(metadata.sha256)) {
       throw new Error('媒体元数据无效。');
     }
+    if (metadata.adaptive && metadata.maxChunkBytes !== TRANSFER_MAX_CHUNK_BYTES) throw new Error('媒体元数据无效。');
+    const sizing = metadata.adaptive ? createAdaptiveChunkSizer() : null;
+    const maximum = sizing ? TRANSFER_MAX_CHUNK_BYTES : chunkBytes;
+
     const filePath = safePath(desktopId, safeMediaId, metadata.mimeType);
     const cached = await readValid(filePath, metadata);
     if (cached) return cached;
@@ -128,10 +135,10 @@ export async function getConversationMediaCache({
         reply.sha256.toLowerCase() !== metadata.sha256.toLowerCase() ||
         !Number.isSafeInteger(reply.byteLength) ||
         reply.byteLength < 1 ||
-        reply.byteLength > chunkBytes ||
+        reply.byteLength > maximum ||
         reply.offset < 0 || reply.offset + reply.byteLength > metadata.totalBytes
       ) throw new Error('媒体分块无效。');
-      const bytes = decodeBase64Url(reply.data, 'media.data', {minBytes: reply.byteLength, maxBytes: chunkBytes});
+      const bytes = decodeBase64Url(reply.data, 'media.data', {minBytes: reply.byteLength, maxBytes: maximum});
       const validLength = bytes.length === reply.byteLength;
       bytes.fill(0);
       if (!validLength) throw new Error('媒体分块长度错误。');
@@ -141,15 +148,19 @@ export async function getConversationMediaCache({
     };
     try {
       for (let offset = 0; offset < metadata.totalBytes;) {
-        const reply = await request<MediaReply>(desktopId, 'conversation.media.get', {
-          conversationId: safeConversationId,
-          mediaId: safeMediaId,
-          offset,
-          length: Math.min(chunkBytes, metadata.totalBytes - offset),
-        }, 60_000);
-        if (reply.offset !== offset) throw new Error('媒体分块顺序错误。');
-        await write(reply, offset > 0);
-        offset += reply.byteLength;
+        const length = sizing ? sizing.next(metadata.totalBytes - offset) : Math.min(chunkBytes, metadata.totalBytes - offset);
+        const release = await transferBudget.acquire(length);
+        const tick = Date.now();
+        try {
+          const reply = await request<MediaReply>(desktopId, 'conversation.media.get', {
+            conversationId: safeConversationId, mediaId: safeMediaId, offset, length,
+          }, 60_000);
+          if (reply.offset !== offset || reply.byteLength !== length) throw new Error('媒体分块顺序错误。');
+          const processing = Date.now();
+          await write(reply, offset > 0);
+          sizing?.observe(length, Date.now() - tick, Date.now() - processing);
+          offset += reply.byteLength;
+        } finally {release();}
       }
       const stat = await FileSystem.stat(temporary);
       const actual = await FileSystem.hash(temporary, 'SHA-256');

@@ -65,7 +65,7 @@ final class MediaCapture: NSObject, RCTBridgeModule {
   @objc(readCaptureChunk:offset:length:resolver:rejecter:)
   func readCaptureChunk(_ id: String, offset: Double, length: Double, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
     do {
-      guard offset.isFinite,length.isFinite,offset>=0,length>0,length<=524288,offset.rounded()==offset,length.rounded()==length else {throw NSError(domain:"MediaCapture",code:5)}
+      guard offset.isFinite,length.isFinite,offset>=0,length>0,length<=8388608,offset.rounded()==offset,length.rounded()==length else {throw NSError(domain:"MediaCapture",code:5)}
       let file=try FileHandle(forReadingFrom:capture(id));defer{try? file.close()}
       try file.seek(toOffset:UInt64(offset))
       let data=try file.read(upToCount:Int(length)) ?? Data()
@@ -176,7 +176,7 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
       let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
       setPolicy(policy, for: session)
       let socket = session.webSocketTask(with: socketURL)
-      socket.maximumMessageSize = 1024 * 1024
+      socket.maximumMessageSize = 16 * 1024 * 1024
       let pingTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
       pingTimer.schedule(deadline: .now() + .seconds(15), repeating: .seconds(15))
       pingTimer.setEventHandler { [weak socket] in

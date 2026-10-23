@@ -96,6 +96,32 @@ describe('Remote attachment protocol', () => {
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 
+  it('starts adaptive uploads at 512 KiB, changes later sizes without gaps and retains the 25 MiB cap', async () => {
+    const total = 24 * 1024 * 1024; const lengths: number[] = [];
+    const sha = sha256Base64Url(new Uint8Array([1]));
+    let received = 0, index = 0, clock = 1000;
+    const time = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    const rpc = jest.fn(async (_id, method, params: any = {}) => {
+      if (method === 'attachment.chunk') {
+        expect(params.index).toBe(index++);
+        const length = Math.floor(params.data.length * 3 / 4); lengths.push(length); received += length; clock += 50;
+      }
+      return {upload: {uploadId, adaptive: true, maxChunkBytes: 8 * 1024 * 1024, receivedBytes: received, nextChunkIndex: index, sha256: sha, size: total, state: method === 'attachment.complete' ? 'completed' : 'uploading'}};
+    });
+    const source = {name: 'adaptive.bin', type: 'application/octet-stream', size: total, hash: async () => sha,
+      read: jest.fn(async () => new Uint8Array()), readBase64: async (_offset: number, length: number) => 'A'.repeat(Math.ceil(length * 4 / 3))};
+    try {
+      await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source})).resolves.toMatchObject({state: 'completed'});
+      expect(lengths[0]).toBe(512 * 1024);
+      expect(lengths.some(length => length >= 1024 * 1024)).toBe(true);
+      expect(lengths.every(length => length <= 8 * 1024 * 1024)).toBe(true);
+      expect(lengths.reduce((sum, length) => sum + length, 0)).toBe(total);
+      expect(source.read).not.toHaveBeenCalled();
+      expect(rpc.mock.calls.filter(([, method]) => method === 'attachment.begin')).toHaveLength(1);
+    } finally {time.mockRestore();}
+  });
+
+
   it('drains in-flight chunks before aborting a refused upload and never retries', async () => {
     const data = new Uint8Array(200000).fill(3); const sha = sha256Base64Url(data); const calls: string[] = [];
     const rpc = jest.fn(async (_id, method, params = {}) => {
