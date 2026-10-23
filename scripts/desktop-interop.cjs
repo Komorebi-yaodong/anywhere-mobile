@@ -36,11 +36,27 @@ Module._extensions['.ts'] = (module, filename) => {
 const {createP256KeyPair} = mobileRequire('./src/remote/crypto.ts');
 const {completeDevicePairing, createPairingStartEnvelope} = mobileRequire('./src/remote/pairing.ts');
 const {completeSessionHello, createSessionHello} = mobileRequire('./src/remote/session.ts');
+const {createResultTransferReader} = mobileRequire('./src/remote/resultTransfer.ts');
 ` + source.slice(cryptoEnd + "} from '../main/core/remote/cryptoSession.js'".length);
 source = source.replace(/from '\.\.\/main\/([^']+)'/g, (_, relative) =>
   `from '${pathToFileURL(path.join(desktopRoot, 'main', relative)).href}'`);
 source = source.replace("import { WebSocket } from 'ws'", `import WebSocket from '${pathToFileURL(desktopRequire.resolve('ws')).href}'`);
 source = "import {createRequire} from 'node:module'\n" + source;
+source = source.replace(/\/\/ RESULT_TRANSFER_READER_START[\s\S]*?\/\/ RESULT_TRANSFER_READER_END/, `async function readTransferredResult(connection, ref) {
+  let cleanup;
+  const reader = createResultTransferReader((method, params) => {
+    const response = sendEncryptedRequest({...connection, requestId: 'interop-transfer-' + Date.now() + '-' + Math.random().toString(36).slice(2), method, params}).then(message => {
+      if (!message.ok) throw Object.assign(new Error(message.error.code), {code: message.error.code});
+      return message.result;
+    });
+    if (method === 'remote.transfer.release') cleanup = response;
+    return response;
+  });
+  const result = await reader.read(ref);
+  await cleanup;
+  return result;
+}`);
+
 source = source.replace("suite: 'remote-gateway'", "suite: 'desktop-mobile-interop'");
 fs.mkdirSync(path.dirname(output), {recursive: true});
 fs.writeFileSync(output, source);

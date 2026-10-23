@@ -15,8 +15,21 @@ let mockHoldBusinessSend: Promise<void> | undefined;
 let mockRpcErrorCode: string | undefined;
 
 let mockV11 = false;
+let mockTransfer = false;
+let mockTransferResult: unknown;
+let mockHoldChunk: Promise<void> | undefined;
+const mockTransferSnapshots = new Map<string, {bytes: Uint8Array; ref: any}>();
 const mockOperationItems: Array<{operationId: string; conversationId: string | null; issuedAt: number}> = [];
 const mockMethods: string[] = [];
+
+function mockSnapshot(value: unknown) {
+  const {canonicalBytes} = require('../src/remote/protocol');
+  const {sha256} = require('@noble/hashes/sha2.js');
+  const bytes = canonicalBytes(value);
+  const ref = {id: randomBase64Url(24), totalBytes: bytes.length, sha256: Array.from(sha256(bytes) as Uint8Array, b => b.toString(16).padStart(2, '0')).join(''), chunkBytes: 48 * 1024};
+  mockTransferSnapshots.set(ref.id, {bytes, ref});
+  return ref;
+}
 jest.mock('../src/services/secureStore', () => ({updatePendingOperations: jest.fn(async (_id, update) => {
   const next = update([...mockOperationItems]); mockOperationItems.splice(0, mockOperationItems.length, ...next); return next;
 })}));
@@ -57,7 +70,7 @@ jest.mock('../src/native/PinnedGateway', () => ({
                 protocolVersion: 2,
                 desktopId: mockDesktop.id,
                 device: {deviceId: mockIdentity.deviceId},
-                capabilities: mockV11 ? ['remote.contract.negotiate', 'resource.get', 'command.submit', 'operation.status.get'] : {},
+                capabilities: mockTransfer ? ['remote.transfer.v1'] : mockV11 ? ['remote.contract.negotiate', 'resource.get', 'command.submit', 'operation.status.get'] : {},
               },
             }),
           ),
@@ -75,11 +88,24 @@ jest.mock('../src/native/PinnedGateway', () => ({
           if (request?.method === 'resource.get') value = {schemaVersion: '1.0', resource: params.resource, value: {method: params.resource, e2ee: true}};
           if (request?.method === 'command.submit' || request?.method === 'operation.status.get') value = {operationId: params.commandId || params.operationId, conversationId: 'conversation-client-v11', state: 'succeeded', terminal: true, code: null, receipt: {ok: true}, progress: null, acceptedAt: 100, expiresAt: 10000};
         }
+        let transfer;
+        if (mockTransfer) {
+          if (request?.method === 'remote.transfer.negotiate') value = {capabilities: ['remote.transfer.v1']};
+          if (request?.method === 'conversation.view.get') transfer = mockSnapshot(mockTransferResult);
+          if (request?.method === 'remote.transfer.chunk') {
+            if (mockHoldChunk) {await mockHoldChunk; mockHoldChunk = undefined;}
+            const snapshot = mockTransferSnapshots.get(params.id)!;
+            const bytes = snapshot.bytes.slice(params.offset, params.offset + snapshot.ref.chunkBytes);
+            value = {...snapshot.ref, offset: params.offset, byteLength: bytes.length, data: require('../src/remote/protocol').encodeBase64Url(bytes)};
+          }
+          if (request?.method === 'remote.transfer.release') {mockTransferSnapshots.delete(params.id); value = {ok: true};}
+        }
+
         const response = mockServerSession?.encrypt({
           kind: 'response',
           requestId: request?.requestId,
           ok: !mockRpcErrorCode,
-          ...(mockRpcErrorCode ? {error: {code: mockRpcErrorCode}} : {result: value}),
+          ...(mockRpcErrorCode ? {error: {code: mockRpcErrorCode}} : transfer ? {transfer} : {result: value}),
         });
         mockListener?.({connectionId, type: 'message', message: JSON.stringify(response)});
       }
@@ -94,7 +120,7 @@ jest.mock('../src/native/PinnedGateway', () => ({
   },
 }));
 
-import {RemoteClient} from '../src/remote/client';
+import {RemoteClient, type RemoteEventMessage} from '../src/remote/client';
 import type {PairedDesktop} from '../src/domain/pairing';
 import type {DeviceIdentitySecret} from '../src/services/secureStore';
 
@@ -128,7 +154,64 @@ describe('RemoteClient encrypted transport boundary', () => {
     mockRpcErrorCode = undefined;
 
     mockV11 = false; mockMethods.length = 0; mockOperationItems.length = 0;
+
+    mockTransfer = false; mockTransferResult = undefined; mockHoldChunk = undefined; mockTransferSnapshots.clear();
   });
+
+  it('transparently restores an entire large view while preserving the original request ID and connection', async () => {
+    mockTransfer = true;
+    const full = {messages: [{uiMessageId: 'same-continuous-bubble', payload: {content: '长中文😀完整正文'.repeat(30000)}}], tasks: [{content: '全量任务'}], runtime: {execution: {state: 'idle'}}};
+    mockTransferResult = full;
+    const statuses: string[] = [];
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onStatus: status => statuses.push(status)});
+    try {
+      await client.connect();
+      expect(mockMethods).toContain('remote.transfer.negotiate');
+      await expect(client.request('conversation.view.get', {conversationId: 'conversation-full-view-fixture'})).resolves.toEqual(full);
+      expect(mockMethods.filter(method => method === 'conversation.view.get')).toHaveLength(1);
+      expect(mockMethods.filter(method => method === 'remote.transfer.chunk').length).toBeGreaterThan(2);
+      expect(statuses.at(-1)).toBe('online');
+      await expect(client.request('remote.ping')).resolves.toMatchObject({e2ee: true});
+    } finally {await client.close();}
+  });
+
+  it('delivers a large event before later terminal events without blocking chunk replies or exposing transport notices', async () => {
+    mockTransfer = true;
+    const events: RemoteEventMessage[] = [];
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onEvent: event => events.push(event)});
+    let release!: () => void;
+    try {
+      await client.connect();
+      events.length = 0;
+      mockHoldChunk = new Promise<void>(resolve => {release = resolve;});
+      const tasks = Array.from({length: 10}, () => ({content: '完整任务'.repeat(1200)}));
+      const ref = mockSnapshot({kind: 'event', event: 'conversation.tasks.updated', payload: {conversationId: 'conversation-full-event-fixture', tasks}});
+      const emit = (value: Record<string, unknown>) => mockListener?.({connectionId: client.connectionId, type: 'message', message: JSON.stringify(mockServerSession!.encrypt(value))});
+      emit({kind: 'event', event: 'remote.transfer.ready', payload: {transfer: ref}});
+      emit({kind: 'event', event: 'assistant.completed', payload: {conversationId: 'conversation-full-event-fixture', requestId: 'request-terminal-fixture'}});
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(events).toHaveLength(0);
+      release();
+      for (let i = 0; i < 300; i++) await Promise.resolve();
+      expect(events.map(event => event.event)).toEqual(['conversation.tasks.updated', 'assistant.completed']);
+      expect(events[0].payload.tasks).toEqual(tasks);
+      expect(events.some(event => event.event.startsWith('remote.transfer'))).toBe(false);
+    } finally {release?.(); await client.close();}
+  });
+
+  it('drops an unfinished large result immediately on disconnect and never replays its request', async () => {
+    mockTransfer = true; mockTransferResult = {text: '未完成'.repeat(80000)};
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    let release!: () => void;
+    await client.connect();
+    mockHoldChunk = new Promise<void>(resolve => {release = resolve;});
+    const result = client.request('conversation.view.get', {conversationId: 'conversation-disconnect-fixture'}).catch(error => error.code);
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    await client.close(); release();
+    expect(await result).toBe('remote_client_closed');
+    expect(mockMethods.filter(method => method === 'conversation.view.get')).toHaveLength(1);
+  });
+
 
   it('runs negotiated resources/durable writes through real encrypted RemoteClient and reconciles stored IDs without resend', async () => {
     mockV11 = true;

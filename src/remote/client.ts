@@ -1,6 +1,7 @@
 import type {PairedDesktop} from '../domain/pairing';
 
 import {createBusinessRouter} from './businessRouter';
+import {createResultTransferReader, RESULT_TRANSFER_CAPABILITY} from './resultTransfer';
 import {
   GatewayEvent,
   PinnedGateway,
@@ -82,6 +83,12 @@ export class RemoteClient {
   // may settle out of order, so frame construction and transport submission
   // must share one queue for the lifetime of this client connection.
   private sendQueue: Promise<void> = Promise.resolve();
+
+  private transfers?: ReturnType<typeof createResultTransferReader>;
+  private transferEnabled = false;
+  private eventQueue: Promise<void> = Promise.resolve();
+  private eventGeneration = 0;
+
 
   private operationRecoveryTimer?: ReturnType<typeof setInterval>;
   private operationRecoveryRunning = false;
@@ -333,6 +340,12 @@ export class RemoteClient {
       return;
     }
 
+    if (event.event === 'remote.transfer.ready') {
+      if (!this.transferEnabled || !this.transfers) throw remoteError('remote_transfer_not_negotiated');
+      this.deliverEvent(event);
+      return;
+    }
+
     if (event.event === 'remote.welcome') {
       const protocolVersion = Number(event.payload.protocolVersion);
       if (
@@ -344,7 +357,16 @@ export class RemoteClient {
       this.business.welcome(event.payload.capabilities);
 
       this.setStatus('online');
-      this.finishConnect();
+      if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes(RESULT_TRANSFER_CAPABILITY)) {
+        const generation = this.eventGeneration;
+        this.transferEnabled = true; // The request below explicitly opts in before any ready event can arrive.
+        this.transfers = createResultTransferReader((method, params) => this.rawRequestTracked(method, params, 20_000).response);
+        this.rawRequestTracked<{capabilities: string[]}>('remote.transfer.negotiate', {capabilities: [RESULT_TRANSFER_CAPABILITY]}).response.then(reply => {
+          if (generation !== this.eventGeneration || this.status !== 'online') return;
+          this.transferEnabled = reply?.capabilities?.includes(RESULT_TRANSFER_CAPABILITY) === true;
+          this.finishConnect();
+        }).catch(() => {if (generation === this.eventGeneration && this.status === 'online') {this.transferEnabled = false; this.finishConnect();}});
+      } else this.finishConnect();
 
       if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes('operation.status.get')) {
         const recover = async () => {
@@ -358,7 +380,30 @@ export class RemoteClient {
         this.operationRecoveryTimer = setInterval(recover, 5000);
       }
     }
-    this.onEvent?.(event);
+    this.deliverEvent(event);
+  }
+
+  private deliverEvent(event: RemoteEventMessage): void {
+    const generation = this.eventGeneration;
+    const reader = this.transfers;
+    // Decrypt incoming frames synchronously. Only callback delivery waits for a
+    // large event, so chunk RPC replies can never deadlock behind this queue.
+    this.eventQueue = this.eventQueue.catch(() => undefined).then(async () => {
+      if (generation !== this.eventGeneration) return;
+      let delivered = event;
+      if (event.event === 'remote.transfer.ready') {
+        try {
+          const value = await reader!.read(event.payload.transfer) as RemoteEventMessage;
+          if (!value || value.kind !== 'event' || typeof value.event !== 'string' ||
+              value.event === 'remote.transfer.ready' || !value.payload || typeof value.payload !== 'object' || Array.isArray(value.payload)) throw remoteError('remote_transfer_invalid');
+          delivered = value;
+        } catch {
+          // Existing invalidation path retries authoritative reads silently.
+          delivered = {kind: 'event', event: 'conversation.windows.changed', payload: {}};
+        }
+      }
+      if (generation === this.eventGeneration && this.status === 'online') this.onEvent?.(delivered);
+    }).catch(() => undefined);
   }
 
   private rejectPending(requestId: string, error: Error): void {
@@ -381,6 +426,16 @@ export class RemoteClient {
     clearTimeout(pending.timer);
     this.pending.delete(requestId);
     if (payload.ok === true) {
+      if (Object.hasOwn(payload, 'transfer')) {
+        if (!this.transferEnabled || !this.transfers) {pending.reject(remoteError('remote_transfer_not_negotiated')); return;}
+        const generation = this.eventGeneration;
+        const reader = this.transfers;
+        reader.read(payload.transfer).then(value => {
+          if (generation !== this.eventGeneration || this.status !== 'online') throw remoteError('remote_client_closed');
+          pending.resolve(value);
+        }).catch(error => pending.reject(asError(error)));
+        return;
+      }
       pending.resolve(payload.result);
       return;
     }
@@ -415,6 +470,12 @@ export class RemoteClient {
   }
 
   private cleanup(closeStatus: boolean): void {
+
+    this.eventGeneration += 1;
+    this.transfers?.close();
+    this.transfers = undefined;
+    this.transferEnabled = false;
+    this.eventQueue = Promise.resolve();
 
     if (this.operationRecoveryTimer) clearInterval(this.operationRecoveryTimer);
     this.operationRecoveryTimer = undefined;
