@@ -646,12 +646,14 @@ test('stream notifications never manufacture message cards or regroup the Deskto
   await act(async () => root.update(<WorkspaceShell {...props} />));
   expect(keys()).toEqual(['real-ui-one', 'real-ui-two']);
   expect(details()[0]).toBe(mountedPanel);
-  mockWorkspaceMessages = [{...mockWorkspaceMessages[0], payload: {...payload, toolCalls: [{...tool, status: 'finished', result: 'Desktop safe result'}]}}, mockWorkspaceMessages[1]];
+  const desktopToolOutput = 'api_key=Desktop rendered tool output\nE:/Desktop/result.txt';
+  mockWorkspaceMessages = [{...mockWorkspaceMessages[0], payload: {...payload, toolCalls: [{...tool, status: 'finished', result: desktopToolOutput}]}}, mockWorkspaceMessages[1]];
   mockActiveTurn = {...mockActiveTurn, terminal: true, historyLoaded: true};
   await act(async () => root.update(<WorkspaceShell {...props} />));
   expect(keys()).toEqual(['real-ui-one', 'real-ui-two']);
   expect(details()[0]).toBe(mountedPanel);
-  expect(root.root.findAllByType(Text).some(node => node.props.children === 'Desktop safe result')).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === desktopToolOutput)).toBe(true);
+  expect(root.root.findAllByType(Text).some(node => node.props.children === '[已隐藏敏感内容]')).toBe(false);
   const dock = root.root.findAll(node => node.props.accessibilityLabel === '消息导航居中区域')[0];
   expect(StyleSheet.flatten(dock.props.style)).toMatchObject({top: 0, bottom: 0, justifyContent: 'center'});
   mockWorkspaceMessages = [mockWorkspaceMessages[1]];
