@@ -1,5 +1,7 @@
 import {Dirs, FileSystem} from 'react-native-file-access';
 
+import {ensureCacheDirectory} from './cacheDirectory';
+
 import type {RemoteRequest} from '../remote/api';
 import {decodeBase64Url, normalizeIdentifier} from '../remote/protocol';
 
@@ -61,7 +63,7 @@ async function readValid(filePath: string, expected: Pick<MediaReply, 'mimeType'
     const value = JSON.parse(raw) as CacheEntry;
     const expiresAt = Date.parse(value.expiresAt);
     if (
-      !value?.uri ||
+      value?.uri !== uri(filePath) ||
       !Number.isFinite(expiresAt) ||
       expiresAt <= Date.now() ||
       value.mimeType !== expected.mimeType ||
@@ -109,56 +111,63 @@ export async function getConversationMediaCache({
       offset: 0,
       length: 0,
     }, 30_000);
-    if (!metadata.ok || metadata.offset !== 0 || metadata.byteLength !== 0 || metadata.data !== '' || metadata.totalBytes < 1 || metadata.totalBytes > maxBytes || !validSha256(metadata.sha256)) {
+    if (!metadata.ok || metadata.mediaId !== safeMediaId || !Number.isSafeInteger(metadata.totalBytes) || metadata.offset !== 0 || metadata.byteLength !== 0 || metadata.data !== '' || metadata.totalBytes < 1 || metadata.totalBytes > maxBytes || !validSha256(metadata.sha256)) {
       throw new Error('媒体元数据无效。');
     }
     const filePath = safePath(desktopId, safeMediaId, metadata.mimeType);
     const cached = await readValid(filePath, metadata);
     if (cached) return cached;
-    if (!(await FileSystem.exists(cacheDirectory))) await FileSystem.mkdir(cacheDirectory);
-    await removeCache(filePath);
+    await ensureCacheDirectory(cacheDirectory);
+    const temporary = `${filePath}.part`;
+    await FileSystem.unlink(temporary).catch(() => undefined);
     const write = async (reply: MediaReply, append: boolean) => {
       if (
         reply.mediaId !== safeMediaId ||
         reply.mimeType !== metadata.mimeType ||
         reply.totalBytes !== metadata.totalBytes ||
         reply.sha256.toLowerCase() !== metadata.sha256.toLowerCase() ||
+        !Number.isSafeInteger(reply.byteLength) ||
         reply.byteLength < 1 ||
         reply.byteLength > chunkBytes ||
-        reply.offset < 0
+        reply.offset < 0 || reply.offset + reply.byteLength > metadata.totalBytes
       ) throw new Error('媒体分块无效。');
       const bytes = decodeBase64Url(reply.data, 'media.data', {minBytes: reply.byteLength, maxBytes: chunkBytes});
-      if (bytes.length !== reply.byteLength) throw new Error('媒体分块长度错误。');
+      const validLength = bytes.length === reply.byteLength;
+      bytes.fill(0);
+      if (!validLength) throw new Error('媒体分块长度错误。');
       const base64 = reply.data.replace(/-/g, '+').replace(/_/g, '/');
-      if (append) await FileSystem.appendFile(filePath, base64, 'base64');
-      else await FileSystem.writeFile(filePath, base64, 'base64');
+      if (append) await FileSystem.appendFile(temporary, base64, 'base64');
+      else await FileSystem.writeFile(temporary, base64, 'base64');
     };
-    for (let offset = 0; offset < metadata.totalBytes;) {
-      const reply = await request<MediaReply>(desktopId, 'conversation.media.get', {
-        conversationId: safeConversationId,
-        mediaId: safeMediaId,
-        offset,
-        length: Math.min(chunkBytes, metadata.totalBytes - offset),
-      }, 60_000);
-      if (reply.offset !== offset) throw new Error('媒体分块顺序错误。');
-      await write(reply, offset > 0);
-      offset += reply.byteLength;
-    }
-    const stat = await FileSystem.stat(filePath);
-    const actual = await FileSystem.hash(filePath, 'SHA-256');
-    if (stat.size !== metadata.totalBytes || actual.toLowerCase() !== metadata.sha256.toLowerCase()) {
+    try {
+      for (let offset = 0; offset < metadata.totalBytes;) {
+        const reply = await request<MediaReply>(desktopId, 'conversation.media.get', {
+          conversationId: safeConversationId,
+          mediaId: safeMediaId,
+          offset,
+          length: Math.min(chunkBytes, metadata.totalBytes - offset),
+        }, 60_000);
+        if (reply.offset !== offset) throw new Error('媒体分块顺序错误。');
+        await write(reply, offset > 0);
+        offset += reply.byteLength;
+      }
+      const stat = await FileSystem.stat(temporary);
+      const actual = await FileSystem.hash(temporary, 'SHA-256');
+      if (stat.size !== metadata.totalBytes || actual.toLowerCase() !== metadata.sha256.toLowerCase()) {
+        throw new Error('媒体缓存完整性校验失败。');
+      }
       await removeCache(filePath);
-      throw new Error('媒体缓存完整性校验失败。');
-    }
-    const entry: CacheEntry = {
-      uri: uri(filePath),
-      expiresAt: new Date(Date.now() + cacheAgeMs).toISOString(),
-      mimeType: metadata.mimeType,
-      totalBytes: metadata.totalBytes,
-      sha256: metadata.sha256.toLowerCase(),
-    };
-    await FileSystem.writeFile(metaPath(filePath), JSON.stringify(entry), 'utf8');
-    return entry;
+      await FileSystem.mv(temporary, filePath);
+      const entry: CacheEntry = {
+        uri: uri(filePath),
+        expiresAt: new Date(Date.now() + cacheAgeMs).toISOString(),
+        mimeType: metadata.mimeType,
+        totalBytes: metadata.totalBytes,
+        sha256: metadata.sha256.toLowerCase(),
+      };
+      await FileSystem.writeFile(metaPath(filePath), JSON.stringify(entry), 'utf8');
+      return entry;
+    } finally {await FileSystem.unlink(temporary).catch(() => undefined);}
   })();
   pending.set(key, run);
   try {

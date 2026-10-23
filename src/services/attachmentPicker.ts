@@ -1,6 +1,6 @@
 import {errorCodes, isErrorWithCode, keepLocalCopy, pick} from '@react-native-documents/picker';
 import {FileSystem} from 'react-native-file-access';
-import {toByteArray} from 'base64-js';
+import {attachmentFileSource} from './attachmentFileSource';
 import type {RemoteRequest} from '../remote/api';
 import {randomBase64Url} from '../remote/crypto';
 import {RemoteUpload, uploadAttachment, validateAttachment} from '../remote/attachments';
@@ -34,11 +34,7 @@ export async function pickAndUploadAttachment({desktopId, request, signal, onPro
     const stat = await FileSystem.stat(path);
     return await uploadAttachment({
       desktopId, request, signal, onProgress,
-      source: {
-        name, type, size: stat.size,
-        read: async (offset, length) =>
-          toByteArray(await FileSystem.readFileChunk(path, offset, length, 'base64')),
-      },
+      source: attachmentFileSource(path, {name, type, size: stat.size}),
     });
   } catch (error) {
     // Native errors may contain local paths: expose only controlled protocol codes.

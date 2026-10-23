@@ -1,5 +1,7 @@
 import {markdownCodeRanges} from './markdownParser';
 
+import {httpsResourceUrl} from '../services/httpsResourceUrl';
+
 
 export type ConversationMediaKind = 'image' | 'video' | 'audio';
 
@@ -30,15 +32,7 @@ function trimSource(value: string): string {
 }
 
 function safeHttpsUri(value: string): string {
-  const source = trimSource(value);
-  if (!source || source.length > 4096) return '';
-  try {
-    const url = new URL(source);
-    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return '';
-    return url.toString();
-  } catch {
-    return '';
-  }
+  return httpsResourceUrl(trimSource(value));
 }
 
 function attribute(markup: string, name: string): string {

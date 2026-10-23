@@ -208,6 +208,12 @@ export class RemoteClient {
       });
     this.sendQueue = submit.catch(() => undefined);
     submit.catch(error => {
+      // Local validation failed before encrypt committed a sequence or a frame
+      // reached native transport. Reject only this request, keep WSS usable.
+      if (['remote_payload_size_invalid', 'remote_canonical_value_invalid'].includes((error as {code?: string})?.code || '')) {
+        this.rejectPending(requestId, error);
+        return;
+      }
       const transportError = error instanceof RemoteRpcError && error.code === 'remote_client_offline'
         ? error
         : new RemoteRpcError('remote_transport_error');

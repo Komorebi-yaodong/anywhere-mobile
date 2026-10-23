@@ -388,14 +388,18 @@ export function createRemoteCryptoSession({
           aad,
           nonce,
         });
-        nextSendSequence += 1;
-        return {
+        const frame: EncryptedFrame = {
           v: REMOTE_PROTOCOL_VERSION,
           type: 'remote.encrypted',
           sessionId: safeSessionId,
           sequence,
           ...encrypted,
         };
+        // The envelope fields are ASCII (Base64URL/identifiers/numbers), so
+        // string length is its UTF-8 byte length without allocating another copy.
+        if (JSON.stringify(frame).length > REMOTE_MAX_FRAME_BYTES) throw remoteError('remote_payload_size_invalid');
+        nextSendSequence += 1;
+        return frame;
       } finally {
         plaintext.fill(0);
         aad.fill(0);

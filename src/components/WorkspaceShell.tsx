@@ -80,7 +80,7 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { SlidingDrawer } from './SlidingDrawer';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { uploadAudioCapture } from '../services/mediaAttachment';
-import {ConversationMarkdown, hasRenderableConversationContent} from './ConversationMarkdown';
+import {ConversationMarkdown, ConversationMediaRefreshContext, hasRenderableConversationContent} from './ConversationMarkdown';
 
 import {extractedFileNotice, fileNotice, conversationFiles, editableConversationText, withoutConversationFiles} from './conversationFileNotice';
 import {ConversationTaskSheet} from './ConversationTaskSheet';
@@ -642,7 +642,7 @@ export function WorkspaceShell({
   const requireControl = () => {
     if (!connected) { setNotice('正在连接，请稍候'); return false; }
     if (controlledByMobile) return true;
-    setNotice('该会话正在由 Desktop 控制，请先点击“接管会话”。');
+    setNotice(workspace.conversationControlOwner === 'desktop' ? '该会话正在由 Desktop 控制，请先点击“接管会话”。' : '会话状态尚未确认，请刷新后重试。');
     return false;
   };
 
@@ -817,8 +817,10 @@ export function WorkspaceShell({
         uri: asset.uri,
         name: asset.fileName || '照片.jpg',
         type: asset.type || 'image/jpeg',
+        onProgress: value => setNotice(`${value.stage === 'hashing' ? '校验照片' : '上传照片'} ${Math.round(value.bytes / value.total * 100)}%`),
       });
       attachments.addCapturedUpload(upload);
+      setNotice('');
     } catch {
       setNotice('照片选择或上传失败。');
     }
@@ -1166,6 +1168,7 @@ export function WorkspaceShell({
             setMessageAction({method: 'conversation.message.delete', uiMessageId: message.uiMessageId});
           }}
           writable={connected && controlledByMobile}
+          controlOwner={workspace.conversationControlOwner || (controlledByMobile ? 'this_device' : 'unknown')}
           connected={connected}
           onTakeover={takeoverSelectedConversation}
           onHandoff={handoffSelectedConversation}
@@ -1548,6 +1551,7 @@ const ChatPage = React.forwardRef<
     onEdit: (message: RemoteMessage) => void;
     onDelete: (message: RemoteMessage) => void;
     writable: boolean;
+    controlOwner: string;
     connected?: boolean;
     onTakeover: () => void;
     onHandoff: () => void;
@@ -1580,11 +1584,13 @@ const ChatPage = React.forwardRef<
       composerModel,
       messages,
       activeTurn,
+      onRefresh,
       onReask,
       onResendUser,
       onEdit,
       onDelete,
       writable,
+      controlOwner,
       connected = true,
       onTakeover,
       onHandoff,
@@ -1637,6 +1643,7 @@ const ChatPage = React.forwardRef<
         !rows.some(message => message.payload.toolCalls?.some(tool => tool.id === toolCallId)),
       );
     return (
+      <ConversationMediaRefreshContext.Provider value={onRefresh}>
       <KeyboardDock>
         <View style={styles.chatViewport}>
         <ConversationMessageList
@@ -1727,7 +1734,7 @@ const ChatPage = React.forwardRef<
             </Pressable>
           </View>
         ))}
-        {connected && !writable ? (
+        {connected && controlOwner === 'desktop' ? (
           <View style={styles.observerBanner}>
             <Text style={styles.observerText}>桌面端控制中</Text>
           </View>
@@ -1810,14 +1817,15 @@ const ChatPage = React.forwardRef<
           </View>
         </View>
         <Pressable
-          style={[styles.conversationControl, !connected && styles.disabled]}
-          disabled={!connected}
-          onPress={writable ? onHandoff : onTakeover}
-          accessibilityLabel={writable ? '交还 Desktop' : '接管会话'}
+          style={[styles.conversationControl, (!connected || (!writable && controlOwner === 'this_device')) && styles.disabled]}
+          disabled={!connected || (!writable && controlOwner === 'this_device')}
+          onPress={controlOwner === 'this_device' ? onHandoff : onTakeover}
+          accessibilityLabel={controlOwner === 'this_device' ? '交还 Desktop' : '接管会话'}
         >
-          <Text style={styles.conversationControlText}>{writable ? '交还 Desktop' : '接管会话'}</Text>
+          <Text style={styles.conversationControlText}>{controlOwner === 'this_device' ? '交还 Desktop' : '接管会话'}</Text>
         </Pressable>
       </KeyboardDock>
+      </ConversationMediaRefreshContext.Provider>
     );
   },
 );

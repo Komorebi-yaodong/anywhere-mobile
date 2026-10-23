@@ -148,6 +148,20 @@ describe('RemoteClient encrypted transport boundary', () => {
   });
 
 
+  it('rejects a locally oversized frame without disconnecting or consuming its send sequence', async () => {
+    const statuses: string[] = [];
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onStatus: value => statuses.push(value)});
+    try {
+      await client.connect();
+      await expect(client.request('attachment.chunk', {data: 'a'.repeat(210000)})).rejects.toMatchObject({code: 'remote_payload_size_invalid'});
+      expect(statuses.at(-1)).toBe('online');
+      await expect(client.request('remote.ping')).resolves.toMatchObject({e2ee: true});
+      const frames = mockSentTexts.map(text => JSON.parse(text)).filter(item => item.type === 'remote.encrypted');
+      expect(frames.map(frame => frame.sequence)).toEqual([1]);
+    } finally {await client.close();}
+  });
+
+
   it('authenticates before online and carries RPC only in encrypted frames', async () => {
     const statuses: string[] = [];
     const events: string[] = [];

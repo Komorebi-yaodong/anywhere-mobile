@@ -6,6 +6,17 @@ import {
 const opaqueAudio = 'anywhere-media://opaque_audio_fixture_0001?type=audio';
 
 describe('conversation media markup', () => {
+
+  it('accepts @ in public image paths under the real React Native URL implementation, but rejects userinfo', () => {
+    const prior = globalThis.URL; const {URL: NativeURL} = jest.requireActual('react-native/Libraries/Blob/URL');
+    try {
+      globalThis.URL = NativeURL;
+      const uri = 'https://media.example/images/@project/image.png';
+      expect(parseConversationContent(`![image](${uri})`)).toContainEqual(expect.objectContaining({kind: 'media', media: expect.objectContaining({uri})}));
+      expect(parseConversationContent('![image](https://user:pass@media.example/image.png)').some(block => block.kind === 'media')).toBe(false);
+    } finally {globalThis.URL = prior;}
+  });
+
   it('renders HTTPS Markdown images and HTML audio/video as native media blocks', () => {
     const blocks = parseConversationContent([
       '图片前缀',

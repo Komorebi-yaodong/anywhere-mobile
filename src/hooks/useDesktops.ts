@@ -276,8 +276,8 @@ export function useDesktops() {
           connectGenerations.current.get(desktop.id) === generation;
         const restore = async () => {
           if (desktop.status === '在线' && client) {
-            update(desktop.id, {status: '连接中', detail: '正在检查连接…'});
-
+            // A system picker also backgrounds the Activity. Keep a working
+            // socket online during the probe so returning uploads are not blocked.
             try {
               // Only the explicit foreground probe can replace a stale socket;
               // an ordinary periodic ping failure still cannot force reconnect.
@@ -286,7 +286,13 @@ export function useDesktops() {
                 update(desktop.id, {status: '在线', detail: undefined});
               }
               return;
-            } catch { /* Resume on a fresh authenticated session below. */ }
+            } catch (cause) {
+              // Application pings share the ordered RPC queue with media. A
+              // queued ping timeout is not evidence that native WSS is dead.
+              if ((cause as {code?: string})?.code === 'remote_request_timeout' &&
+                  current() && clients.current.get(desktop.id) === client) return;
+              // Other explicit transport failures resume on a fresh session below.
+            }
           }
           if (!current()) return;
           retryCount.current.set(desktop.id, 0);

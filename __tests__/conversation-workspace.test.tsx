@@ -89,6 +89,19 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it('never releases a selected writer on connection-status changes, only when actually leaving the workspace', async () => {
+    const f = fixture(); let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    expect(f.state.selectedConversationId).toBe(A);
+    for (const status of ['连接中', '在线', '离线', '在线'] as const) {
+      await act(async () => root.update(<f.Harness status={status} />));
+      expect(f.rpc.mock.calls.filter(call => call[1] === 'conversation.release')).toHaveLength(0);
+    }
+    await act(async () => root.unmount());
+    expect(f.rpc.mock.calls.filter(call => call[1] === 'conversation.release')).toHaveLength(1);
+  });
+
+
   it.each(['send', 'reask'] as const)('publishes %s progress before ACK and first token, then retires it on failure/cancellation/completion', async action => {
     for (const terminal of ['assistant.completed', 'assistant.cancelled', 'assistant.failed']) {
       const f = fixture(); const base = f.rpc.getMockImplementation()!;
@@ -201,6 +214,7 @@ describe('conversation workspace state boundaries', () => {
       await act(async () => {jest.advanceTimersByTime(2500);});
       expect(f.state.messages).toEqual(history);
       expect(f.state.canControlConversation(A)).toBe(false);
+      expect(f.state.conversationControlOwner).toBe('this_device');
       fail = false;
       await act(async () => {jest.advanceTimersByTime(2500);});
       expect(f.state.canControlConversation(A)).toBe(true);

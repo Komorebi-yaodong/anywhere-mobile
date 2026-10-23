@@ -464,9 +464,9 @@ export function useConversationWorkspace({
 
 
   const releaseConversation = useCallback((conversationId: string) => {
-    if (!conversationId || desktopStatus !== '在线') return;
+    if (!conversationId || scopeRef.current.desktopStatus !== '在线') return;
     api.release(conversationId).catch(() => undefined);
-  }, [api, desktopStatus]);
+  }, [api]);
 
   const selectConversation = useCallback((conversationId: string, openedTitle = '') => {
     selectedOpenedTitleRef.current = openedTitle;
@@ -1234,6 +1234,10 @@ export function useConversationWorkspace({
 
     openedSessionsReady: openedSessionsDesktop === desktopId,
     authoritativeRuntime: authoritativeRuntime?.conversationId === selectedConversationId ? authoritativeRuntime : null,
+    conversationControlOwner: authoritativeRuntime?.conversationId === selectedConversationId
+      ? authoritativeRuntime.control.owner
+      : controlledConversationIds.includes(selectedConversationId) ? 'this_device'
+      : openedSessions.some(item => item.conversationId === selectedConversationId && !item.mobileControlled) ? 'desktop' : 'unknown',
     canControlConversation,
     takeoverConversation,
     handoffConversation,

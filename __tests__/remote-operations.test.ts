@@ -40,6 +40,45 @@ describe('Remote attachment protocol', () => {
     expect(JSON.stringify(rpc.mock.calls)).not.toMatch(/file:\/\/|content:\/\/|localUri/);
   });
 
+  it('keeps only three ordered chunks in flight and finishes only after every validated receipt', async () => {
+    const data = new Uint8Array(400000).fill(7); const sha = sha256Base64Url(data);
+    const receipts: Array<() => void> = []; const indices: number[] = []; let completed = false;
+    const metadata = {name: 'large.jpg', type: 'image/jpeg', size: data.length, sha256: sha};
+    const rpc = jest.fn((_id, method, params = {}) => {
+      if (method === 'attachment.chunk') {
+        const index = (params as any).index; indices.push(index);
+        return new Promise(resolve => receipts.push(() => resolve({ok: true, upload: {...metadata, uploadId, receivedBytes: Math.min(data.length, (index + 1) * 65536), nextChunkIndex: index + 1}})));
+      }
+      if (method === 'attachment.complete') completed = true;
+      return Promise.resolve({ok: true, upload: {...metadata, uploadId, maxChunkBytes: 65536, receivedBytes: completed ? data.length : 0, nextChunkIndex: 0, state: completed ? 'completed' : 'uploading'}});
+    });
+    const nativeHash = jest.fn(async () => sha); const read = jest.fn(async () => new Uint8Array());
+    const upload = uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {...metadata, read, hash: nativeHash, readBase64: async (offset, length) => require('base64-js').fromByteArray(data.slice(offset, offset + length))}});
+    const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();};
+    await flush(); expect(indices).toEqual([0, 1, 2]); expect(completed).toBe(false); expect(read).not.toHaveBeenCalled();
+    for (let index = 0; index < Math.ceil(data.length / 65536); index++) {
+      receipts[index](); await flush();
+      expect(indices.length - index - 1).toBeLessThanOrEqual(3);
+    }
+    await expect(upload).resolves.toMatchObject({state: 'completed'});
+    expect(indices).toEqual([0, 1, 2, 3, 4, 5, 6]); expect(nativeHash).toHaveBeenCalledTimes(1);
+  });
+
+  it('drains in-flight chunks before aborting a refused upload and never retries', async () => {
+    const data = new Uint8Array(200000).fill(3); const sha = sha256Base64Url(data); const calls: string[] = [];
+    const rpc = jest.fn(async (_id, method, params = {}) => {
+      calls.push(method);
+      if (method === 'attachment.chunk' && (params as any).index === 1) throw new Error('synthetic chunk refusal');
+      const index = Number((params as any).index) || 0;
+      return {ok: true, upload: {uploadId, maxChunkBytes: 65536, receivedBytes: method === 'attachment.begin' ? 0 : (index + 1) * 65536, nextChunkIndex: method === 'attachment.begin' ? 0 : index + 1}};
+    });
+    await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'fixture.jpg', type: 'image/jpeg', size: data.length, hash: async () => sha, read: async (offset, length) => data.slice(offset, offset + length)}})).rejects.toThrow('chunk refusal');
+    expect(calls.at(-1)).toBe('attachment.abort'); expect(calls).not.toContain('attachment.complete');
+    const indices = rpc.mock.calls.filter(([, method]) => method === 'attachment.chunk').map(([, , params]) => (params as any).index);
+    expect(new Set(indices).size).toBe(indices.length);
+  });
+
+
   it('aborts if source changes or upload is cancelled after begin', async () => {
     const controller = new AbortController();
     const rpc = jest.fn(async () => {

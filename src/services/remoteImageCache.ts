@@ -1,5 +1,7 @@
 import {Dirs, FileSystem} from 'react-native-file-access';
 
+import {ensureCacheDirectory} from './cacheDirectory';
+
 import {sha256Base64Url} from '../remote/crypto';
 import {utf8ToBytes} from '../remote/utf8';
 
@@ -142,7 +144,7 @@ export async function cacheRemoteHttpsResource({
   const existing = pending.get(pendingKey);
   if (existing) return existing;
   const run = (async () => {
-    if (!(await FileSystem.exists(cacheRoot))) await FileSystem.mkdir(cacheRoot);
+    await ensureCacheDirectory(cacheRoot);
     const previous = await readVerified(key, remoteUrl, maxBytes);
     const now = Date.now();
     if (previous) {

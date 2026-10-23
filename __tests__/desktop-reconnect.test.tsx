@@ -117,6 +117,28 @@ describe('Desktop reconnect lifecycle', () => {
     await act(async () => root.unmount());
   });
 
+  it('keeps the healthy socket online while the foreground probe is pending, including photo-picker return', async () => {
+    let finish!: (value: {}) => void;
+    mockProbe.mockImplementationOnce(() => new Promise<{}>(resolve => {finish = resolve;}));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<Harness />);});
+    await act(async () => {mockAppStateListener('background'); mockAppStateListener('active');});
+    expect(latest.desktops[0].status).toBe('在线'); expect(mockClients).toHaveLength(1);
+    await act(async () => finish({}));
+    expect(latest.desktops[0].status).toBe('在线');
+    await act(async () => root.unmount());
+  });
+
+  it('does not kill a working socket when a foreground application ping times out behind transfers', async () => {
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<Harness />);});
+    mockProbe.mockRejectedValueOnce(Object.assign(new Error('queued ping'), {code: 'remote_request_timeout'}));
+    await act(async () => {mockAppStateListener('background'); mockAppStateListener('active');});
+    expect(mockClients).toHaveLength(1); expect(latest.desktops[0].status).toBe('在线');
+    await act(async () => root.unmount());
+  });
+
+
   it('replaces a stale foreground socket once and preserves subsequent failure diagnostics', async () => {
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<Harness />); });

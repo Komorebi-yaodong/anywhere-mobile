@@ -45,6 +45,8 @@ let mockWorkspaceMessages: Array<Record<string, any>> = [];
 let mockConversationModel = '';
 let mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
 let mockActiveTurn: any = null;
+let mockControlOwner: string | undefined;
+let mockCanWrite: boolean | undefined;
 let mockOnCapture: ((capture: unknown) => Promise<unknown>) | undefined;
 jest.mock('../src/services/avatarResourceCache', () => ({
   ensureAvatarResource: jest.fn(async ({resource}: {resource?: {code?: string; version?: string}}) => resource ? ({
@@ -90,7 +92,8 @@ jest.mock('../src/hooks/useConversationWorkspace', () => ({
     openedSessions: mockOpenedSessions,
 
     openedSessionsReady: mockOpenedSessionsReady,
-    canControlConversation: () => !mockOpenedSessions.length || mockOpenedSessions.some(item => item.controlledByThisDevice),
+    conversationControlOwner: mockControlOwner ?? (mockOpenedSessions.some(item => !item.mobileControlled) ? 'desktop' : undefined),
+    canControlConversation: () => mockCanWrite ?? (!mockOpenedSessions.length || mockOpenedSessions.some(item => item.controlledByThisDevice)),
     selectConversation: mockSelectConversation,
     takeoverConversation: mockTakeoverConversation,
     handoffConversation: mockHandoffConversation,
@@ -142,6 +145,7 @@ beforeEach(() => {
   mockConversationModel = '';
   mockConversationAssistant = {code: '', name: '', avatarUrl: ''};
   mockActiveTurn = null;
+  mockControlOwner = undefined; mockCanWrite = undefined;
 
   mockSend.mockReset().mockResolvedValue(undefined);
   mockReaskLastAssistant.mockReset().mockResolvedValue(undefined);
@@ -780,6 +784,17 @@ test('offers a close action only for a session controlled by this Mobile device'
   expect(close[0].parent?.props.style).toBe(handoff[0].parent?.props.style);
   expect(StyleSheet.flatten(close[0].parent?.props.style).borderWidth).toBe(1);
   await act(async () => root.unmount());
+});
+
+
+test.each(['this_device', 'unknown', 'desktop', 'other_device'])('shows Desktop control only for confirmed desktop ownership, not %s without write permission', async owner => {
+ openConfigSession(); mockControlOwner = owner; mockCanWrite = false;
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);}); await enterFixtureChat(root);
+ expect(root.root.findAllByType(Text).some(node => node.props.children === '桌面端控制中')).toBe(owner === 'desktop');
+ expect(root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入消息与 AI 聊天')!.props.editable).toBe(false);
+ expect(root.root.findAll(node => node.props.accessibilityLabel === (owner === 'this_device' ? '交还 Desktop' : '接管会话') && node.props.onPress)[0].props.disabled).toBe(owner === 'this_device');
+ await act(async () => root.unmount());
 });
 
 

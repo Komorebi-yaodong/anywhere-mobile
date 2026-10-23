@@ -2,7 +2,7 @@ import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
 import {Alert, Image, Text, View} from 'react-native';
 
-import {ConversationMarkdown} from '../src/components/ConversationMarkdown';
+import {ConversationMarkdown, ConversationMediaRefreshContext} from '../src/components/ConversationMarkdown';
 import type {RemoteRequest} from '../src/remote/api';
 
 import Video from 'react-native-video';
@@ -50,6 +50,27 @@ async function render(value: string) {
 }
 
 describe('ConversationMarkdown media rendering', () => {
+
+  it('offers retry after a transient image cache failure and renders the same image on retry', async () => {
+    const {getConversationMediaCache} = require('../src/services/conversationMediaCache');
+    getConversationMediaCache.mockRejectedValueOnce(new Error('synthetic offline'));
+    const root = await render('![图片](anywhere-media://opaque_retry_image_0001?type=image)');
+    expect(root.root.findAllByType(Text).some(node => node.props.children === '媒体暂不可用')).toBe(true);
+    const retry = root.root.findAll(node => node.props.accessibilityLabel === '重试加载媒体' && node.props.onPress)[0];
+    await act(async () => retry.props.onPress());
+    expect(root.root.findAllByType(Image).some(node => node.props.accessibilityLabel === '聊天图片')).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it('refreshes an expired opaque reference once, without replaying the model request or looping', async () => {
+    const {getConversationMediaCache} = require('../src/services/conversationMediaCache');
+    getConversationMediaCache.mockRejectedValueOnce(Object.assign(new Error('expired'), {code: 'remote_media_not_found'}));
+    const refresh = jest.fn(); const request = jest.fn() as RemoteRequest; let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<ConversationMediaRefreshContext.Provider value={refresh}><ConversationMarkdown value="![image](anywhere-media://expired_image_fixture_0001?type=image)" desktopId="desktop-media-fixture" conversationId="conversation-media-fixture-0001" request={request} /></ConversationMediaRefreshContext.Provider>);});
+    expect(refresh).toHaveBeenCalledTimes(1); expect(request).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
 
   it('shows audio controls without transport/cache implementation labels', async () => {
     const root = await render('<audio controls src="https://media.example/recording.m4a"></audio>');

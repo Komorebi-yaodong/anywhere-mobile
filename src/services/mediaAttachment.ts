@@ -1,4 +1,6 @@
 import type { RemoteRequest } from '../remote/api';
+
+import {attachmentFileSource} from './attachmentFileSource';
 import {
   uploadAttachment,
   validateAttachment,
@@ -12,16 +14,17 @@ export async function pickPhotoUpload({
   uri,
   name,
   type,
+  onProgress,
 }: {
   desktopId: string;
   request: RemoteRequest;
   uri: string;
   name: string;
   type: string;
+  onProgress?: (progress: {stage: 'hashing' | 'uploading'; bytes: number; total: number}) => void;
 }): Promise<RemoteUpload> {
   const { keepLocalCopy } = await import('@react-native-documents/picker');
   const { FileSystem } = await import('react-native-file-access');
-  const { toByteArray } = await import('base64-js');
   const { randomBase64Url } = await import('../remote/crypto');
   const [copy] = await keepLocalCopy({
     destination: 'cachesDirectory',
@@ -36,15 +39,8 @@ export async function pickPhotoUpload({
     return await uploadAttachment({
       desktopId,
       request,
-      source: {
-        name,
-        type,
-        size: stat.size,
-        read: async (offset, length) =>
-          toByteArray(
-            await FileSystem.readFileChunk(path, offset, length, 'base64'),
-          ),
-      },
+      onProgress,
+      source: attachmentFileSource(path, {name, type, size: stat.size}),
     });
   } finally {
     await FileSystem.unlink(path).catch(() => undefined);
@@ -112,7 +108,6 @@ export async function uploadCapturedPhoto({
   }) => void;
 }): Promise<RemoteUpload> {
   const { FileSystem } = await import('react-native-file-access');
-  const { toByteArray } = await import('base64-js');
   const safePath = String(path || '');
   if (!safePath || safePath.includes('..')) throw new Error('拍摄照片不可用。');
   try {
@@ -123,15 +118,7 @@ export async function uploadCapturedPhoto({
       request,
       signal,
       onProgress,
-      source: {
-        name,
-        type: 'image/jpeg',
-        size: stat.size,
-        read: async (offset, length) =>
-          toByteArray(
-            await FileSystem.readFileChunk(safePath, offset, length, 'base64'),
-          ),
-      },
+      source: attachmentFileSource(safePath, {name, type: 'image/jpeg', size: stat.size}),
     });
   } finally {
     await FileSystem.unlink(safePath).catch(() => undefined);

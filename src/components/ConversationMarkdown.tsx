@@ -28,6 +28,8 @@ import {
 
 export {hasRenderableConversationContent};
 
+export const ConversationMediaRefreshContext = React.createContext<(() => void) | null>(null);
+
 const C = {
   text: '#292724',
   muted: '#79746C',
@@ -362,6 +364,10 @@ function MediaPreview({media, desktopId, conversationId, request}: {media: Conve
   const styles = useThemedStyles(baseStyles);
   const [state, setState] = useState<MediaState | null>(null);
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const refresh = React.useContext(ConversationMediaRefreshContext);
+  const refreshRef = useRef(refresh); refreshRef.current = refresh;
+  const refreshedUri = useRef('');
   useEffect(() => {
     let active = true;
     setError('');
@@ -374,10 +380,16 @@ function MediaPreview({media, desktopId, conversationId, request}: {media: Conve
     }
     getConversationMediaCache({desktopId, conversationId, mediaId: media.uri.match(/^anywhere-media:\/\/([A-Za-z0-9_-]{16,160})/)?.[1] || '', request})
       .then(value => { if (active) setState(value); })
-      .catch(() => { if (active) setError('媒体暂不可用'); });
+      .catch(cause => {
+        if (!active) return;
+        setError('媒体暂不可用');
+        if (refreshedUri.current !== media.uri && (cause as {code?: string})?.code === 'remote_media_not_found') {
+          refreshedUri.current = media.uri; refreshRef.current?.();
+        }
+      });
     return () => { active = false; };
-  }, [conversationId, desktopId, media.opaque, media.uri, request]);
-  if (error) return <View style={styles.mediaPlaceholder}><Text style={styles.mediaError}>{error}</Text></View>;
+  }, [attempt, conversationId, desktopId, media.opaque, media.uri, request]);
+  if (error) return <Pressable accessibilityRole="button" accessibilityLabel="重试加载媒体" style={styles.mediaPlaceholder} onPress={() => {refresh?.(); setAttempt(value => value + 1);}}><Text style={styles.mediaError}>{error}</Text></Pressable>;
   if (!state) return <View style={styles.mediaPlaceholder}><ActivityIndicator accessibilityLabel="正在加载" color={C.primary} /></View>;
   if (media.kind === 'image') return <ImagePreview state={state} onError={() => setError('图片加载失败')} />;
   if (media.kind === 'video') return <VideoPlayer state={state} opaque={media.opaque} onError={() => setError('视频播放失败')} />;
