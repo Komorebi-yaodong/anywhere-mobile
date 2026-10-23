@@ -6,7 +6,7 @@ declare const __dirname: string;
 const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '..');
-const desktopIcon = path.resolve(root, '..', 'Anywhere_desktop', 'build', 'icon.svg');
+const desktopIcon = path.join(root, 'test-fixtures', 'desktop-brand-icon.svg');
 const mark = fs.readFileSync(path.join(root, 'src', 'components', 'DesktopBrandMark.tsx'), 'utf8');
 
 function pngSize(file: string): [number, number] {

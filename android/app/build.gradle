@@ -1,3 +1,6 @@
+import groovy.json.JsonSlurper
+
+
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
@@ -72,6 +75,39 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+// One version source for APKs, CI artifact names and GitHub release tags.
+def mobilePackage = new JsonSlurper().parse(rootProject.file("../package.json"))
+if (!(mobilePackage.version ==~ /(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)/) ||
+        !(mobilePackage.androidVersionCode instanceof Number) ||
+        mobilePackage.androidVersionCode < 35 || mobilePackage.androidVersionCode > 2100000000 ||
+        mobilePackage.androidVersionCode.intValue() != mobilePackage.androidVersionCode) {
+    throw new GradleException("Invalid Android release version in package.json")
+}
+def releaseSigning = [
+    storeFile: System.getenv("ANDROID_KEYSTORE_PATH"),
+    storePassword: System.getenv("ANDROID_KEYSTORE_PASSWORD"),
+    keyAlias: System.getenv("ANDROID_KEY_ALIAS"),
+    keyPassword: System.getenv("ANDROID_KEY_PASSWORD")
+]
+
+tasks.register("validateProductionSigning") {
+    doLast {
+        if (releaseSigning.values().any { it == null || it.isEmpty() } ||
+                !file(releaseSigning.storeFile ?: "missing-release-keystore").isFile()) {
+            throw new GradleException("Release signing is required: configure ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD. Use assembleQa for unsigned-by-production testing.")
+        }
+        if (releaseSigning.keyAlias.equalsIgnoreCase("androiddebugkey")) {
+            throw new GradleException("Debug keys must not be used for production releases")
+        }
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == "preReleaseBuild" || task.name == "validateSigningRelease") {
+        task.dependsOn("validateProductionSigning")
+    }
+}
+
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -82,8 +118,8 @@ android {
         applicationId "com.anywheremobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 34
-        versionName "1.0.33"
+        versionCode mobilePackage.androidVersionCode.intValue()
+        versionName mobilePackage.version
     }
     signingConfigs {
         debug {
@@ -92,6 +128,14 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (releaseSigning.values().every { it != null && !it.isEmpty() }) {
+                storeFile file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
+            }
+        }
     }
     buildTypes {
         debug {
@@ -99,9 +143,8 @@ android {
             manifestPlaceholders = [usesCleartextTraffic: "false"]
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Production signing never falls back to the public debug key.
+            signingConfig signingConfigs.release
             manifestPlaceholders = [usesCleartextTraffic: "false"]
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
@@ -110,7 +153,7 @@ android {
         qa {
             initWith release
             applicationIdSuffix ".qa"
-            versionNameSuffix "-internal.33"
+            versionNameSuffix "-internal.${mobilePackage.androidVersionCode}"
             resValue "string", "app_name", "Anywhere Mobile"
             matchingFallbacks = ["release"]
             signingConfig signingConfigs.debug

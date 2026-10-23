@@ -1,0 +1,165 @@
+name: Build Android Packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:metadata
+      - name: Check manual release target
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/android-release.cjs preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec eslint . --max-warnings 0
+
+      - run: pnpm exec eslint scripts/android-release.cjs --max-warnings 0
+      - run: pnpm test --runInBand
+
+  android:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      release_asset: ${{ steps.metadata.outputs.release_asset }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Resolve APK metadata
+        id: metadata
+        run: node scripts/android-release.cjs metadata
+      - name: Install Android SDK components
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+      - name: Restore production signing key
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          for (const key of ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']) {
+            if (!process.env[key]) throw new Error(`Missing GitHub Secret: ${key}`);
+          }
+          if (process.env.ANDROID_KEY_ALIAS.toLowerCase() === 'androiddebugkey') throw new Error('Production key alias must not be androiddebugkey');
+          const text = process.env.ANDROID_KEYSTORE_BASE64.replace(/\s/g, '');
+          const key = Buffer.from(text, 'base64');
+          if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text) || key.length < 1 || key.length > 131072 || key.toString('base64').replace(/=+$/, '') !== text.replace(/=+$/, '')) throw new Error('Invalid signing key Base64');
+          const file = path.join(process.env.RUNNER_TEMP, 'anywhere-mobile-release.p12');
+          fs.writeFileSync(file, key, {mode: 0o600, flag: 'wx'});
+          fs.appendFileSync(process.env.GITHUB_ENV, `ANDROID_KEYSTORE_PATH=${file}\n`);
+          key.fill(0);
+          NODE
+      - name: Build preview APK
+        if: github.event_name == 'push'
+        working-directory: android
+        run: bash ./gradlew :app:assembleQa --no-daemon -PreactNativeArchitectures=arm64-v8a
+      - name: Build signed production APK
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: android
+        run: bash ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Verify and package preview APK
+        if: github.event_name == 'push'
+        run: node scripts/android-release.cjs package qa
+      - name: Verify and package production APK
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/android-release.cjs package release
+      - name: Upload APK and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: anywhere-android-${{ github.event_name == 'push' && 'preview' || 'release' }}-${{ steps.metadata.outputs.version }}-${{ github.run_number }}
+          path: |
+            build/distribution/*.apk
+            build/distribution/*.sha256.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary signing key
+        if: always() && github.event_name == 'workflow_dispatch'
+        run: rm -f -- "$RUNNER_TEMP/anywhere-mobile-release.p12"
+
+  publish:
+    if: github.event_name == 'workflow_dispatch'
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: anywhere-android-release-${{ needs.android.outputs.version }}-${{ github.run_number }}
+          path: build/distribution
+      - name: Verify artifact checksums
+        working-directory: build/distribution
+        env:
+          RELEASE_ASSET: ${{ needs.android.outputs.release_asset }}
+        run: sha256sum --check "$RELEASE_ASSET.sha256.txt"
+      - name: Recheck release target
+        run: node scripts/android-release.cjs preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create draft, upload assets, then publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.android.outputs.tag }}
+          RELEASE_ASSET: ${{ needs.android.outputs.release_asset }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "build/distribution/$RELEASE_ASSET" \
+            "build/distribution/$RELEASE_ASSET.sha256.txt" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Anywhere Mobile $RELEASE_TAG" --generate-notes --draft
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

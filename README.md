@@ -102,7 +102,29 @@ Set-Location android
 .\gradlew.bat :app:assembleQa --no-daemon -PreactNativeArchitectures=arm64-v8a
 ```
 
-`qa` 变体使用独立包名和调试签名，适用于受控测试，不是公开商店或正式发布签名。对外分发前，请在 GitHub Releases 中提供 APK、版本说明和 SHA-256 校验值。
+`qa` 变体使用独立包名 `com.anywheremobile.qa` 和调试签名；正式版使用 `com.anywheremobile` 和开发者自己的签名，两者可并存。
+
+### GitHub 自动打包与发布（Android）
+
+工作流：**Actions → Build Android Packages**，当前只构建 `arm64-v8a`，不构建或发布 iOS。
+
+- **推送到 `main`**：运行类型检查、lint、测试后构建 QA APK，在该次运行的 **Artifacts** 下载 APK 与 SHA-256 校验文件；不会创建 Release，也不使用正式签名 Secrets。
+- **手动 Run workflow，选择 `main`**：检查版本与标签，构建并核验正式签名 APK，成功后自动创建 `v版本号` 的 GitHub Release，附 APK、SHA-256 和自动生成的版本说明。不需要事先创建标签，也不需要手动上传 APK。
+
+首次运行前，在 **Settings → Secrets and variables → Actions → Repository secrets** 配置：
+
+| Secret | 内容 |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | 自己生成并备份的密钥库文件的 Base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | 密钥库密码 |
+| `ANDROID_KEY_ALIAS` | 密钥别名 |
+| `ANDROID_KEY_PASSWORD` | 该别名的私钥密码；PKCS12 通常与密钥库密码一致 |
+
+正式密钥不得使用默认 `androiddebugkey`。缺少或错误的 Secrets 会阻止正式发布，不会退回调试签名。密钥只恢复到 runner 临时目录，任务结束清理；不要将它、密码或 Base64 写进源码、日志、Issue 或聊天。后续正式 APK 必须保持签名身份一致才能覆盖升级。
+
+版本以 `package.json` 为唯一来源：首个正式版 `version: 1.1.0`、`androidVersionCode: 35`。后续发布同时递增版本号和整数 `androidVersionCode`，例如 `1.1.1 / 36`；Android Gradle 自动读取这两个值。已存在的 Release 不会被覆盖，同名标签指向其他提交时也会失败。若上传中断留下草稿，确认内容后在 GitHub 手动处理草稿再重跑，工作流不会自动删除旧版本。
+
+仓库或组织必须允许 Actions 创建 Release；发布任务使用当前仓库的 `GITHUB_TOKEN`，不需要另配个人访问令牌。QA 与正式版互不覆盖，QA 中已有的配对也不会自动迁入正式版。
 
 ### iOS
 

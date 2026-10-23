@@ -1,6 +1,8 @@
 {
   "name": "AnywhereMobile",
-  "version": "0.0.1",
+  "version": "1.1.0",
+  "androidVersionCode": 35,
+  "packageManager": "pnpm@10.28.0",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
@@ -9,6 +11,7 @@
     "start": "react-native start",
     "test": "node scripts/verify-remote-contract.cjs && jest",
     "test:remote-contract": "node scripts/verify-remote-contract.cjs",
+    "release:metadata": "node scripts/android-release.cjs metadata",
     "test:desktop-interop": "node scripts/desktop-interop.cjs",
     "test:phone-fixture": "node scripts/phone-fixture.mjs"
   },
@@ -57,7 +60,8 @@
     "jest": "^29.6.3",
     "prettier": "2.8.8",
     "react-test-renderer": "19.2.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "yaml": "2.9.0"
   },
   "engines": {
     "node": ">= 22.11.0"
