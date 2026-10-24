@@ -384,6 +384,72 @@ describe('conversation workspace state boundaries', () => {
     await act(async()=>root.unmount());
   });
 
+  it('consumes a buffered input at a tool boundary without finishing its parent or restoring it on late ACK', async () => {
+    const f = fixture();
+    const first = deferred<unknown>(), followup = deferred<unknown>();
+    let index = 0;
+    (f.tracked as jest.Mock).mockImplementation(() => {
+      const slot = index++;
+      return {requestId: `request-buffer-fixture-${slot}`, response: (slot ? followup : first).promise};
+    });
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+    let firstSend!: Promise<void>, secondSend!: Promise<void>;
+    await act(async () => { firstSend = f.state.sendMessage('initial task'); });
+    await act(async () => { first.resolve({ok: true}); await firstSend; f.emit('assistant.delta', 1, {requestId: 'request-buffer-fixture-0', textDelta: 'calling tool 1'}); });
+    await act(async () => { secondSend = f.state.sendMessage('supplement before tool 2'); });
+    expect(f.state.queuedSends).toHaveLength(1);
+    await act(async () => { f.emit('assistant.completed', 2, {requestId: 'request-buffer-fixture-1', revision: 3}); });
+    expect(f.state.queuedSends).toHaveLength(0);
+    expect(f.state.activeTurn?.requestId).toBe('request-buffer-fixture-0');
+    expect(f.state.activeTurn?.terminal).toBe(false);
+    await act(async () => { followup.resolve({ok: true, queued: true, position: 1}); await secondSend; });
+    expect(f.state.queuedSends).toHaveLength(0);
+    await act(async () => { f.emit('assistant.delta', 2, {requestId: 'request-buffer-fixture-0', textDelta: ' now calling tool 2'}); });
+    await act(async () => { await f.state.refreshMessages(); });
+    expect(f.state.activeTurn?.text).toBe('calling tool 1 now calling tool 2');
+    expect(f.tracked).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
+
+  it('queries a consumed buffered input after a missed event without replacing its parent or retransmitting', async () => {
+    jest.useFakeTimers();
+    const f = fixture();
+    const pending = deferred<unknown>();
+    let count = 0;
+    (f.tracked as jest.Mock).mockImplementation(() => {
+      const slot = count++;
+      return {requestId: `request-buffer-recovery-${slot}`, response: slot ? pending.promise : Promise.resolve({ok: true})};
+    });
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? Promise.resolve({
+      requestId: params?.requestId, conversationId: A, text: '', reasoning: '', truncated: false,
+      eventSequence: 2, terminal: params?.requestId === 'request-buffer-recovery-1',
+      event: params?.requestId === 'request-buffer-recovery-1' ? 'assistant.completed' : 'assistant.delta',
+    }) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
+      await act(async () => { await f.state.sendMessage('parent'); });
+      let send!: Promise<void>;
+      await act(async () => { send = f.state.sendMessage('missed boundary receipt'); });
+      expect(f.state.queuedSends).toHaveLength(1);
+      await act(async () => { jest.advanceTimersByTime(2500); });
+      expect(f.state.queuedSends).toHaveLength(0);
+      expect(f.state.activeTurn?.requestId).toBe('request-buffer-recovery-0');
+      expect(f.state.activeTurn?.terminal).toBe(false);
+      await act(async () => { pending.reject(Object.assign(new Error('late disconnect'), {code: 'remote_transport_closed'})); await send; });
+      expect(f.state.queuedSends).toHaveLength(0);
+      expect(f.state.activeTurn?.terminal).toBe(false);
+      expect(f.tracked).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root?.unmount());
+      jest.useRealTimers();
+    }
+  });
+
+
   it('keeps Desktop history during reask until an authoritative page replaces it', async () => {
     const f = fixture();
     const oldPage = {...page(A), messages: [{uiMessageId: 'old-reply', role: 'assistant', order: 1, payload: {content: 'old error'}}]};

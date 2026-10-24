@@ -157,6 +157,7 @@ export function useConversationWorkspace({
   const activeTurnRef = useRef<ActiveConversationTurn | null>(null);
 
   const awaitingSendReceipts = useRef(new Set<string>());
+  const settledSendReceipts = useRef(new Set<string>());
   const [creatingConversation, setCreatingConversation] = useState(false);
   const creatingRef = useRef(false);
 
@@ -668,6 +669,7 @@ export function useConversationWorkspace({
         const state = await api.getRequest(queued.requestId);
         if (scopeRef.current.desktopId !== desktopId) return;
         if (state.terminal) {
+          if (awaitingSendReceipts.current.has(queued.requestId)) settledSendReceipts.current.add(queued.requestId);
           commitQueue(current =>
             current.filter(item => item.requestId !== queued.requestId),
           );
@@ -756,6 +758,7 @@ export function useConversationWorkspace({
               },
         );
       }
+      if (isTerminalEvent(event.event) && awaitingSendReceipts.current.has(requestId)) settledSendReceipts.current.add(requestId);
       if (queued && isTerminalEvent(event.event)) {
         commitQueue(current =>
           current.filter(item => item.requestId !== requestId),
@@ -966,6 +969,9 @@ export function useConversationWorkspace({
           queued?: boolean;
           position?: number;
         };
+        // A buffered input may be persisted at a tool boundary before its RPC ACK.
+        // Its terminal receipt belongs to the input, not to the still-running parent.
+        if (settledSendReceipts.current.has(tracked.requestId)) return;
         if (accepted.queued) {
           if (!shouldQueue)
             commitQueue(current => [
@@ -1010,6 +1016,7 @@ export function useConversationWorkspace({
           });
         }
       } catch (cause) {
+        if (settledSendReceipts.current.has(tracked.requestId)) return;
         const code = errorCode(cause);
         const uncertain = [
           'remote_client_closed',
@@ -1050,7 +1057,10 @@ export function useConversationWorkspace({
           );
           throw cause;
         }
-      } finally { awaitingSendReceipts.current.delete(tracked.requestId); }
+      } finally {
+        awaitingSendReceipts.current.delete(tracked.requestId);
+        settledSendReceipts.current.delete(tracked.requestId);
+      }
     },
     [
       api,
