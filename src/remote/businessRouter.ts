@@ -27,7 +27,7 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
   }
   async function route(method: string, params: Record<string, unknown>, timeout: number, commandId: string, issuedAt: number) {
     if (method === 'conversation.config.get') timeout = 120000;
-    if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.view.get', 'conversation.history.chunk.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
+    if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.control.get', 'conversation.view.get', 'conversation.history.chunk.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
     if (!advertised.includes('remote.contract.negotiate')) return raw(method, params, timeout, commandId);
     await negotiate();
     if (!negotiation || negotiation.selected.minor < 1) return raw(method, params, timeout, commandId);
@@ -73,9 +73,11 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
       if (!negotiation.capabilities.includes('command.durable.v1')) throw error('remote_method_unavailable');
       let preconditions;
       if (routes.controlRequired.includes(method) && typeof params.conversationId === 'string') {
-        const view = await raw('conversation.view.get', {conversationId: params.conversationId, pageSize: 1}) as any;
-        if (typeof view?.runtime?.control?.epoch !== 'string') throw error('remote_contract_invalid');
-        preconditions = {controlEpoch: view.runtime.control.epoch};
+        const runtime = advertised.includes('conversation.control.get')
+          ? await raw('conversation.control.get', {conversationId: params.conversationId}) as any
+          : (await raw('conversation.view.get', {conversationId: params.conversationId, pageSize: 1}) as any)?.runtime;
+        if (runtime?.conversationId !== params.conversationId || typeof runtime?.control?.epoch !== 'string' || !runtime.control.epoch) throw error('remote_contract_invalid');
+        preconditions = {controlEpoch: runtime.control.epoch};
       }
       await persistence?.remember(commandId, params, issuedAt);
 

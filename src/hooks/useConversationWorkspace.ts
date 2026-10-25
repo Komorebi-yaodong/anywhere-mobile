@@ -223,7 +223,7 @@ export function useConversationWorkspace({
   }, [business, commitQueue, commitTurn]);
 
 
-  const refreshCatalog = useCallback(async () => {
+  const readCatalog = useCallback(async () => {
     if (desktopStatus !== '在线') return;
     const epoch = ++catalogEpoch.current;
     const isCurrent = () =>
@@ -256,6 +256,11 @@ export function useConversationWorkspace({
       if (isCurrent()) setCatalogLoading(false);
     }
   }, [api, desktopId, desktopStatus]);
+
+  const catalogRefresh = useMemo(() => createConversationMessageRefresh(readCatalog), [readCatalog]);
+  const refreshCatalog = useCallback(() => catalogRefresh.request(desktopId), [catalogRefresh, desktopId]);
+  useEffect(() => () => catalogRefresh.cancel(), [catalogRefresh]);
+
 
   const loadMoreCatalog = useCallback(async () => {
     if (!catalogPage.hasMore || !catalogPage.nextCursor || catalogLoading)

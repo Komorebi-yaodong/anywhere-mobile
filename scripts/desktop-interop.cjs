@@ -11,7 +11,7 @@ const desktopRoot = path.resolve(process.argv[2] || path.join(mobileRoot, '..', 
 const output = path.join(mobileRoot, 'build', 'remote-v2-check', 'desktop-mobile-interop.mjs');
 const testFile = path.join(desktopRoot, 'tests', 'remote-gateway.test.mjs');
 const desktopRequire = createRequire(path.join(desktopRoot, 'package.json'));
-let source = fs.readFileSync(testFile, 'utf8');
+let source = fs.readFileSync(testFile, 'utf8').replace(/\r\n/g, '\n');
 const helperImport = /import \{([\s\S]*?)\} from '\.\.\/main\/core\/remote\/cryptoSession\.js'/;
 // Restrict the replacement to the crypto helper import, not preceding imports.
 const cryptoStart = source.indexOf('import {\n  completeDevicePairing,');

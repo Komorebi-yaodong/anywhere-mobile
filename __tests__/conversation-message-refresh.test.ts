@@ -7,6 +7,17 @@ function deferred() {
 }
 async function flush() { for (let index = 0; index < 6; index += 1) await Promise.resolve(); }
 
+it('catalog invalidations during an active read cause one fresh trailing scan', async () => {
+ const first = deferred(); const read = jest.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+ const refresh = createConversationMessageRefresh(read);
+ const initial = refresh.request('desktop-fixture');
+ const invalidations = Array.from({length: 40}, () => refresh.request('desktop-fixture'));
+ expect(read).toHaveBeenCalledTimes(1);
+ first.resolve(); await initial; await Promise.all(invalidations);
+ expect(read).toHaveBeenCalledTimes(2);
+ refresh.cancel();
+});
+
 describe('message-page reads are coalesced, never concurrent', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());

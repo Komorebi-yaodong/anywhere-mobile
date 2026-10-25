@@ -26,6 +26,34 @@ it('routes resource reads, durable commands and attachment transfer through inde
  await f.router.route('attachment.chunk', {uploadId: 'upload-fixture', offset: 0}, 30000, 'chunk-request-fixture', 100);
  expect(f.raw).toHaveBeenCalledWith('transfer.request', {method: 'attachment.chunk', params: {uploadId: 'upload-fixture', offset: 0}}, 30000, 'chunk-request-fixture');
 });
+it('uses advertised lightweight control without reading history; old Desktop falls back', async () => {
+ const f = fixture(); const base = f.raw.getMockImplementation()!;
+ f.router.welcome(['remote.contract.negotiate', 'conversation.control.get']);
+ f.raw.mockImplementation((method, params) => method === 'conversation.control.get'
+  ? Promise.resolve({...frozen.runtime, control: {epoch: 'lightweight-epoch', owner: 'this_device', canWrite: true}})
+  : method === 'conversation.view.get' ? new Promise(() => {}) : base(method, params));
+ await f.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId, uiMessageId: 'ui-fixture'}, 30000, 'command-router-fixture', 100);
+ expect(f.raw).toHaveBeenCalledWith('conversation.control.get', {conversationId: frozen.runtime.conversationId});
+ expect(f.raw.mock.calls.some(call => call[0] === 'conversation.view.get')).toBe(false);
+ expect(f.raw).toHaveBeenCalledWith('command.submit', expect.objectContaining({preconditions: {controlEpoch: 'lightweight-epoch'}}), 30000);
+ const old = fixture();
+ await old.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId, uiMessageId: 'ui-fixture'}, 30000, 'command-router-fixture', 100);
+ expect(old.raw).toHaveBeenCalledWith('conversation.view.get', {conversationId: frozen.runtime.conversationId, pageSize: 1});
+});
+it('does not downgrade or submit when advertised control fails or belongs to another conversation', async () => {
+ for (const failed of [false, true]) {
+  const f = fixture(); const base = f.raw.getMockImplementation()!;
+  f.router.welcome(['remote.contract.negotiate', 'conversation.control.get']);
+  f.raw.mockImplementation((method, params) => method === 'conversation.control.get'
+   ? failed ? Promise.reject(Object.assign(new Error('offline'), {code: 'remote_request_timeout'}))
+   : Promise.resolve({...frozen.runtime, conversationId: 'other-conversation', control: {epoch: 'foreign'}})
+   : base(method, params));
+  await expect(f.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId}, 30000, 'command-router-fixture', 100)).rejects.toBeTruthy();
+  expect(f.raw.mock.calls.some(call => ['conversation.view.get', 'command.submit'].includes(call[0]))).toBe(false);
+  expect(f.persistence.remember).not.toHaveBeenCalled();
+ }
+});
+
 it('configuration reads use resource results and do not consume durable command records', async () => {
  const f = fixture();
  await f.router.route('conversation.config.get', {conversationId: frozen.runtime.conversationId}, 30000, 'read-config-fixture', 100);
