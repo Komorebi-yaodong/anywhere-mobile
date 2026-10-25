@@ -42,6 +42,19 @@ it('restores interrupted operation as failure without resubmitting', async () =>
  expect(state.terminal).toBe(true); expect(state.event).toBe('conversation.operation.failed'); expect(state.result.code).toBe('remote_operation_interrupted');
  expect(f.raw.mock.calls.some(call => call[0] === 'command.submit')).toBe(false);
 });
+it('gives config snapshots 120 seconds and retires only proven admission rejection', async () => {
+ const f = fixture();
+ await f.router.route('conversation.config.get', {conversationId: frozen.runtime.conversationId}, 30000, 'config-long-read', 100);
+ expect(f.raw).toHaveBeenCalledWith('resource.get', expect.objectContaining({resource: 'conversation.config.get'}), 120000);
+ const base = f.raw.getMockImplementation()!;
+ for (const code of ['remote_method_unavailable', 'remote_request_timeout', 'remote_operation_storage_failed', 'remote_command_id_conflict']) {
+  f.persistence.settle.mockClear();
+  f.raw.mockImplementation((method, params) => method === 'command.submit' ? Promise.reject(Object.assign(new Error(code), {code})) : base(method, params));
+  await expect(f.router.route('workspace.project.create', {name: 'Synthetic'}, 30000, 'command-rejected-fixture', 100)).rejects.toThrow(code);
+  expect(f.persistence.settle).toHaveBeenCalledTimes(code === 'remote_method_unavailable' ? 1 : 0);
+ }
+});
+
 it('legacy 1.0 keeps original RPC and malformed claimed support never downgrades', async () => {
  const f = fixture(0);
  await f.router.route('workspace.bootstrap.get', {}, 20000, 'legacy-request-fixture', 100);

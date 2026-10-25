@@ -26,6 +26,7 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
     try {await pending} catch (cause) {pending = undefined; throw cause;}
   }
   async function route(method: string, params: Record<string, unknown>, timeout: number, commandId: string, issuedAt: number) {
+    if (method === 'conversation.config.get') timeout = 120000;
     if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.view.get', 'conversation.history.chunk.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
     if (!advertised.includes('remote.contract.negotiate')) return raw(method, params, timeout, commandId);
     await negotiate();
@@ -78,7 +79,15 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
       }
       await persistence?.remember(commandId, params, issuedAt);
 
-      const operation = validateDurableOperation(await raw('command.submit', {commandId, issuedAt, method, params, ...(preconditions ? {preconditions} : {})}, timeout));
+      let operation;
+      try {
+        operation = validateDurableOperation(await raw('command.submit', {commandId, issuedAt, method, params, ...(preconditions ? {preconditions} : {})}, timeout));
+      } catch (cause) {
+        // Only errors proven to reject admission before dispatch are safe to retire.
+        // Transport/storage/conflict failures remain queryable, never replayed.
+        if (['remote_method_unavailable', 'remote_command_unsupported', 'remote_command_id_invalid', 'remote_command_expired', 'remote_contract_negotiation_required', 'remote_control_precondition_required'].includes((cause as {code?: string})?.code || '')) await persistence?.settle(commandId);
+        throw cause;
+      }
       if (operation.terminal) await persistence?.settle(operation.operationId);
 
       if (operation.state === 'failed' || operation.state === 'interrupted') throw error(operation.code || 'remote_command_failed');

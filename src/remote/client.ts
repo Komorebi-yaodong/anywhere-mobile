@@ -53,7 +53,8 @@ export class RemoteRpcError extends Error {
 type PendingRpc = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
+  configRead?: boolean;
 };
 
 type ClientOptions = {
@@ -101,28 +102,62 @@ export class RemoteClient {
     settle: async id => {await updatePendingOperations(this.desktop.id, items => items.filter(item => item.operationId !== id));},
   });
 
+  private operationBatchSupported = false;
+  private recoveryCursor = 0;
+
   private async reconcilePendingOperations(): Promise<void> {
-    const items = await updatePendingOperations(this.desktop.id, current => current);
-    if (!items.length) return;
+    const generation = this.eventGeneration;
+    const current = () => generation === this.eventGeneration && this.status === 'online';
+    const stored = await updatePendingOperations(this.desktop.id, items => items);
+    const eligible = stored.filter(item => !this.submittingOperations.has(item.operationId));
+    if (!eligible.length || !current()) return;
+    const offset = this.recoveryCursor % eligible.length;
+    const items = [...eligible.slice(offset), ...eligible.slice(0, offset)];
+    this.recoveryCursor = (offset + 64) % eligible.length;
     await this.rawRequestTracked('remote.contract.negotiate', {versions: [{major: 1, minor: 1}]}).response;
-    for (const item of items) {
-
-      if (this.submittingOperations.has(item.operationId)) continue;
-      let result;
-      try {result = validateDurableOperation(await this.rawRequestTracked('operation.status.get', {operationId: item.operationId}).response);}
-      catch (cause) {
-        if (!(cause instanceof RemoteRpcError) || cause.code !== 'remote_operation_not_found') throw cause;
-
-        if (Date.now() - item.issuedAt < 60000) continue;
-        this.onEvent?.({kind: 'event', event: 'remote.operation.recovered', payload: {...item, state: 'unknown', terminal: true}});
-        await updatePendingOperations(this.desktop.id, current => current.filter(operation => operation.operationId !== item.operationId));
-        continue;
+    const batches: typeof items[] = [];
+    const batchSize = this.operationBatchSupported ? 64 : 1;
+    for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize));
+    let index = 0;
+    const settle = async (batch: typeof items, results: Array<{operationId: string; state?: string; terminal?: boolean; code?: string | null; error?: string}>) => {
+      if (!current()) return;
+      if (results.some(result => !batch.some(item => item.operationId === result.operationId))) throw new Error('remote_contract_invalid');
+      const finished = new Map<string, {state: string; code?: string | null}>();
+      for (const result of results) {
+        const item = batch.find(candidate => candidate.operationId === result.operationId)!;
+        if (result.error === 'remote_operation_not_found' && Date.now() - item.issuedAt >= 60000) finished.set(item.operationId, {state: 'unknown'});
+        else if (!result.error && result.terminal === true && ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(result.state || '')) finished.set(item.operationId, {state: result.state!, code: result.code});
       }
-      if (result.terminal) {
-        await updatePendingOperations(this.desktop.id, current => current.filter(operation => operation.operationId !== item.operationId));
-        this.onEvent?.({kind: 'event', event: 'remote.operation.recovered', payload: {...item, state: result.state, code: result.code, terminal: true}});
+      if (!finished.size) return;
+      await updatePendingOperations(this.desktop.id, itemsNow => current() ? itemsNow.filter(item => !finished.has(item.operationId)) : itemsNow);
+      if (current()) for (const item of batch) {
+        const result = finished.get(item.operationId);
+        if (result) this.onEvent?.({kind: 'event', event: 'remote.operation.recovered', payload: {...item, ...result, terminal: true}});
       }
-    }
+    };
+    const worker = async () => {
+      while (current()) {
+        const batch = batches[index++];
+        if (!batch) return;
+        try {
+          let results: Array<{operationId: string; state?: string; terminal?: boolean; code?: string | null; error?: string}>;
+          if (this.operationBatchSupported) {
+            const response = await this.rawRequestTracked<{items: typeof results}>('operation.status.batch', {operationIds: batch.map(item => item.operationId)}).response;
+            if (!Array.isArray(response?.items) || response.items.length !== batch.length || new Set(response.items.map(item => item.operationId)).size !== batch.length) throw new Error('remote_contract_invalid');
+            results = response.items;
+          } else {
+            const result = validateDurableOperation(await this.rawRequestTracked('operation.status.get', {operationId: batch[0].operationId}).response);
+            results = [result];
+          }
+          await settle(batch, results);
+        } catch (cause) {
+          if (!this.operationBatchSupported && (cause as {code?: string})?.code === 'remote_operation_not_found') await settle(batch, [{operationId: batch[0].operationId, error: 'remote_operation_not_found'}]);
+          // Isolate a failed batch; never replay or discard its unknown operations.
+          if (!current()) return;
+        }
+      }
+    };
+    await Promise.all(Array.from({length: Math.min(4, batches.length)}, worker));
   }
 
   constructor(options: ClientOptions) {
@@ -189,15 +224,20 @@ export class RemoteClient {
       throw new RemoteRpcError('remote_client_offline');
     }
     const requestId = suppliedRequestId || `request-${randomBase64Url(18)}`;
+    const configRead = method === 'conversation.config.get' || method === 'resource.get' && params.resource === 'conversation.config.get';
+    let startTimeout: (() => void) | undefined;
     const response = new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new RemoteRpcError('remote_request_timeout'));
-      }, timeoutMs);
+      const expire = () => {this.pending.delete(requestId); reject(new RemoteRpcError('remote_request_timeout'));};
+      const timer = configRead ? undefined : setTimeout(expire, timeoutMs);
+      if (configRead) startTimeout = () => {
+        const pending = this.pending.get(requestId);
+        if (pending) pending.timer = setTimeout(expire, 120000);
+      };
       this.pending.set(requestId, {
         resolve: value => resolve(value as T),
         reject,
         timer,
+        configRead,
       });
     });
     const submit = this.sendQueue
@@ -212,6 +252,7 @@ export class RemoteClient {
           method,
           params,
         });
+        startTimeout?.();
         await PinnedGateway.sendText(this.connectionId, JSON.stringify(frame));
       });
     this.sendQueue = submit.catch(() => undefined);
@@ -356,6 +397,7 @@ export class RemoteClient {
         throw remoteError('remote_welcome_invalid');
       }
       this.business.welcome(event.payload.capabilities);
+      this.operationBatchSupported = Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes('operation.status.batch');
 
       this.setStatus('online');
       if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes(RESULT_TRANSFER_CAPABILITY)) {
@@ -405,6 +447,12 @@ export class RemoteClient {
           delivered = {kind: 'event', event: 'conversation.windows.changed', payload: {}};
         }
       }
+      if (generation !== this.eventGeneration || this.status !== 'online') return;
+      if (['assistant.completed', 'assistant.cancelled', 'assistant.failed', 'conversation.operation.completed', 'conversation.operation.failed', 'conversation.config.result', 'conversation.compact.completed', 'conversation.compact.cancelled', 'conversation.compact.failed'].includes(delivered.event) && typeof delivered.payload.requestId === 'string') {
+        try {
+          await updatePendingOperations(this.desktop.id, items => generation === this.eventGeneration && this.status === 'online' ? items.filter(item => item.operationId !== delivered.payload.requestId) : items);
+        } catch { /* Keep recovery metadata, but never suppress an authoritative UI event. */ }
+      }
       if (generation === this.eventGeneration && this.status === 'online') this.onEvent?.(delivered);
     }).catch(() => undefined);
   }
@@ -426,8 +474,10 @@ export class RemoteClient {
     if (!pending) {
       return;
     }
-    clearTimeout(pending.timer);
-    this.pending.delete(requestId);
+    if (!(pending.configRead && payload.ok === true && Object.hasOwn(payload, 'transfer'))) {
+      clearTimeout(pending.timer);
+      this.pending.delete(requestId);
+    }
     if (payload.ok === true) {
       if (Object.hasOwn(payload, 'transfer')) {
         if (!this.transferEnabled || !this.transfers) {pending.reject(remoteError('remote_transfer_not_negotiated')); return;}
@@ -435,8 +485,15 @@ export class RemoteClient {
         const reader = this.transfers;
         reader.read(payload.transfer).then(value => {
           if (generation !== this.eventGeneration || this.status !== 'online') throw remoteError('remote_client_closed');
+          if (pending.configRead) {
+            if (this.pending.get(requestId) !== pending) return;
+            clearTimeout(pending.timer); this.pending.delete(requestId);
+          }
           pending.resolve(value);
-        }).catch(error => pending.reject(asError(error)));
+        }).catch(error => {
+          if (pending.configRead) {clearTimeout(pending.timer); this.pending.delete(requestId);}
+          pending.reject(asError(error));
+        });
         return;
       }
       pending.resolve(payload.result);

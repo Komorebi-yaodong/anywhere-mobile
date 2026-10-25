@@ -224,7 +224,6 @@ export function updatePendingOperations(desktopId: string, update: (items: Pendi
     const items = (stored || []) as PendingRemoteOperation[];
     if (items.some(item => !item || typeof item.operationId !== 'string' || !Number.isFinite(item.issuedAt))) throw new Error('remote_operation_storage_invalid');
     const result = update(items);
-    if (result.length > 128) throw new Error('remote_operation_limit_reached');
     if (JSON.stringify(result) !== JSON.stringify(items) || stored === null && result.length > 0) await writeSecret(service, desktopId, result);
     return result;
   });

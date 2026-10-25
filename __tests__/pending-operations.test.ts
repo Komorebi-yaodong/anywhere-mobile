@@ -21,6 +21,9 @@ it('propagates secure-store failure and never silently drops pending records for
  mockFailWrite = true;
  await expect(updatePendingOperations('desktop-failure-fixture', items => [...items, {operationId: 'pending-fixture', conversationId: null, issuedAt: 1}])).rejects.toThrow();
  mockFailWrite = false;
- await expect(updatePendingOperations('desktop-failure-fixture', () => Array.from({length: 129}, (_, i) => ({operationId: `pending-${i}`, conversationId: null, issuedAt: 1})))).rejects.toThrow('remote_operation_limit_reached');
- expect(await updatePendingOperations('desktop-failure-fixture', items => items)).toEqual([]);
+ const items = await updatePendingOperations('desktop-failure-fixture', () => Array.from({length: 1024}, (_, i) => ({operationId: `pending-${i}`, conversationId: null, issuedAt: 1})));
+ expect(items).toHaveLength(1024);
+ expect(await updatePendingOperations('desktop-failure-fixture', current => current)).toEqual(items);
+ await Promise.all([updatePendingOperations('desktop-failure-fixture', current => [...current, {operationId: 'extra', conversationId: null, issuedAt: 2}]), updatePendingOperations('desktop-failure-fixture', current => current.filter(item => item.operationId !== 'pending-0'))]);
+ expect(await updatePendingOperations('desktop-failure-fixture', current => current)).toHaveLength(1024);
 });

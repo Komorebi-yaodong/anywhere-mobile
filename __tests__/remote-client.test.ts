@@ -5,6 +5,8 @@ import type {
   SessionHello,
 } from '../src/remote/session';
 
+import {PinnedGateway} from '../src/native/PinnedGateway';
+
 import type {GatewayEvent} from '../src/native/PinnedGateway';
 
 let mockListener: ((event: GatewayEvent) => void) | undefined;
@@ -278,6 +280,127 @@ describe('RemoteClient encrypted transport boundary', () => {
       const frames = mockSentTexts.map(text => JSON.parse(text)).filter(item => item.type === 'remote.encrypted');
       expect(frames.map(frame => frame.sequence)).toEqual([1]);
     } finally {await client.close();}
+  });
+
+
+  it('recovers 64-ID batches with at most four in flight and a failed first batch cannot block later cleanup', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    const internals = client as any;
+    internals.operationBatchSupported = true;
+    const count = 321;
+    mockOperationItems.push(...Array.from({length: count}, (_, i) => ({operationId: `command-batch-fixture-${i}`, conversationId: null, issuedAt: Date.now() - 120000})));
+    const waits: Array<{ids: string[]; resolve: (result: unknown) => void; reject: (error: Error) => void}> = [];
+    let inFlight = 0, peak = 0;
+    internals.rawRequestTracked = jest.fn((method: string, params: any) => {
+      if (method === 'remote.contract.negotiate') return {response: Promise.resolve({})};
+      expect(method).toBe('operation.status.batch');
+      expect(params.operationIds.length).toBeLessThanOrEqual(64);
+      inFlight++; peak = Math.max(peak, inFlight);
+      return {response: new Promise((resolve, reject) => waits.push({ids: params.operationIds, resolve, reject})).finally(() => inFlight--)};
+    });
+    const flush = async () => {for (let i = 0; i < 30; i++) await Promise.resolve();};
+    try {
+      const recovery = internals.reconcilePendingOperations();
+      await flush();
+      expect(waits).toHaveLength(4);
+      const complete = (slot: number) => waits[slot].resolve({items: waits[slot].ids.map(operationId => ({operationId, terminal: true, state: 'succeeded', code: null}))});
+      complete(1); await flush();
+      expect(mockOperationItems).toHaveLength(count - 64); // no wait for stalled batch zero
+      complete(2); complete(3); await flush();
+      expect(waits).toHaveLength(6);
+      complete(4); complete(5); waits[0].reject(new Error('synthetic timeout'));
+      await recovery;
+      expect(peak).toBe(4);
+      expect(mockOperationItems).toHaveLength(64);
+      expect(mockOperationItems.every(item => waits[0].ids.includes(item.operationId))).toBe(true);
+    } finally {await client.close();}
+  });
+
+  it('isolates a failed legacy status query and ignores results from a closed generation', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    const internals = client as any;
+    mockOperationItems.push(...Array.from({length: 6}, (_, i) => ({operationId: `command-legacy-recovery-${i}`, conversationId: null, issuedAt: Date.now() - 120000})));
+    internals.rawRequestTracked = jest.fn((method: string, params: any) => ({response: method === 'remote.contract.negotiate' ? Promise.resolve({}) : params.operationId.endsWith('-0') ? Promise.reject(new Error('timeout')) : Promise.resolve({operationId: params.operationId, conversationId: null, state: 'succeeded', terminal: true, code: null, receipt: null, progress: null, acceptedAt: 1, expiresAt: 2})}));
+    await internals.reconcilePendingOperations();
+    expect(mockOperationItems.map(item => item.operationId)).toEqual(['command-legacy-recovery-0']);
+    internals.operationBatchSupported = true;
+    let finish!: (value: unknown) => void;
+    internals.rawRequestTracked = (method: string) => ({response: method === 'remote.contract.negotiate' ? Promise.resolve({}) : new Promise(resolve => {finish = resolve;})});
+    const recovery = internals.reconcilePendingOperations();
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+    await client.close();
+    finish({items: [{operationId: 'command-legacy-recovery-0', state: 'succeeded', terminal: true}]});
+    await recovery;
+    expect(mockOperationItems).toHaveLength(1);
+  });
+
+
+  it('retires a terminal event immediately without resubmitting or waiting for the recovery sweep', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    const operationId = 'command-immediate-terminal-fixture';
+    mockOperationItems.push({operationId, conversationId: null, issuedAt: Date.now()});
+    (client as any).deliverEvent({kind: 'event', event: 'assistant.completed', payload: {requestId: operationId}});
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+    expect(mockOperationItems).toHaveLength(0);
+    expect(mockMethods).not.toContain('command.submit');
+    await client.close();
+  });
+
+
+  it('keeps the original config deadline while an oversized result is being reassembled', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    const internals = client as any;
+    const original = (PinnedGateway.sendText as jest.Mock).getMockImplementation();
+    (PinnedGateway.sendText as jest.Mock).mockImplementation(async () => undefined);
+    jest.useFakeTimers();
+    let finishRead!: (value: unknown) => void;
+    internals.transferEnabled = true;
+    internals.transfers = {read: () => new Promise(resolve => {finishRead = resolve;}), close: () => {}};
+    try {
+      const request = internals.rawRequestTracked('resource.get', {resource: 'conversation.config.get'});
+      const outcome = request.response.catch((error: Error) => error);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(119000);
+      internals.handleResponse({requestId: request.requestId, ok: true, transfer: {id: 'synthetic'}});
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(await outcome).toMatchObject({code: 'remote_request_timeout'});
+      finishRead({late: true});
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(internals.pending.has(request.requestId)).toBe(false);
+    } finally {
+      (PinnedGateway.sendText as jest.Mock).mockImplementation(original);
+      jest.useRealTimers(); await client.close();
+    }
+  });
+
+
+  it('starts the 120-second config timeout only at network submission and never consumes a sequence while queued', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    const internals = client as any;
+    jest.useFakeTimers();
+    let release!: () => void;
+    internals.sendQueue = new Promise<void>(resolve => {release = resolve;});
+    const original = (PinnedGateway.sendText as jest.Mock).getMockImplementation();
+    (PinnedGateway.sendText as jest.Mock).mockImplementation(async () => undefined);
+    try {
+      let settled = false;
+      const pending = internals.rawRequestTracked('resource.get', {resource: 'conversation.config.get'}, 1000).response.catch((error: Error) => {settled = true; return error;});
+      await jest.advanceTimersByTimeAsync(130000);
+      expect(settled).toBe(false);
+      release(); for (let i = 0; i < 10; i++) await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(119999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({code: 'remote_request_timeout'});
+    } finally {
+      (PinnedGateway.sendText as jest.Mock).mockImplementation(original);
+      jest.useRealTimers(); await client.close();
+    }
   });
 
 
