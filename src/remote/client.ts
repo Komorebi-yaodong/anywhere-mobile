@@ -225,13 +225,16 @@ export class RemoteClient {
     }
     const requestId = suppliedRequestId || `request-${randomBase64Url(18)}`;
     const configRead = method === 'conversation.config.get' || method === 'resource.get' && params.resource === 'conversation.config.get';
+    const uploadMethod = method === 'transfer.request' ? params.method : method;
+    const uploadRequest = typeof uploadMethod === 'string' && ['attachment.begin', 'attachment.chunk', 'attachment.complete'].includes(uploadMethod);
+    const deferTimeout = configRead || uploadRequest;
     let startTimeout: (() => void) | undefined;
     const response = new Promise<T>((resolve, reject) => {
       const expire = () => {this.pending.delete(requestId); reject(new RemoteRpcError('remote_request_timeout'));};
-      const timer = configRead ? undefined : setTimeout(expire, timeoutMs);
-      if (configRead) startTimeout = () => {
+      const timer = deferTimeout ? undefined : setTimeout(expire, timeoutMs);
+      if (deferTimeout) startTimeout = () => {
         const pending = this.pending.get(requestId);
-        if (pending) pending.timer = setTimeout(expire, 120000);
+        if (pending) pending.timer = setTimeout(expire, configRead ? 120000 : timeoutMs);
       };
       this.pending.set(requestId, {
         resolve: value => resolve(value as T),
@@ -269,7 +272,11 @@ export class RemoteClient {
       this.rejectPending(requestId, transportError);
       // Encryption consumed a sequence only after this serialized submission
       // began. Never continue on a transport whose delivery is uncertain.
-      if (transportError.code === 'remote_transport_error') this.failConnection(transportError);
+      if (transportError.code === 'remote_transport_error') {
+        const nativeCode = (error as {code?: string})?.code;
+        this.failConnection(transportError, nativeCode === 'SOCKET_WRITE_TIMEOUT' ? 'transport:write_timeout'
+          : nativeCode === 'SOCKET_PONG_TIMEOUT' ? 'transport:pong_timeout' : undefined);
+      }
     });
     return {requestId, response};
   }

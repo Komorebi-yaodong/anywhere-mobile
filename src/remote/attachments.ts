@@ -7,6 +7,7 @@ import {decodeBase64Url, encodeBase64Url, normalizeIdentifier, remoteError} from
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_ATTACHMENT_CHUNK_BYTES = 512 * 1024;
 const uploadWindow = 3;
+export const UPLOAD_REQUEST_TIMEOUT_MS = 90_000;
 export type AttachmentSource = {
   name: string;
   type: string;
@@ -70,7 +71,7 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
       const digest = hash.digest(); sha = encodeBase64Url(digest); digest.fill(0);
     }
     check();
-    const begin = await request<UploadReply>(desktopId, 'attachment.begin', {...metadata, sha256: sha});
+    const begin = await request<UploadReply>(desktopId, 'attachment.begin', {...metadata, sha256: sha}, UPLOAD_REQUEST_TIMEOUT_MS);
     uploadId = normalizeIdentifier(begin.upload.uploadId, 'uploadId', {minLength: 16});
     const chunkSize = begin.upload.maxChunkBytes;
     const sizing = begin.upload.adaptive === true ? createAdaptiveChunkSizer() : null;
@@ -98,7 +99,7 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
         const expectedBytes = offset, expectedIndex = index + 1;
         // Submission order is unchanged; only waiting for receipts is pipelined.
         // Wrap rejections immediately and drain before abort, never retry a chunk.
-        inFlight.push(request<UploadReply>(desktopId, 'attachment.chunk', {uploadId, index, data}).then(reply => {
+        inFlight.push(request<UploadReply>(desktopId, 'attachment.chunk', {uploadId, index, data}, UPLOAD_REQUEST_TIMEOUT_MS).then(reply => {
           if (reply.upload.uploadId !== uploadId || reply.upload.receivedBytes !== expectedBytes || reply.upload.nextChunkIndex !== expectedIndex) throw remoteError('remote_upload_response_invalid');
           sizing?.observe(length, Date.now() - tick, preparationMs);
           acknowledged = Math.max(acknowledged, expectedBytes);
@@ -110,7 +111,7 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
     }
     while (inFlight.length) await settle();
     check();
-    const {upload} = await request<UploadReply>(desktopId, 'attachment.complete', {uploadId});
+    const {upload} = await request<UploadReply>(desktopId, 'attachment.complete', {uploadId}, UPLOAD_REQUEST_TIMEOUT_MS);
     decodeBase64Url(upload.sha256, 'sha256', {minBytes: 32, maxBytes: 32});
     if (upload.uploadId !== uploadId || upload.state !== 'completed' || upload.size !== metadata.size || upload.receivedBytes !== metadata.size || upload.sha256 !== sha) throw remoteError('remote_upload_response_invalid');
     check(); return upload;

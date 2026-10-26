@@ -37,6 +37,8 @@ describe('Remote attachment protocol', () => {
     expect(metadata).toEqual({name: 'fixture.bin', type: 'application/octet-stream', size: data.length, sha256: sha256Base64Url(data)});
     expect(completed.state).toBe('completed');
     expect(calls).toEqual(['attachment.begin', 'attachment.chunk', 'attachment.chunk', 'attachment.chunk', 'attachment.complete']);
+
+    expect(rpc.mock.calls.every(call => (call as unknown[])[3] === 90000)).toBe(true);
     expect(JSON.stringify(rpc.mock.calls)).not.toMatch(/file:\/\/|content:\/\/|localUri/);
   });
 

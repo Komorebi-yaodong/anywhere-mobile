@@ -36,6 +36,12 @@ describe('Safe connection diagnostics', () => {
       message: 'private-secret'})).toBe('transport:timeout');
   });
 
+  it.each(['write_timeout', 'pong_timeout'])('preserves structured %s without exposing native error text', kind => {
+    expect(gatewayFailureDetail({connectionId: 'fixture', type: 'error', failureKind: kind, message: 'private'})).toBe(`transport:${kind}`);
+    expect(describeConnectionFailure(`transport:${kind}`)).toBe(`网络传输中断（${kind}）`);
+  });
+
+
   it('backs off consecutive short sessions and defines a 30 second stable threshold', () => {
     expect([0, 1, 2, 3, 4, 5, 6, 1000].map(reconnectDelayMs))
       .toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);

@@ -36,7 +36,7 @@ import javax.net.ssl.X509TrustManager
 class PinnedGatewayModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
-  private data class SocketRecord(val socket: WebSocket, val client: OkHttpClient)
+  private data class SocketRecord(val socket: WebSocket, val client: OkHttpClient, val writer: GatewaySocketWriter)
 
   private val sockets = ConcurrentHashMap<String, SocketRecord>()
   private val socketLock = Any()
@@ -86,9 +86,10 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
 
       synchronized(socketLock) {
         check(!invalidated) { "Transport module closed" }
-        sockets.remove(connectionId)?.socket?.cancel()
+        sockets.remove(connectionId)?.let { it.writer.close(); it.socket.cancel() }
         val socket = client.newWebSocket(request, gatewayListener(connectionId))
-        sockets[connectionId] = SocketRecord(socket, client)
+        val writer = GatewaySocketWriter(socket) { sockets[connectionId]?.socket === socket && !invalidated }
+        sockets[connectionId] = SocketRecord(socket, client, writer)
       }
       promise.resolve(null)
     } catch (error: Exception) {
@@ -99,17 +100,19 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   @ReactMethod
   fun sendText(connectionId: String, text: String, promise: Promise) {
     val record = sockets[connectionId]
-    if (record != null && record.socket.send(text)) {
-      promise.resolve(null)
-    } else {
+    if (record == null) {
       promise.reject("SOCKET_UNAVAILABLE", "桌面连接不可用。")
+      return
     }
+    record.writer.send(text, { promise.resolve(null) }, { code ->
+      promise.reject(code, "桌面连接发送失败。")
+    })
   }
 
   @ReactMethod
   fun disconnect(connectionId: String, promise: Promise) {
     synchronized(socketLock) {
-      sockets.remove(connectionId)?.socket?.cancel()
+      sockets.remove(connectionId)?.let { it.writer.close(); it.socket.cancel() }
     }
     promise.resolve(null)
   }
@@ -132,6 +135,8 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
       // A WebSocket may be legitimately silent between E2EE RPCs. Do not turn
       // normal idle time into a disconnect; transport ping owns liveness.
       builder.pingInterval(15, TimeUnit.SECONDS)
+      // Large encrypted uploads need a bounded write window, not the HTTP 10s default.
+      builder.writeTimeout(60, TimeUnit.SECONDS)
     }
 
     return when (requireString(options, "tlsMode")) {
@@ -211,28 +216,39 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
     }
 
     override fun onFailure(webSocket: WebSocket, throwable: Throwable, response: Response?) {
-      if (removeSocketIfCurrent(connectionId, webSocket)) {
-        emit(connectionId, "error", failureKind = when (throwable) {
-          is javax.net.ssl.SSLException -> "tls"
-          is java.net.SocketTimeoutException -> "timeout"
-          is java.net.ProtocolException -> "protocol"
-          is java.io.IOException -> "network_io"
-          else -> "transport"
-        })
+      val chain = generateSequence(throwable) { it.cause }.take(8).toList()
+      val timeout = chain.filterIsInstance<java.net.SocketTimeoutException>().firstOrNull()
+      val kind = when {
+        throwable is javax.net.ssl.SSLException -> "tls"
+        timeout != null -> if (timeout.message?.startsWith("sent ping") == true) "pong_timeout" else "write_timeout"
+        throwable is java.net.ProtocolException -> "protocol"
+        throwable is java.io.IOException -> "network_io"
+        else -> "transport"
+      }
+      val code = when (kind) {
+        "write_timeout" -> "SOCKET_WRITE_TIMEOUT"
+        "pong_timeout" -> "SOCKET_PONG_TIMEOUT"
+        else -> "SOCKET_UNAVAILABLE"
+      }
+      if (removeSocketIfCurrent(connectionId, webSocket, code)) {
+        emit(connectionId, "error", failureKind = kind)
       }
     }
   }
 
-  private fun removeSocketIfCurrent(connectionId: String, webSocket: WebSocket): Boolean =
+  private fun removeSocketIfCurrent(connectionId: String, webSocket: WebSocket, failureCode: String = "SOCKET_UNAVAILABLE"): Boolean =
     synchronized(socketLock) {
       val record = sockets[connectionId]
-      record != null && record.socket === webSocket && sockets.remove(connectionId, record)
+      if (record != null && record.socket === webSocket && sockets.remove(connectionId, record)) {
+        record.writer.close(failureCode)
+        true
+      } else false
     }
 
   override fun invalidate() {
     synchronized(socketLock) {
       invalidated = true
-      sockets.values.forEach { it.socket.cancel() }
+      sockets.values.forEach { it.writer.close(); it.socket.cancel() }
       sockets.clear()
     }
     super.invalidate()

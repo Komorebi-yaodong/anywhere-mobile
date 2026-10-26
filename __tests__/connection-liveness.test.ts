@@ -35,6 +35,10 @@ describe('Remote connection liveness boundaries', () => {
     expect(android).toContain('transportClient(options, endpoint, webSocket = true)');
     expect(android).toContain('.readTimeout(if (webSocket) 0 else 20, TimeUnit.SECONDS)');
     expect(android).toContain('builder.pingInterval(15, TimeUnit.SECONDS)');
+
+    expect(android).toContain('builder.writeTimeout(60, TimeUnit.SECONDS)');
+    expect(android).toContain('record.writer.send(text');
+    expect(android).toContain('it.writer.close(); it.socket.cancel()');
   });
 
   it('keeps iOS WebSocket ping lifecycle paired with socket lifecycle', () => {
@@ -46,7 +50,7 @@ describe('Remote connection liveness boundaries', () => {
   it('preserves structured native close diagnostics with exact reason allowlists', () => {
     expect(android).toContain('closeCode = code, closeReason = reason');
     expect(android).toContain('if (it in safeCloseReasons) it else "other"');
-    expect(android).toContain('is java.net.SocketTimeoutException -> "timeout"');
+    expect(android).toContain('"pong_timeout" else "write_timeout"');
     expect(android).not.toContain('emit(connectionId, "error", safeError(throwable))');
     expect(ios).toContain('closeCode: closeCode.rawValue');
     expect(ios).toContain('Self.safeCloseReasons.contains(closeReason) ? closeReason : "other"');

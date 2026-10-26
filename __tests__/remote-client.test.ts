@@ -404,6 +404,36 @@ describe('RemoteClient encrypted transport boundary', () => {
   });
 
 
+  it.each(['attachment.begin', 'attachment.chunk', 'attachment.complete', 'transfer.request'])('starts %s upload deadline at native submission, not behind an earlier send', async method => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect(); const internals = client as any;
+    jest.useFakeTimers(); let release!: () => void;
+    internals.sendQueue = new Promise<void>(resolve => {release = resolve;});
+    const original = (PinnedGateway.sendText as jest.Mock).getMockImplementation();
+    (PinnedGateway.sendText as jest.Mock).mockImplementation(async () => undefined);
+    try {
+      let settled = false;
+      const params = method === 'transfer.request' ? {method: 'attachment.chunk', params: {}} : {};
+      const response = internals.rawRequestTracked(method, params, 90000).response.catch((error: Error) => {settled = true; return error;});
+      await jest.advanceTimersByTimeAsync(120000); expect(settled).toBe(false);
+      release(); for (let i = 0; i < 10; i++) await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(89999); expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1); expect(await response).toMatchObject({code: 'remote_request_timeout'});
+    } finally {release(); (PinnedGateway.sendText as jest.Mock).mockImplementation(original); jest.useRealTimers(); await client.close();}
+  });
+  it('keeps ordinary request enqueue-time timeout unchanged', async () => {
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect(); const internals = client as any;
+    jest.useFakeTimers(); let release!: () => void;
+    internals.sendQueue = new Promise<void>(resolve => {release = resolve;});
+    try {
+      const response = internals.rawRequestTracked('remote.ping', {}, 1000).response.catch((error: Error) => error);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(await response).toMatchObject({code: 'remote_request_timeout'});
+    } finally {release(); jest.useRealTimers(); await client.close();}
+  });
+
+
   it('authenticates before online and carries RPC only in encrypted frames', async () => {
     const statuses: string[] = [];
     const events: string[] = [];
@@ -483,6 +513,17 @@ describe('RemoteClient encrypted transport boundary', () => {
     expect(onStatus).toHaveBeenLastCalledWith('closed', 'server_close:1011:response_send_failed');
     await expect(client.request('remote.ping')).rejects.toMatchObject({code: 'remote_client_offline'});
   });
+
+  it.each([['SOCKET_WRITE_TIMEOUT', 'write_timeout'], ['SOCKET_PONG_TIMEOUT', 'pong_timeout']])('preserves %s if send rejection wins the native event race', async (code, kind) => {
+    const onStatus = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onStatus});
+    await client.connect();
+    (PinnedGateway.sendText as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('private'), {code}));
+    await expect(client.request('attachment.chunk', {data: 'synthetic'})).rejects.toMatchObject({code: 'remote_transport_error'});
+    expect(onStatus).toHaveBeenLastCalledWith('closed', `transport:${kind}`);
+    await client.close();
+  });
+
 
   it('distinguishes a local encrypted receive sequence rejection', async () => {
     const onStatus = jest.fn();

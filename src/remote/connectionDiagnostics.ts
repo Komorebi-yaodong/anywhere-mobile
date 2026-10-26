@@ -22,7 +22,7 @@ const closeReasons = new Set([
   'binary_frames_not_supported',
 ]);
 const failureKinds = new Set([
-  'timeout', 'tls', 'network_io', 'protocol', 'frame_too_large',
+  'timeout', 'write_timeout', 'pong_timeout', 'tls', 'network_io', 'protocol', 'frame_too_large',
   'binary_frame', 'transport', 'cancelled',
 ]);
 
