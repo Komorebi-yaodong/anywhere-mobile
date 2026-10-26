@@ -13,6 +13,7 @@
     "test:remote-contract": "node scripts/verify-remote-contract.cjs",
     "release:metadata": "node scripts/android-release.cjs metadata",
     "test:desktop-interop": "node scripts/desktop-interop.cjs",
+    "test:pairing-interop": "node scripts/pairing-fallback-interop.cjs",
     "test:phone-fixture": "node scripts/phone-fixture.mjs",
     "test:native-upload": "node scripts/native-upload-probe.cjs"
   },

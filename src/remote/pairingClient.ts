@@ -1,4 +1,4 @@
-import type {PairingPayload, PairedDesktop} from '../domain/pairing';
+import {inferTlsMode, orderedPairedEndpoints, type PairingPayload, type PairedDesktop} from '../domain/pairing';
 import {PinnedGateway, TransportTlsOptions} from '../native/PinnedGateway';
 import {
   DeviceIdentitySecret,
@@ -34,6 +34,17 @@ type PairingConfirmResponse = {
   desktopIdentityPublicKey: string;
   device?: {deviceId?: string};
 };
+
+// Native HTTPS errors share one bridge code. Only explicitly unreachable network
+// errors may try another QR-provided address; TLS/identity/HTTP failures fail closed.
+function canTryPairingEndpoint(error: unknown): boolean {
+  const failure = error as {code?: string; message?: string};
+  if (failure?.code !== 'HTTPS_REQUEST_FAILED') return false;
+  const message = String(failure.message || '');
+  if (/certificate|ssl|tls|pinning|fingerprint|hostname|证书|指纹|主机名/i.test(message)) return false;
+  return /failed to connect|connect.*tim(?:ed?\s*out|eout)|connection refused|no route to host|network is unreachable|unable to resolve host|could not connect|cannot connect|network connection was lost|internet connection appears to be offline|无法连接|未能连接|找不到.*服务器/i.test(message);
+}
+
 
 function tlsOptions(payload: PairingPayload): TransportTlsOptions {
   return payload.tlsMode === 'pinned'
@@ -147,17 +158,33 @@ export async function pairDesktop({
     pairingCode,
     device,
   });
-  const transport = tlsOptions(payload);
-  const startHttp = await PinnedGateway.postJson({
-    endpoint: payload.endpoint,
-    path: REMOTE_PAIR_START_PATH,
-    body: JSON.stringify(started.envelope),
-    ...transport,
-  });
-  const startResponse = normalizeStartResponse(
-    parseHttpObject(startHttp.status, startHttp.body, 'start'),
-    payload,
-  );
+  const candidates = orderedPairedEndpoints(payload);
+  let selectedPayload = payload;
+  let startResponse: PairingStartResponse | undefined;
+  for (let index = 0; index < candidates.length; index++) {
+    const endpoint = candidates[index];
+    selectedPayload = {...payload, endpoint, tlsMode: inferTlsMode(endpoint)};
+    let startHttp;
+    try {
+      startHttp = await PinnedGateway.postJson({
+        endpoint,
+        path: REMOTE_PAIR_START_PATH,
+        body: JSON.stringify(started.envelope),
+        ...tlsOptions(selectedPayload),
+      });
+    } catch (error) {
+      if (index + 1 < candidates.length && canTryPairingEndpoint(error)) continue;
+      throw error;
+    }
+    // An HTTP response or failed identity/proof is never permission to switch peers.
+    startResponse = normalizeStartResponse(
+      parseHttpObject(startHttp.status, startHttp.body, 'start'),
+      selectedPayload,
+    );
+    break;
+  }
+  if (!startResponse) throw remoteError('remote_pairing_start_failed');
+  const transport = tlsOptions(selectedPayload);
   const completed = completeDevicePairing({
     devicePrivateKey: identity.privateKey,
     desktopPublicKey: payload.desktopIdentityPublicKey,
@@ -175,7 +202,7 @@ export async function pairDesktop({
     deviceProof: completed.deviceProof,
   });
   const confirmHttp = await PinnedGateway.postJson({
-    endpoint: payload.endpoint,
+    endpoint: selectedPayload.endpoint,
     path: REMOTE_PAIR_CONFIRM_PATH,
     body: JSON.stringify(confirmation),
     ...transport,
@@ -197,11 +224,11 @@ export async function pairDesktop({
   return {
     id: payload.desktopId,
     name: confirmResponse.desktopName.trim() || payload.desktopName,
-    endpoint: payload.endpoint,
+    endpoint: selectedPayload.endpoint,
     endpoints: payload.endpoints,
     certificateFingerprint: payload.certificateFingerprint,
     desktopIdentityPublicKey: payload.desktopIdentityPublicKey,
-    tlsMode: payload.tlsMode,
+    tlsMode: selectedPayload.tlsMode,
     pairedAt: new Date().toISOString(),
   };
 }
