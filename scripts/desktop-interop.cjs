@@ -37,6 +37,8 @@ const {createP256KeyPair} = mobileRequire('./src/remote/crypto.ts');
 const {completeDevicePairing, createPairingStartEnvelope} = mobileRequire('./src/remote/pairing.ts');
 const {completeSessionHello, createSessionHello} = mobileRequire('./src/remote/session.ts');
 const {createResultTransferReader} = mobileRequire('./src/remote/resultTransfer.ts');
+
+const {uploadAttachment} = mobileRequire('./src/remote/attachments.ts');
 ` + source.slice(cryptoEnd + "} from '../main/core/remote/cryptoSession.js'".length);
 source = source.replace(/from '\.\.\/main\/([^']+)'/g, (_, relative) =>
   `from '${pathToFileURL(path.join(desktopRoot, 'main', relative)).href}'`);
@@ -56,6 +58,40 @@ source = source.replace(/\/\/ RESULT_TRANSFER_READER_START[\s\S]*?\/\/ RESULT_TR
   await cleanup;
   return result;
 }`);
+
+const uploadAnchor = '    const eightMiB = 8 * 1024 * 1024';
+if (!source.includes(uploadAnchor)) throw new Error('Desktop adaptive fixture anchor changed');
+source = source.replace(uploadAnchor, `
+    const uploadBytes = Buffer.alloc(10 * 1024 * 1024 + 17, 0x51);
+    const uploadSha = crypto.createHash('sha256').update(uploadBytes).digest('base64url');
+    let uploadOutstanding = 0, uploadPeak = 0, uploadReadOffset = 0;
+    const uploadLengths = [];
+    const mobileUpload = await uploadAttachment({desktopId: 'desktop-interop-upload-fixture',
+      request: async (_desktopId, method, params) => {
+        uploadOutstanding++;uploadPeak = Math.max(uploadPeak, uploadOutstanding);
+        try {
+          const response = await sendEncryptedRequest({socket, session, requestId: 'interop-upload-' + crypto.randomUUID(), method, params});
+          if (!response.ok) throw Object.assign(new Error(response.error.code), {code: response.error.code});
+          return response.result;
+        } finally {uploadOutstanding--;}
+      },
+      source: {name: 'synthetic-sequential.jpg', type: 'image/jpeg', size: uploadBytes.length,
+        hash: async () => uploadSha,
+        read: async () => {throw new Error('native Base64 source expected');},
+        readBase64: async (offset, length) => {
+          assert.equal(uploadOutstanding, 0, 'no next read until the actual encrypted ACK');
+          assert.equal(offset, uploadReadOffset);uploadReadOffset += length;uploadLengths.push(length);
+          return uploadBytes.subarray(offset, offset + length).toString('base64');
+        }}
+    });
+    assert.equal(mobileUpload.state, 'completed');assert.equal(mobileUpload.sha256, uploadSha);
+    assert.equal(mobileUpload.receivedBytes, uploadBytes.length);assert.equal(uploadPeak, 1);
+    assert.equal(uploadLengths[0], 512 * 1024);assert.equal(uploadReadOffset, uploadBytes.length);
+    assert.ok(uploadLengths.every(length => length <= 8 * 1024 * 1024));
+    assert.equal((await sendEncryptedRequest({socket, session, requestId: 'interop-upload-abort-' + crypto.randomUUID(), method: 'attachment.abort', params: {uploadId: mobileUpload.uploadId}})).ok, true);
+    console.log(JSON.stringify({ok: true, suite: 'sequential-mobile-upload-wss', bytes: uploadBytes.length, peakInFlight: uploadPeak, chunkBytes: uploadLengths}));
+` + uploadAnchor);
+
 
 source = source.replace("suite: 'remote-gateway'", "suite: 'desktop-mobile-interop'");
 fs.mkdirSync(path.dirname(output), {recursive: true});

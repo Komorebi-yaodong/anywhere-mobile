@@ -1,14 +1,11 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {utf8ToBytes} from './utf8';
-import {transferBudget, TRANSFER_MAX_CHUNK_BYTES} from './adaptiveTransfer';
+import {createAdaptiveChunkSizer, transferBudget, TRANSFER_MAX_CHUNK_BYTES} from './adaptiveTransfer';
 import type {RemoteRequest} from './api';
 import {decodeBase64Url, encodeBase64Url, normalizeIdentifier, remoteError} from './protocol';
 
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_ATTACHMENT_CHUNK_BYTES = 512 * 1024;
-export const UPLOAD_CHUNK_BYTES = 256 * 1024;
-
-const uploadWindow = 3;
 export const UPLOAD_REQUEST_TIMEOUT_MS = 90_000;
 export type AttachmentSource = {
   name: string;
@@ -42,8 +39,6 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
 }): Promise<RemoteUpload> {
   const metadata = validateAttachment(source);
   let uploadId = '';
-
-  const inFlight: Array<Promise<{error?: unknown}>> = [];
   const check = () => {if (signal?.aborted) throw remoteError('remote_upload_cancelled');};
   const read = async (offset: number, length: number) => {
     check(); const bytes = await source.read(offset, length); check();
@@ -51,12 +46,6 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
     return bytes;
   };
   const hash = sha256.create();
-
-  const settle = async () => {
-    const result = await inFlight.shift()!;
-    if (result.error) throw result.error;
-    check();
-  };
   try {
     check();
     let sha: string;
@@ -80,13 +69,15 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
     const peerMaximum = begin.upload.maxChunkBytes;
     const peerLimit = begin.upload.adaptive === true ? TRANSFER_MAX_CHUNK_BYTES : MAX_ATTACHMENT_CHUNK_BYTES;
     if (!Number.isSafeInteger(peerMaximum) || peerMaximum < 1 || peerMaximum > peerLimit || begin.upload.receivedBytes !== 0 || begin.upload.nextChunkIndex !== 0) throw remoteError('remote_upload_response_invalid');
-    // This is an upload-only sender policy, not a protocol/file/download limit.
-    const chunkSize = Math.min(peerMaximum, UPLOAD_CHUNK_BYTES);
+    const sizing = begin.upload.adaptive === true && peerMaximum >= MAX_ATTACHMENT_CHUNK_BYTES
+      ? createAdaptiveChunkSizer(peerMaximum) : null;
     let acknowledged = 0;
     for (let offset = 0, index = 0; offset < metadata.size; index++) {
       check();
-      const length = Math.min(chunkSize, metadata.size - offset);
+      const length = sizing ? sizing.next(metadata.size - offset) : Math.min(peerMaximum, metadata.size - offset);
       const release = await transferBudget.acquire(length);
+
+      const startedAt = Date.now();
       let data: string;
       try {
         check();
@@ -100,26 +91,23 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
         }
         offset += length;
         const expectedBytes = offset, expectedIndex = index + 1;
-        // Pipeline at most three small frames. Native drain and peer ACK are
-        // separate boundaries; never retry an uncertain chunk.
-        inFlight.push(request<UploadReply>(desktopId, 'attachment.chunk', {uploadId, index, data}, UPLOAD_REQUEST_TIMEOUT_MS).then(reply => {
-          if (reply.upload.uploadId !== uploadId || reply.upload.receivedBytes !== expectedBytes || reply.upload.nextChunkIndex !== expectedIndex) throw remoteError('remote_upload_response_invalid');
-          check();
-          acknowledged = Math.max(acknowledged, expectedBytes);
-          onProgress?.({stage: 'uploading', bytes: acknowledged, total: metadata.size});
-          return {};
-        }).catch(error => ({error})).finally(release));
-      } catch (error) {release(); throw error;}
-      if (inFlight.length >= uploadWindow) await settle();
+        const preparationMs = Date.now() - startedAt;
+        // One peer receipt at a time: native drain is not the Desktop ACK.
+        // No next read/encryption/submission and no retry before this boundary.
+        const reply = await request<UploadReply>(desktopId, 'attachment.chunk', {uploadId, index, data}, UPLOAD_REQUEST_TIMEOUT_MS);
+        if (reply.upload.uploadId !== uploadId || reply.upload.receivedBytes !== expectedBytes || reply.upload.nextChunkIndex !== expectedIndex) throw remoteError('remote_upload_response_invalid');
+        check();
+        sizing?.observe(length, Date.now() - startedAt, preparationMs);
+        acknowledged = expectedBytes;
+        onProgress?.({stage: 'uploading', bytes: acknowledged, total: metadata.size});
+      } finally {release();}
     }
-    while (inFlight.length) await settle();
     check();
     const {upload} = await request<UploadReply>(desktopId, 'attachment.complete', {uploadId}, UPLOAD_REQUEST_TIMEOUT_MS);
     decodeBase64Url(upload.sha256, 'sha256', {minBytes: 32, maxBytes: 32});
     if (upload.uploadId !== uploadId || upload.state !== 'completed' || upload.size !== metadata.size || upload.receivedBytes !== metadata.size || upload.sha256 !== sha) throw remoteError('remote_upload_response_invalid');
     check(); return upload;
   } catch (error) {
-    await Promise.all(inFlight);
     if (uploadId) await request(desktopId, 'attachment.abort', {uploadId}).catch(() => undefined);
     throw error;
   } finally {hash.destroy();}

@@ -27,5 +27,5 @@ run(java('javac'), ['-cp', jars.join(path.delimiter), '-d', output,
   path.join(root, 'tests', 'native', 'GatewaySocketWriterProbe.java'),
   path.join(root, 'tests', 'native', 'GatewayUploadHeartbeatProbe.java')], 15000);
 const mode = process.argv[2];
-const suite = mode === '--heartbeat' || mode === '--heartbeat-large' ? 'GatewayUploadHeartbeatProbe' : 'GatewaySocketWriterProbe';
-run(java('java'), ['-cp', [output, ...jars].join(path.delimiter), `com.anywheremobile.${suite}`, ...(mode === '--heartbeat-large' ? ['--large-control'] : [])], 90000);
+const suite = mode === '--heartbeat' || mode === '--heartbeat-large' || mode === '--heartbeat-sequential' ? 'GatewayUploadHeartbeatProbe' : 'GatewaySocketWriterProbe';
+run(java('java'), ['-cp', [output, ...jars].join(path.delimiter), `com.anywheremobile.${suite}`, ...(mode === '--heartbeat-large' ? ['--large-control'] : mode === '--heartbeat-sequential' ? ['--sequential'] : [])], 90000);

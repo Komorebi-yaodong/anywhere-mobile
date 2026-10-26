@@ -11,7 +11,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 /** Sustained rate-limited uplink, real OkHttp ping + production native writer.
- * 256 KiB raw uploads have ~466.5 KB E2EE text frames. The peer treats these as
+ * 256/512 KiB raw uploads have ~466.5/932.5 KB E2EE text frames. The peer treats these as
  * opaque text: AEAD/actual attachment correctness is covered by SDK/WSS tests.
  * No Android device, application data, public endpoint or trusted TLS bypass.
  */
@@ -27,8 +27,10 @@ public final class GatewayUploadHeartbeatProbe {
   }
   public static void main(String[] args) throws Exception {
     final boolean largeControl = args.length > 0 && args[0].equals("--large-control");
-    final int frameBytes = largeControl ? 14913506 : FRAME_BYTES;
-    final int frameCount = largeControl ? 1 : FRAMES;
+    final boolean sequential = args.length > 0 && args[0].equals("--sequential");
+    final int frameBytes = largeControl ? 14913506 : sequential ? 932546 : FRAME_BYTES;
+    final int frameCount = largeControl ? 1 : sequential ? 4 : FRAMES;
+    final int window = sequential ? 1 : 3;
     ServerSocket listener = new ServerSocket();listener.setReceiveBufferSize(32768);
     listener.bind(new InetSocketAddress("127.0.0.1", 0));
     AtomicInteger received = new AtomicInteger(), pings = new AtomicInteger(), peak = new AtomicInteger();
@@ -89,8 +91,8 @@ public final class GatewayUploadHeartbeatProbe {
       }
       public void onOpen(WebSocket ws, Response response) {
         writer.set(new GatewaySocketWriter(ws, () -> true));
-        // Three application receipts in flight, native drain remains serialized.
-        sendNext();sendNext();sendNext();
+        // Keep the requested application receipt window; native drain is separate.
+        for (int i = 0; i < window; i++) sendNext();
       }
       public void onMessage(WebSocket ws, String text) {
         if (acknowledged.incrementAndGet() == frameCount) done.countDown();else sendNext();
@@ -111,10 +113,10 @@ public final class GatewayUploadHeartbeatProbe {
 
       check(failure.get() == null, "native failure: " + failure.get());
       check(peerError.get() == null, "peer failure: " + peerError.get());
-      check(acknowledged.get() == FRAMES && received.get() == FRAMES, "all chunks acknowledged");
-      check(peak.get() == 3, "three, not one or unlimited, application receipts in flight");
+      check(acknowledged.get() == frameCount && received.get() == frameCount, "all chunks acknowledged");
+      check(peak.get() == window, "application receipt window must match the selected policy");
       check(elapsed > 45000 && pings.get() >= 2, "must exercise multiple actual heartbeat cycles");
-      System.out.println("{\"suite\":\"sustained-upload-heartbeat\",\"ok\":true,\"frameBytes\":" + FRAME_BYTES + ",\"rateBytesPerSecond\":" + RATE_BYTES + ",\"frames\":" + FRAMES + ",\"peakInFlight\":" + peak.get() + ",\"pingsAnswered\":" + pings.get() + ",\"elapsedMs\":" + elapsed + "}");
+      System.out.println("{\"suite\":\"sustained-upload-heartbeat\",\"ok\":true,\"frameBytes\":" + frameBytes + ",\"rateBytesPerSecond\":" + RATE_BYTES + ",\"frames\":" + frameCount + ",\"peakInFlight\":" + peak.get() + ",\"pingsAnswered\":" + pings.get() + ",\"elapsedMs\":" + elapsed + "}");
     } finally {
       if (writer.get() != null) writer.get().close();socket.cancel();listener.close();
       client.dispatcher().executorService().shutdownNow();client.connectionPool().evictAll();peer.join(1000);

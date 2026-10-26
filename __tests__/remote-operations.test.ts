@@ -42,31 +42,34 @@ describe('Remote attachment protocol', () => {
     expect(JSON.stringify(rpc.mock.calls)).not.toMatch(/file:\/\/|content:\/\/|localUri/);
   });
 
-  it.each([[65536, false], [256 * 1024, false], [512 * 1024, false], [8 * 1024 * 1024, true]] as const)('caps peer %i bytes (adaptive=%s) at 256 KiB and keeps three receipts in flight', async (peerMaximum, adaptive) => {
-    const chunkSize = Math.min(peerMaximum, 256 * 1024);
-    const data = new Uint8Array(chunkSize * 6 + 17).fill(7); const sha = sha256Base64Url(data);
+  it.each([[65536, false], [256 * 1024, false], [512 * 1024, false], [8 * 1024 * 1024, true]] as const)('waits for each peer %i-byte ACK (adaptive=%s) before reading or submitting the next chunk', async (peerMaximum, adaptive) => {
+    let clock = 1000;
+    const time = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    const chunkSize = Math.min(peerMaximum, 512 * 1024);
+    const data = new Uint8Array(chunkSize * 3 + 17).fill(7); const sha = sha256Base64Url(data);
     const receipts: Array<() => void> = []; const indices: number[] = []; let completed = false;
     const metadata = {name: 'large.jpg', type: 'image/jpeg', size: data.length, sha256: sha};
     const rpc = jest.fn((_id, method, params = {}) => {
       if (method === 'attachment.chunk') {
         const index = (params as any).index; indices.push(index);
-
-        expect(Math.floor(String((params as any).data).length * 3 / 4)).toBeLessThanOrEqual(256 * 1024);
-        return new Promise(resolve => receipts.push(() => resolve({ok: true, upload: {...metadata, uploadId, receivedBytes: Math.min(data.length, (index + 1) * chunkSize), nextChunkIndex: index + 1}})));
+        return new Promise(resolve => receipts.push(() => {clock += 2000;resolve({ok: true, upload: {...metadata, uploadId, receivedBytes: Math.min(data.length, (index + 1) * chunkSize), nextChunkIndex: index + 1}});}));
       }
       if (method === 'attachment.complete') completed = true;
       return Promise.resolve({ok: true, upload: {...metadata, uploadId, maxChunkBytes: peerMaximum, adaptive, receivedBytes: completed ? data.length : 0, nextChunkIndex: 0, state: completed ? 'completed' : 'uploading'}});
     });
     const nativeHash = jest.fn(async () => sha); const read = jest.fn(async () => new Uint8Array());
-    const upload = uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {...metadata, read, hash: nativeHash, readBase64: async (offset, length) => require('base64-js').fromByteArray(data.slice(offset, offset + length))}});
+    const readBase64 = jest.fn(async (offset, length) => require('base64-js').fromByteArray(data.slice(offset, offset + length)));
+    const upload = uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {...metadata, read, hash: nativeHash, readBase64}});
     const flush = async () => {for (let i = 0; i < 20; i++) await Promise.resolve();};
-    await flush(); expect(indices).toEqual([0, 1, 2]); expect(completed).toBe(false); expect(read).not.toHaveBeenCalled();
-    for (let index = 0; index < Math.ceil(data.length / chunkSize); index++) {
+    await flush(); expect(indices).toEqual([0]); expect(completed).toBe(false); expect(readBase64).toHaveBeenCalledTimes(1);
+    for (let index = 0; index < 4; index++) {
+      expect(indices).toHaveLength(index + 1);
+      expect(readBase64).toHaveBeenCalledTimes(index + 1);
       receipts[index](); await flush();
-      expect(indices.length - index - 1).toBeLessThanOrEqual(3);
+      expect(indices.length - index - 1).toBeLessThanOrEqual(1);
     }
     await expect(upload).resolves.toMatchObject({state: 'completed'});
-    expect(indices).toEqual([0, 1, 2, 3, 4, 5, 6]); expect(nativeHash).toHaveBeenCalledTimes(1);
+    expect(indices).toEqual([0, 1, 2, 3]); expect(nativeHash).toHaveBeenCalledTimes(1); expect(read).not.toHaveBeenCalled();time.mockRestore();
   });
 
   it.each([128 * 1024, 512 * 1024])('honors the peer chunk size %i, including older Desktops, without changing the file cap', async chunkSize => {
@@ -87,7 +90,7 @@ describe('Remote attachment protocol', () => {
       return {ok: true, upload: {...metadata, uploadId, maxChunkBytes: chunkSize, receivedBytes: received, nextChunkIndex: next, state: method === 'attachment.complete' ? 'completed' : 'uploading'}};
     });
     await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'boundary.wav', type: 'audio/wav', size: data.length, read}})).resolves.toMatchObject({state: 'completed'});
-    const effective = Math.min(chunkSize, 256 * 1024);
+    const effective = chunkSize;
     expect(lengths).toEqual([...Array(512 * 1024 / effective).fill(effective), 1]);
     expect(() => validateAttachment({name: 'limit.bin', type: 'application/octet-stream', size: 25 * 1024 * 1024})).not.toThrow();
     expect(() => validateAttachment({name: 'limit.bin', type: 'application/octet-stream', size: 25 * 1024 * 1024 + 1})).toThrow();
@@ -102,7 +105,7 @@ describe('Remote attachment protocol', () => {
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 
-  it('caps uploads at fixed 256 KiB even on fast 8 MiB peers without changing the 25 MiB file cap', async () => {
+  it('slow-starts sequential uploads at 512 KiB and grows through valid ACKs up to 8 MiB without gaps', async () => {
     const total = 24 * 1024 * 1024; const lengths: number[] = [];
     const sha = sha256Base64Url(new Uint8Array([1]));
     let received = 0, index = 0, clock = 1000;
@@ -118,9 +121,9 @@ describe('Remote attachment protocol', () => {
       read: jest.fn(async () => new Uint8Array()), readBase64: async (_offset: number, length: number) => 'A'.repeat(Math.ceil(length * 4 / 3))};
     try {
       await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source})).resolves.toMatchObject({state: 'completed'});
-      expect(lengths[0]).toBe(256 * 1024);
-      expect(lengths).toHaveLength(total / (256 * 1024));
-      expect(lengths.every(length => length === 256 * 1024)).toBe(true);
+      expect(lengths[0]).toBe(512 * 1024);
+      expect([...new Set(lengths)]).toEqual([512 * 1024, 1024 * 1024, 2 * 1024 * 1024, 4 * 1024 * 1024, 8 * 1024 * 1024]);
+      expect(lengths.every(length => length <= 8 * 1024 * 1024)).toBe(true);
       expect(lengths.reduce((sum, length) => sum + length, 0)).toBe(total);
       expect(source.read).not.toHaveBeenCalled();
       expect(rpc.mock.calls.filter(([, method]) => method === 'attachment.begin')).toHaveLength(1);
@@ -128,7 +131,37 @@ describe('Remote attachment protocol', () => {
   });
 
 
-  it('drains in-flight chunks before aborting a refused upload and never retries', async () => {
+  it('backs off after a slow complete ACK and never prepares the next block before that receipt', async () => {
+    let clock = 1000, received = 0, index = 0; const lengths: number[] = [];
+    const time = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    const total = 4 * 1024 * 1024, sha = sha256Base64Url(new Uint8Array([1]));
+    const rpc = jest.fn(async (_id, method, params: any = {}) => {
+      if (method === 'attachment.chunk') {
+        const bytes = Math.floor(params.data.length * 3 / 4);lengths.push(bytes);received += bytes;index++;
+        clock += index === 3 ? 2000 : 50;
+      }
+      return {upload: {uploadId, adaptive: true, maxChunkBytes: 8 * 1024 * 1024, receivedBytes: received, nextChunkIndex: index, sha256: sha, size: total, state: method === 'attachment.complete' ? 'completed' : 'uploading'}};
+    });
+    try {
+      await uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'slow.jpg', type: 'image/jpeg', size: total,
+        hash: async () => sha, read: async () => new Uint8Array(), readBase64: async (_offset, length) => 'A'.repeat(Math.ceil(length * 4 / 3))}});
+      expect(lengths.slice(0, 4)).toEqual([512 * 1024, 512 * 1024, 1024 * 1024, 512 * 1024]);
+    } finally {time.mockRestore();}
+  });
+  it('rejects an invalid ACK before reading another block, releases its budget and never retries', async () => {
+    const readBase64 = jest.fn(async (_offset, length) => 'A'.repeat(Math.ceil(length * 4 / 3)));
+    const sha = sha256Base64Url(new Uint8Array([1]));
+    const rpc = jest.fn(async (_id, _method) => ({upload: {uploadId, adaptive: true, maxChunkBytes: 8 * 1024 * 1024,
+      receivedBytes: 0, nextChunkIndex: 0, state: 'uploading'}}));
+    await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'invalid.jpg', type: 'image/jpeg', size: 2 * 1024 * 1024,
+      hash: async () => sha, read: async () => new Uint8Array(), readBase64}})).rejects.toMatchObject({code: 'remote_upload_response_invalid'});
+    expect(readBase64).toHaveBeenCalledTimes(1);
+    expect(rpc.mock.calls.map(call => call[1])).toEqual(['attachment.begin', 'attachment.chunk', 'attachment.abort']);
+    const release = await require('../src/remote/adaptiveTransfer').transferBudget.acquire(8 * 1024 * 1024);release();
+  });
+
+
+  it('aborts a refused sequential upload without preparing a later chunk or retrying', async () => {
     const data = new Uint8Array(200000).fill(3); const sha = sha256Base64Url(data); const calls: string[] = [];
     const rpc = jest.fn(async (_id, method, params = {}) => {
       calls.push(method);
@@ -140,6 +173,8 @@ describe('Remote attachment protocol', () => {
     expect(calls.at(-1)).toBe('attachment.abort'); expect(calls).not.toContain('attachment.complete');
     const indices = rpc.mock.calls.filter(([, method]) => method === 'attachment.chunk').map(([, , params]) => (params as any).index);
     expect(new Set(indices).size).toBe(indices.length);
+
+    expect(indices).toEqual([0, 1]);
   });
 
 
