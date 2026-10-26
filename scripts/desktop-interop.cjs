@@ -87,7 +87,7 @@ source = source.replace(uploadAnchor, `
     assert.equal(mobileUpload.state, 'completed');assert.equal(mobileUpload.sha256, uploadSha);
     assert.equal(mobileUpload.receivedBytes, uploadBytes.length);assert.equal(uploadPeak, 1);
     assert.equal(uploadLengths[0], 512 * 1024);assert.equal(uploadReadOffset, uploadBytes.length);
-    assert.ok(uploadLengths.every(length => length <= 8 * 1024 * 1024));
+    assert.ok(uploadLengths.every(length => length <= 2 * 1024 * 1024), 'image chunks never exceed the 2 MiB test ceiling');
     assert.equal((await sendEncryptedRequest({socket, session, requestId: 'interop-upload-abort-' + crypto.randomUUID(), method: 'attachment.abort', params: {uploadId: mobileUpload.uploadId}})).ok, true);
     console.log(JSON.stringify({ok: true, suite: 'sequential-mobile-upload-wss', bytes: uploadBytes.length, peakInFlight: uploadPeak, chunkBytes: uploadLengths}));
 ` + uploadAnchor);

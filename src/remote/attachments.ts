@@ -6,6 +6,7 @@ import {decodeBase64Url, encodeBase64Url, normalizeIdentifier, remoteError} from
 
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_ATTACHMENT_CHUNK_BYTES = 512 * 1024;
+export const MAX_IMAGE_UPLOAD_CHUNK_BYTES = 2 * 1024 * 1024;
 export const UPLOAD_REQUEST_TIMEOUT_MS = 90_000;
 export type AttachmentSource = {
   name: string;
@@ -69,12 +70,14 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
     const peerMaximum = begin.upload.maxChunkBytes;
     const peerLimit = begin.upload.adaptive === true ? TRANSFER_MAX_CHUNK_BYTES : MAX_ATTACHMENT_CHUNK_BYTES;
     if (!Number.isSafeInteger(peerMaximum) || peerMaximum < 1 || peerMaximum > peerLimit || begin.upload.receivedBytes !== 0 || begin.upload.nextChunkIndex !== 0) throw remoteError('remote_upload_response_invalid');
-    const sizing = begin.upload.adaptive === true && peerMaximum >= MAX_ATTACHMENT_CHUNK_BYTES
-      ? createAdaptiveChunkSizer(peerMaximum) : null;
+    const uploadMaximum = metadata.type.startsWith('image/')
+      ? Math.min(peerMaximum, MAX_IMAGE_UPLOAD_CHUNK_BYTES) : peerMaximum;
+    const sizing = begin.upload.adaptive === true && uploadMaximum >= MAX_ATTACHMENT_CHUNK_BYTES
+      ? createAdaptiveChunkSizer(uploadMaximum) : null;
     let acknowledged = 0;
     for (let offset = 0, index = 0; offset < metadata.size; index++) {
       check();
-      const length = sizing ? sizing.next(metadata.size - offset) : Math.min(peerMaximum, metadata.size - offset);
+      const length = sizing ? sizing.next(metadata.size - offset) : Math.min(uploadMaximum, metadata.size - offset);
       const release = await transferBudget.acquire(length);
 
       const startedAt = Date.now();
