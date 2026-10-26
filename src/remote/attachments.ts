@@ -1,11 +1,13 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {utf8ToBytes} from './utf8';
-import {createAdaptiveChunkSizer, transferBudget, TRANSFER_MAX_CHUNK_BYTES} from './adaptiveTransfer';
+import {transferBudget, TRANSFER_MAX_CHUNK_BYTES} from './adaptiveTransfer';
 import type {RemoteRequest} from './api';
 import {decodeBase64Url, encodeBase64Url, normalizeIdentifier, remoteError} from './protocol';
 
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_ATTACHMENT_CHUNK_BYTES = 512 * 1024;
+export const UPLOAD_CHUNK_BYTES = 256 * 1024;
+
 const uploadWindow = 3;
 export const UPLOAD_REQUEST_TIMEOUT_MS = 90_000;
 export type AttachmentSource = {
@@ -40,6 +42,7 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
 }): Promise<RemoteUpload> {
   const metadata = validateAttachment(source);
   let uploadId = '';
+
   const inFlight: Array<Promise<{error?: unknown}>> = [];
   const check = () => {if (signal?.aborted) throw remoteError('remote_upload_cancelled');};
   const read = async (offset: number, length: number) => {
@@ -48,6 +51,7 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
     return bytes;
   };
   const hash = sha256.create();
+
   const settle = async () => {
     const result = await inFlight.shift()!;
     if (result.error) throw result.error;
@@ -73,16 +77,16 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
     check();
     const begin = await request<UploadReply>(desktopId, 'attachment.begin', {...metadata, sha256: sha}, UPLOAD_REQUEST_TIMEOUT_MS);
     uploadId = normalizeIdentifier(begin.upload.uploadId, 'uploadId', {minLength: 16});
-    const chunkSize = begin.upload.maxChunkBytes;
-    const sizing = begin.upload.adaptive === true ? createAdaptiveChunkSizer() : null;
-    if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > (sizing ? TRANSFER_MAX_CHUNK_BYTES : MAX_ATTACHMENT_CHUNK_BYTES) || sizing && chunkSize !== TRANSFER_MAX_CHUNK_BYTES || begin.upload.receivedBytes !== 0 || begin.upload.nextChunkIndex !== 0) throw remoteError('remote_upload_response_invalid');
+    const peerMaximum = begin.upload.maxChunkBytes;
+    const peerLimit = begin.upload.adaptive === true ? TRANSFER_MAX_CHUNK_BYTES : MAX_ATTACHMENT_CHUNK_BYTES;
+    if (!Number.isSafeInteger(peerMaximum) || peerMaximum < 1 || peerMaximum > peerLimit || begin.upload.receivedBytes !== 0 || begin.upload.nextChunkIndex !== 0) throw remoteError('remote_upload_response_invalid');
+    // This is an upload-only sender policy, not a protocol/file/download limit.
+    const chunkSize = Math.min(peerMaximum, UPLOAD_CHUNK_BYTES);
     let acknowledged = 0;
     for (let offset = 0, index = 0; offset < metadata.size; index++) {
       check();
-      const length = sizing ? sizing.next(metadata.size - offset) : Math.min(chunkSize, metadata.size - offset);
+      const length = Math.min(chunkSize, metadata.size - offset);
       const release = await transferBudget.acquire(length);
-      const tick = Date.now();
-      let preparationMs = 0;
       let data: string;
       try {
         check();
@@ -94,14 +98,13 @@ export async function uploadAttachment({desktopId, request, source, signal, onPr
           const bytes = await read(offset, length);
           try {data = encodeBase64Url(bytes);} finally {bytes.fill(0);}
         }
-        preparationMs = Date.now() - tick;
         offset += length;
         const expectedBytes = offset, expectedIndex = index + 1;
-        // Submission order is unchanged; only waiting for receipts is pipelined.
-        // Wrap rejections immediately and drain before abort, never retry a chunk.
+        // Pipeline at most three small frames. Native drain and peer ACK are
+        // separate boundaries; never retry an uncertain chunk.
         inFlight.push(request<UploadReply>(desktopId, 'attachment.chunk', {uploadId, index, data}, UPLOAD_REQUEST_TIMEOUT_MS).then(reply => {
           if (reply.upload.uploadId !== uploadId || reply.upload.receivedBytes !== expectedBytes || reply.upload.nextChunkIndex !== expectedIndex) throw remoteError('remote_upload_response_invalid');
-          sizing?.observe(length, Date.now() - tick, preparationMs);
+          check();
           acknowledged = Math.max(acknowledged, expectedBytes);
           onProgress?.({stage: 'uploading', bytes: acknowledged, total: metadata.size});
           return {};

@@ -42,17 +42,20 @@ describe('Remote attachment protocol', () => {
     expect(JSON.stringify(rpc.mock.calls)).not.toMatch(/file:\/\/|content:\/\/|localUri/);
   });
 
-  it.each([65536, 512 * 1024])('keeps only three ordered %i-byte chunks in flight and finishes only after every validated receipt', async chunkSize => {
+  it.each([[65536, false], [256 * 1024, false], [512 * 1024, false], [8 * 1024 * 1024, true]] as const)('caps peer %i bytes (adaptive=%s) at 256 KiB and keeps three receipts in flight', async (peerMaximum, adaptive) => {
+    const chunkSize = Math.min(peerMaximum, 256 * 1024);
     const data = new Uint8Array(chunkSize * 6 + 17).fill(7); const sha = sha256Base64Url(data);
     const receipts: Array<() => void> = []; const indices: number[] = []; let completed = false;
     const metadata = {name: 'large.jpg', type: 'image/jpeg', size: data.length, sha256: sha};
     const rpc = jest.fn((_id, method, params = {}) => {
       if (method === 'attachment.chunk') {
         const index = (params as any).index; indices.push(index);
+
+        expect(Math.floor(String((params as any).data).length * 3 / 4)).toBeLessThanOrEqual(256 * 1024);
         return new Promise(resolve => receipts.push(() => resolve({ok: true, upload: {...metadata, uploadId, receivedBytes: Math.min(data.length, (index + 1) * chunkSize), nextChunkIndex: index + 1}})));
       }
       if (method === 'attachment.complete') completed = true;
-      return Promise.resolve({ok: true, upload: {...metadata, uploadId, maxChunkBytes: chunkSize, receivedBytes: completed ? data.length : 0, nextChunkIndex: 0, state: completed ? 'completed' : 'uploading'}});
+      return Promise.resolve({ok: true, upload: {...metadata, uploadId, maxChunkBytes: peerMaximum, adaptive, receivedBytes: completed ? data.length : 0, nextChunkIndex: 0, state: completed ? 'completed' : 'uploading'}});
     });
     const nativeHash = jest.fn(async () => sha); const read = jest.fn(async () => new Uint8Array());
     const upload = uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {...metadata, read, hash: nativeHash, readBase64: async (offset, length) => require('base64-js').fromByteArray(data.slice(offset, offset + length))}});
@@ -84,7 +87,8 @@ describe('Remote attachment protocol', () => {
       return {ok: true, upload: {...metadata, uploadId, maxChunkBytes: chunkSize, receivedBytes: received, nextChunkIndex: next, state: method === 'attachment.complete' ? 'completed' : 'uploading'}};
     });
     await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source: {name: 'boundary.wav', type: 'audio/wav', size: data.length, read}})).resolves.toMatchObject({state: 'completed'});
-    expect(lengths).toEqual([...Array(512 * 1024 / chunkSize).fill(chunkSize), 1]);
+    const effective = Math.min(chunkSize, 256 * 1024);
+    expect(lengths).toEqual([...Array(512 * 1024 / effective).fill(effective), 1]);
     expect(() => validateAttachment({name: 'limit.bin', type: 'application/octet-stream', size: 25 * 1024 * 1024})).not.toThrow();
     expect(() => validateAttachment({name: 'limit.bin', type: 'application/octet-stream', size: 25 * 1024 * 1024 + 1})).toThrow();
   });
@@ -98,7 +102,7 @@ describe('Remote attachment protocol', () => {
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 
-  it('starts adaptive uploads at 512 KiB, changes later sizes without gaps and retains the 25 MiB cap', async () => {
+  it('caps uploads at fixed 256 KiB even on fast 8 MiB peers without changing the 25 MiB file cap', async () => {
     const total = 24 * 1024 * 1024; const lengths: number[] = [];
     const sha = sha256Base64Url(new Uint8Array([1]));
     let received = 0, index = 0, clock = 1000;
@@ -114,9 +118,9 @@ describe('Remote attachment protocol', () => {
       read: jest.fn(async () => new Uint8Array()), readBase64: async (_offset: number, length: number) => 'A'.repeat(Math.ceil(length * 4 / 3))};
     try {
       await expect(uploadAttachment({desktopId, request: rpc as RemoteRequest, source})).resolves.toMatchObject({state: 'completed'});
-      expect(lengths[0]).toBe(512 * 1024);
-      expect(lengths.some(length => length >= 1024 * 1024)).toBe(true);
-      expect(lengths.every(length => length <= 8 * 1024 * 1024)).toBe(true);
+      expect(lengths[0]).toBe(256 * 1024);
+      expect(lengths).toHaveLength(total / (256 * 1024));
+      expect(lengths.every(length => length === 256 * 1024)).toBe(true);
       expect(lengths.reduce((sum, length) => sum + length, 0)).toBe(total);
       expect(source.read).not.toHaveBeenCalled();
       expect(rpc.mock.calls.filter(([, method]) => method === 'attachment.begin')).toHaveLength(1);
