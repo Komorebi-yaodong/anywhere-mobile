@@ -45,7 +45,9 @@ yarn-error.log
 .env
 .env.*
 !.env.example
+# AI Context & Local Progress
 进度.md
+项目AGENT.md
 .tmp-*.log
 .tmp-*.png
 .bundle/
