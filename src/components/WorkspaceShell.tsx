@@ -72,6 +72,7 @@ import {sortByName} from './nameSort';
 import {mcpTransportSearchTerms} from './mcpPresentation';
 
 import {ContextUsageBar} from './ContextUsageBar';
+import {useContextUsageRefresh} from '../hooks/useContextUsageRefresh';
 
 import {sessionSettingsPatch} from './sessionSettings';
 import {useTheme, useThemedStyles} from './theme';
@@ -633,6 +634,13 @@ export function WorkspaceShell({
     ? workspace.authoritativeRuntime.execution.state !== 'idle'
     : Boolean((selectedTurn && !selectedTurn.terminal) || configExecutionBusy || (!selectedTurn?.terminal && selectedOpenedSession?.busy));
   const canEditSession = connected && controlledByMobile && !sessionBusy;
+  useContextUsageRefresh({
+    active: visible && connected && sheet === 'session' && sessionTab === 'compact' &&
+      Boolean(sessionConfig) && sessionScope.current === workspace.selectedConversationId,
+    desktopId: desktop.id,
+    conversationId: workspace.selectedConversationId || '',
+    request, requestTracked, onUsage: setContextUsage,
+  });
   useEffect(() => {
     setConfigExecutionBusy(selectedOpenedSession?.busy === true);
     if (workspace.activeTurn?.conversationId === workspace.selectedConversationId && workspace.activeTurn.terminal) {

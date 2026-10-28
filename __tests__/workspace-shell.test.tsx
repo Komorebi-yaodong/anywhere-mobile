@@ -975,6 +975,63 @@ test('context settings render the Desktop usage summary above the controls', asy
 });
 
 
+test.each([false, true])('context refresh stays read-only during busy=%s and preserves unsaved settings', async busy => {
+  jest.useFakeTimers();
+  openConfigSession();
+  mockCanWrite = false;
+  mockControlOwner = 'desktop';
+  mockOpenedSessions[0].busy = busy;
+  const props = configFixture(busy);
+  let root!: TestRenderer.ReactTestRenderer;
+  try {
+    await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+    await enterFixtureChat(root);
+    await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置' && node.props.onPress)[0].props.onPress());
+    await act(async () => button(root, '上下文').props.onPress());
+    const before = props.tracked.mock.calls.length;
+    const {ContextUsageBar} = require('../src/components/ContextUsageBar');
+    await act(async () => {jest.advanceTimersByTime(2000);});
+    expect(props.tracked.mock.calls.length).toBe(before + 1);
+    expect(props.tracked.mock.calls.every(call => call[1] === 'conversation.config.get')).toBe(true);
+    expect(root.root.findByType(ContextUsageBar).props.usage.conversationTokens).toBe(300);
+    expect(mockTakeoverConversation).not.toHaveBeenCalled();
+    await act(async () => button(root, 'MCP').props.onPress());
+    const stopped = props.tracked.mock.calls.length;
+    await act(async () => {jest.advanceTimersByTime(10000);});
+    expect(props.tracked.mock.calls.length).toBe(stopped);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    jest.useRealTimers();
+  }
+});
+
+test('context polling never replaces a dirty capacity, ratio or system-prompt draft', async () => {
+  jest.useFakeTimers();
+  openConfigSession();
+  const props = configFixture();
+  let root!: TestRenderer.ReactTestRenderer;
+  try {
+    await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+    await enterFixtureChat(root);
+    await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '会话设置' && node.props.onPress)[0].props.onPress());
+    const prompt = () => root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!;
+    await act(async () => prompt().props.onChangeText('unsaved prompt'));
+    await act(async () => button(root, '上下文').props.onPress());
+    const input = (label: string) => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label)!;
+    await act(async () => input('会话上下文长度').props.onChangeText('65536'));
+    await act(async () => input('压缩触发比例').props.onChangeText('0.8'));
+    await act(async () => {jest.advanceTimersByTime(2000);});
+    expect(input('会话上下文长度').props.value).toBe('65536');
+    expect(input('压缩触发比例').props.value).toBe('0.8');
+    await act(async () => button(root, '系统提示词').props.onPress());
+    expect(prompt().props.value).toBe('unsaved prompt');
+  } finally {
+    if (root) await act(async () => root.unmount());
+    jest.useRealTimers();
+  }
+});
+
+
 test('saves a manually edited context length and fetches context using the Desktop command', async () => {
   openConfigSession();
   const props = configFixture();
