@@ -9,6 +9,8 @@ import {
   type PairingPayload,
 } from '../domain/pairing';
 import {RemoteClient, RemoteEventMessage} from '../remote/client';
+
+import {createEndpointHealth} from '../remote/endpointHealth';
 import {describeConnectionFailure, reconnectDelayMs, stableConnectionMs} from '../remote/connectionDiagnostics';
 import {pairDesktop} from '../remote/pairingClient';
 import {isAvatarCacheValid} from '../services/avatarResourceCache';
@@ -43,6 +45,8 @@ export function useDesktops() {
   const [desktops, setDesktops] = useState<DesktopRuntime[]>([]);
   const desktopsRef = useRef<DesktopRuntime[]>([]);
   const clients = useRef(new Map<string, RemoteClient>());
+
+  const endpointHealth = useRef(createEndpointHealth());
   const appState = useRef(AppState.currentState === 'background' || AppState.currentState === 'inactive' ? AppState.currentState : 'active');
   const resumeEpoch = useRef(0);
 
@@ -142,7 +146,7 @@ export function useDesktops() {
           });
           return;
         }
-        const candidates = orderedPairedEndpoints(desktop);
+        const candidates = endpointHealth.current.order(desktop.id, orderedPairedEndpoints(desktop));
         let lastError: unknown = null;
         for (const endpoint of candidates) {
           if (connectGenerations.current.get(desktop.id) !== generation || appState.current !== 'active') return;
@@ -188,11 +192,13 @@ export function useDesktops() {
           clients.current.set(desktop.id, client);
           try {
             await client.connect();
+
+            endpointHealth.current.success(desktop.id, endpoint);
             if (connectGenerations.current.get(desktop.id) !== generation || clients.current.get(desktop.id) !== client) {
               await client.close();
               return;
             }
-            await client.request('remote.device.profile.update', {
+            client.request('remote.device.profile.update', {
               platform: Platform.OS,
               deviceModel: deviceModel(),
               appVersion: '0.0.1',
@@ -212,6 +218,8 @@ export function useDesktops() {
             return;
           } catch (error) {
             lastError = error;
+
+            endpointHealth.current.fail(desktop.id, endpoint);
             if (clients.current.get(desktop.id) === client) clients.current.delete(desktop.id);
             await client.close().catch(() => undefined);
           }
@@ -279,9 +287,11 @@ export function useDesktops() {
             // A system picker also backgrounds the Activity. Keep a working
             // socket online during the probe so returning uploads are not blocked.
             try {
-              // Only the explicit foreground probe can replace a stale socket;
-              // an ordinary periodic ping failure still cannot force reconnect.
-              await client.request('remote.ping', {}, 4_000);
+              const native = await client.nativeState();
+              if (!native.connected) throw new Error('remote_native_socket_closed');
+              // Pending native writes are not a dead socket. Never interrupt an
+              // upload merely because its RPC ping would wait behind the writer.
+              if (native.queuedBytes === 0) await client.request('remote.ping', {}, 4_000);
               if (current() && clients.current.get(desktop.id) === client) {
                 update(desktop.id, {status: '在线', detail: undefined});
               }

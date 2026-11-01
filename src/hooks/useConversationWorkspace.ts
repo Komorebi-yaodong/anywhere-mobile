@@ -25,6 +25,9 @@ import {createBusinessSession} from '../remote/businessSession';
 import {completeHistory, readSized} from '../remote/historyRead';
 import type {Runtime} from '../../packages/remote-contract';
 
+import {AppState} from 'react-native';
+import {createConversationSnapshots} from '../remote/conversationSnapshots';
+
 export type ActiveConversationTurn = {
   requestId: string;
   conversationId: string;
@@ -63,6 +66,9 @@ export function useConversationWorkspace({
     [desktopId, request, requestTracked],
   );
   const business = useMemo(() => createBusinessSession(desktopId, request), [desktopId, request]);
+
+  const snapshots = useMemo(() => createConversationSnapshots(16 * 1024 * 1024, 6, desktopId), [desktopId]);
+  const appActive = useRef(AppState.currentState !== 'background' && AppState.currentState !== 'inactive');
   const [authoritativeRuntime, setAuthoritativeRuntime] = useState<Runtime | null>(null);
   useEffect(() => {
     business.reset();
@@ -201,6 +207,8 @@ export function useConversationWorkspace({
   );
 
   const forgetMissingConversation = useCallback((conversationId: string) => {
+
+    snapshots.remove(conversationId);
     missingConversationIds.current.add(conversationId);
     business.invalidate(conversationId);
     catalogEpoch.current += 1;
@@ -220,11 +228,11 @@ export function useConversationWorkspace({
       setPendingChoices({}); setAuthoritativeRuntime(null);
       setMessagePage({pageSize: 50, nextBeforeUiOrder: null, hasMore: false});
     }
-  }, [business, commitQueue, commitTurn]);
+  }, [business, commitQueue, commitTurn, snapshots]);
 
 
   const readCatalog = useCallback(async () => {
-    if (desktopStatus !== '在线') return;
+    if (desktopStatus !== '在线' || !appActive.current) return;
     const epoch = ++catalogEpoch.current;
     const isCurrent = () =>
       epoch === catalogEpoch.current &&
@@ -284,7 +292,7 @@ export function useConversationWorkspace({
 
   const readMessages = useCallback(
     async (conversationId: string) => {
-      if (!conversationId || desktopStatus !== '在线') return;
+      if (!conversationId || desktopStatus !== '在线' || !appActive.current) return;
       const epoch = ++messageEpoch.current;
       const requestedTurn = activeTurnRef.current;
       const isCurrent = () =>
@@ -294,10 +302,25 @@ export function useConversationWorkspace({
       setMessagesLoading(true);
       setError('');
       try {
-        const view = await business.read(conversationId, 50);
-        const result = view?.page || await completeHistory(await readSized(size => api.listMessages(conversationId, {pageSize: size}), 50), params => request(desktopId, 'conversation.history.chunk.get', params));
+        const publish = (result: ConversationMessagesResult) => {
+          if (!isCurrent() || result.conversation.conversationId !== conversationId) return;
+          const incoming = result.messages.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
+          const firstOrder = incoming[0]?.order;
+          const older = result.page.hasMore && firstOrder !== undefined
+            ? messagesRef.current.filter(message => message.order < firstOrder && message.order >= (result.page.visibleFromUiOrder || 0) && !deletedUiMessageIdsRef.current.has(message.uiMessageId)) : [];
+          const next = reconcileDesktopMessages(messagesRef.current, [...older, ...incoming]);
+          messagesRef.current = next;
+          setMessages(next);
+          setTasks(Array.isArray(result.tasks) ? result.tasks : []);
+          setConversationModel(typeof result.conversation.model === 'string' ? result.conversation.model : '');
+          setConversationAssistant({code: result.conversation.assistant?.code || '', name: result.conversation.assistant?.name || '', avatarUrl: result.conversation.assistant?.avatarUrl || ''});
+        };
+        const options = {onPage: publish, isCurrent, previousPage: snapshots.get(conversationId)};
+        const view = await business.read(conversationId, 50, options);
+        const result = view?.page || await completeHistory(await readSized(size => api.listMessages(conversationId, {pageSize: size}), 50), params => request(desktopId, 'conversation.history.payload.get', params), options);
         if (!isCurrent()) return;
         setAuthoritativeRuntime(view?.runtime || null);
+
 
         if (view) setPendingChoices(Object.fromEntries(view.runtime.pendingChoices.map(choice => [choice.toolCallId, {
           conversationId, questions: choice.questions as Array<{question: string; header: string; options: Array<{label: string; description: string}>}>,
@@ -314,6 +337,8 @@ export function useConversationWorkspace({
         const nextMessages = reconcileDesktopMessages(messagesRef.current, [...older, ...incoming]);
         messagesRef.current = nextMessages;
         setMessages(nextMessages);
+
+        snapshots.put({...result, messages: nextMessages});
         setTasks(Array.isArray(result.tasks) ? result.tasks : []);
         setConversationModel(typeof result.conversation?.model === 'string' ? result.conversation.model : '');
         setConversationAssistant({
@@ -353,7 +378,7 @@ export function useConversationWorkspace({
         if (isCurrent()) setMessagesLoading(false);
       }
     },
-    [api, business, commitTurn, desktopId, desktopStatus, forgetMissingConversation, request],
+    [api, business, commitTurn, desktopId, desktopStatus, forgetMissingConversation, request, snapshots],
   );
 
   const messageRefresh = useMemo(() => createConversationMessageRefresh(readMessages), [readMessages]);
@@ -364,7 +389,7 @@ export function useConversationWorkspace({
     let active = true;
     let running = false;
     const synchronize = async () => {
-      if (running || !active) return;
+      if (running || !active || !appActive.current) return;
       running = true;
       try {
         if (await business.dirty(selectedConversationId) && active) await loadMessages(selectedConversationId);
@@ -389,6 +414,8 @@ export function useConversationWorkspace({
 
   const loadOlderMessages = useCallback(async () => {
     if (
+      !appActive.current ||
+
       !selectedConversationId ||
       !messagePage.hasMore ||
       messagePage.nextBeforeUiOrder == null ||
@@ -407,14 +434,15 @@ export function useConversationWorkspace({
       const result = await completeHistory(await readSized(size => api.listMessages(selectedConversationId, {
         pageSize: size,
         beforeUiOrder: messagePage.nextBeforeUiOrder ?? undefined,
-      }), messagePage.pageSize), params => request(desktopId, 'conversation.history.chunk.get', params));
+      }), messagePage.pageSize), params => request(desktopId, 'conversation.history.payload.get', params), {isCurrent, previousPage: snapshots.get(selectedConversationId)});
       if (!isCurrent()) return;
       const visibleIncoming = result.messages.filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId));
-      setMessages(current =>
-        mergeById(visibleIncoming, current, 'uiMessageId')
-          .filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId))
-          .sort((left, right) => left.order - right.order),
-      );
+      const merged = mergeById(visibleIncoming, messagesRef.current, 'uiMessageId')
+        .filter(message => !deletedUiMessageIdsRef.current.has(message.uiMessageId))
+        .sort((left, right) => left.order - right.order);
+      messagesRef.current = merged;
+      setMessages(merged);
+      snapshots.put({...result, messages: merged});
       setMessagePage(result.page);
     } catch (cause) {
       if (isCurrent()) {
@@ -425,11 +453,11 @@ export function useConversationWorkspace({
       olderReadRunning.current = false;
       if (isCurrent()) setMessagesLoading(false);
     }
-  }, [api, desktopId, forgetMissingConversation, messagePage, messagesLoading, request, selectedConversationId]);
+  }, [api, desktopId, forgetMissingConversation, messagePage, messagesLoading, request, selectedConversationId, snapshots]);
 
   const openedEpoch = useRef(0);
   const refreshOpenedSessions = useCallback(async () => {
-    if (desktopStatus !== '在线') return;
+    if (desktopStatus !== '在线' || !appActive.current) return;
     const epoch = ++openedEpoch.current;
     try {
       const result = await api.listOpenedSessions();
@@ -499,14 +527,17 @@ export function useConversationWorkspace({
     messageRefresh.cancel();
     deletedUiMessageIdsRef.current.clear();
     scopeRef.current.selectedConversationId = conversationId;
-    setMessages([]);
-    setTasks([]);
-    setConversationModel('');
-    setConversationAssistant({code: '', name: '', avatarUrl: ''});
+    const cached = snapshots.get(conversationId);
+    messagesRef.current = cached?.messages || [];
+    setMessages(messagesRef.current);
+    setTasks(cached?.tasks || []);
+    setConversationModel(cached?.conversation.model || '');
+    setConversationAssistant({code: cached?.conversation.assistant?.code || '', name: cached?.conversation.assistant?.name || '', avatarUrl: cached?.conversation.assistant?.avatarUrl || ''});
+    setAuthoritativeRuntime(null);
     setPendingChoices({});
-    setMessagePage({ pageSize: 50, nextBeforeUiOrder: null, hasMore: false });
+    setMessagePage(cached?.page || {pageSize: 50, nextBeforeUiOrder: null, hasMore: false});
     setSelectedConversationId(conversationId);
-  }, [api, desktopId, desktopStatus, forgetMissingConversation, messageRefresh, refreshOpenedSessions, releaseConversation]);
+  }, [api, desktopId, desktopStatus, forgetMissingConversation, messageRefresh, refreshOpenedSessions, releaseConversation, snapshots]);
 
   const createConversation = useCallback(
     async (promptCode: string) => {
@@ -596,7 +627,7 @@ export function useConversationWorkspace({
   const recoveryInFlight = useRef(false);
   const recoverActiveTurn = useCallback(async () => {
     const active = activeTurnRef.current;
-    if (!active || active.terminal || desktopStatus !== '在线' || recoveryInFlight.current || awaitingSendReceipts.current.has(active.requestId)) return;
+    if (!appActive.current || !active || active.terminal || desktopStatus !== '在线' || recoveryInFlight.current || awaitingSendReceipts.current.has(active.requestId)) return;
     recoveryInFlight.current = true;
     const isCurrent = () => scopeRef.current.desktopId === desktopId &&
       activeTurnRef.current?.requestId === active.requestId && !activeTurnRef.current.terminal;
@@ -668,7 +699,7 @@ export function useConversationWorkspace({
   }, [api, desktopStatus, selectedConversationId, commitQueue, commitTurn]);
 
   const recoverQueue = useCallback(async () => {
-    if (desktopStatus !== '在线') return;
+    if (desktopStatus !== '在线' || !appActive.current) return;
     for (const queued of [...queuedSendsRef.current]) {
       try {
         const state = await api.getRequest(queued.requestId);
@@ -707,7 +738,7 @@ export function useConversationWorkspace({
     }
   }, [api, desktopId, desktopStatus, commitQueue, commitTurn, loadMessages]);
   useEffect(() => {
-    if (desktopStatus !== '在线') return;
+    if (desktopStatus !== '在线' || !appActive.current) return;
     recoverQueue();
     const timer = setInterval(recoverQueue, 2500);
     return () => clearInterval(timer);
@@ -898,11 +929,33 @@ export function useConversationWorkspace({
   }, [desktopStatus, loadMessages, selectedConversationId]);
 
   useEffect(() => {
-    if (desktopStatus !== '在线') return;
+    if (desktopStatus !== '在线' || !appActive.current) return;
     recoverActiveTurn().catch(() => undefined);
     const timer = setInterval(() => { recoverActiveTurn().catch(() => undefined); }, 2500);
     return () => clearInterval(timer);
   }, [desktopStatus, recoverActiveTurn]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      const wasActive = appActive.current;
+      appActive.current = state === 'active';
+      if (!wasActive && appActive.current && scopeRef.current.desktopStatus === '在线') {
+        const id = scopeRef.current.selectedConversationId;
+
+        refreshCatalog().catch(() => undefined);
+        refreshOpenedSessions().catch(() => undefined);
+        if (id) {
+          business.invalidate(id);
+          setAuthoritativeRuntime(null);
+          loadMessages(id).catch(() => undefined);
+        }
+        recoverActiveTurn().catch(() => undefined);
+        recoverQueue().catch(() => undefined);
+      }
+    });
+    return () => subscription.remove();
+  }, [business, loadMessages, recoverActiveTurn, recoverQueue, refreshCatalog, refreshOpenedSessions]);
+
 
   const assertControl = useCallback((conversationId: string) => {
     if (desktopStatus !== '在线') throw new Error('连接正在恢复，暂时无法操作；已保留当前会话。');
@@ -1155,6 +1208,8 @@ export function useConversationWorkspace({
   }, [api, assertControl, recoverActiveTurn]);
 
   const closeConversation = useCallback(async (conversationId: string) => {
+
+    snapshots.remove(conversationId);
     if (!conversationId) return;
     assertControl(conversationId);
     await api.closeConversation(conversationId);
@@ -1175,7 +1230,7 @@ export function useConversationWorkspace({
       );
     }
     await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
-  }, [api, assertControl, commitTurn, refreshCatalog, refreshOpenedSessions]);
+  }, [api, assertControl, commitTurn, refreshCatalog, refreshOpenedSessions, snapshots]);
 
 
 
@@ -1188,6 +1243,8 @@ export function useConversationWorkspace({
   const removeMessageFromView = useCallback((uiMessageId: string) => {
     if (!uiMessageId) return;
     deletedUiMessageIdsRef.current.add(uiMessageId);
+
+    snapshots.remove(scopeRef.current.selectedConversationId);
     // Invalidate any pre-deletion history response. Hide only the exact UI ID,
     // never infer aliases from text or a shared canonical messageId.
     messageEpoch.current += 1;
@@ -1196,7 +1253,7 @@ export function useConversationWorkspace({
     messagesRef.current = remaining;
     setMessages(remaining);
     commitTurn(current => current?.terminal ? {...current, historyLoaded: true} : current);
-  }, [commitTurn]);
+  }, [commitTurn, snapshots]);
 
 
   const refreshMessages = useCallback(async () => {

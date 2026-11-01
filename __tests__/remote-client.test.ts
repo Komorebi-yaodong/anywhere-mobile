@@ -21,6 +21,9 @@ let mockTransfer = false;
 let mockAdaptive = false;
 let mockTransferResult: unknown;
 let mockHoldChunk: Promise<void> | undefined;
+
+let mockPauseHello = false;
+let mockPauseTransferNegotiation = false;
 const mockTransferSnapshots = new Map<string, {bytes: Uint8Array; ref: any}>();
 const mockOperationItems: Array<{operationId: string; conversationId: string | null; issuedAt: number}> = [];
 const mockMethods: string[] = [];
@@ -51,6 +54,8 @@ jest.mock('../src/native/PinnedGateway', () => ({
         await wait;
       }
       if (message.type === 'remote.session.hello') {
+
+        if (mockPauseHello) return;
         const hello = message as SessionHello;
         const {createSessionAcceptForFixture} = require('../src/remote/session') as typeof import('../src/remote/session');
         const accepted = createSessionAcceptForFixture({
@@ -94,6 +99,8 @@ jest.mock('../src/native/PinnedGateway', () => ({
         let transfer;
         if (mockTransfer) {
           if (request?.method === 'remote.transfer.negotiate') {
+
+            if (mockPauseTransferNegotiation) return;
             if (mockAdaptive) mockServerSession?.enableAdaptiveTransfers();
             value = {capabilities: ['remote.transfer.v1', ...(mockAdaptive ? ['remote.transfer.adaptive.v1'] : [])]};
           }
@@ -159,10 +166,34 @@ describe('RemoteClient encrypted transport boundary', () => {
     mockHoldBusinessSend = undefined;
     mockRpcErrorCode = undefined;
 
+    mockPauseHello = false; mockPauseTransferNegotiation = false;
+
     mockV11 = false; mockMethods.length = 0; mockOperationItems.length = 0;
 
     mockTransfer = false; mockAdaptive = false; mockTransferResult = undefined; mockHoldChunk = undefined; mockTransferSnapshots.clear();
   });
+
+  it.each([
+    ['transport', 15000, 'remote_transport_connect_timeout'],
+    ['handshake', 10000, 'remote_handshake_timeout'],
+    ['initialization', 8000, 'remote_initialization_timeout'],
+  ] as const)('distinguishes %s deadline and never publishes online before initialization completes', async (phase, timeout, code) => {
+    jest.useFakeTimers();
+    const statuses: string[] = [];
+    if (phase === 'transport') (PinnedGateway.connectSocket as jest.Mock).mockImplementationOnce(async () => undefined);
+    if (phase === 'handshake') mockPauseHello = true;
+    if (phase === 'initialization') {mockTransfer = true; mockAdaptive = true; mockPauseTransferNegotiation = true;}
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onStatus: status => statuses.push(status)});
+    try {
+      const result = client.connect().catch(error => error.code);
+      await jest.advanceTimersByTimeAsync(timeout - 1);
+      expect(statuses).not.toContain('online');
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await result).toBe(code);
+      expect(statuses.at(-1)).toBe('closed');
+    } finally {await client.close(); jest.useRealTimers();}
+  });
+
 
   it('explicitly negotiates adaptive transfers before consuming larger response chunks', async () => {
     mockTransfer = true; mockAdaptive = true;

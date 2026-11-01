@@ -12,6 +12,8 @@ const remoteCodes = new Set([
   'remote_invalid_base64url', 'remote_identifier_invalid', 'remote_sequence_invalid',
   'remote_payload_size_invalid', 'remote_session_closed', 'remote_ecdh_failed',
   'remote_connect_timeout', 'remote_transport_error', 'remote_transport_closed',
+
+  'remote_transport_connect_timeout', 'remote_handshake_timeout', 'remote_initialization_timeout',
   'remote_session_accept_send_failed', 'remote_welcome_send_failed',
 ]);
 const closeReasons = new Set([

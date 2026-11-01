@@ -36,7 +36,7 @@ import javax.net.ssl.X509TrustManager
 class PinnedGatewayModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
-  private data class SocketRecord(val socket: WebSocket, val client: OkHttpClient, val writer: GatewaySocketWriter)
+  private data class SocketRecord(val socket: WebSocket, val client: OkHttpClient, val writer: GatewaySocketWriter, @Volatile var connected: Boolean = false)
 
   private val sockets = ConcurrentHashMap<String, SocketRecord>()
   private val socketLock = Any()
@@ -110,6 +110,18 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun socketState(connectionId: String, promise: Promise) {
+    synchronized(socketLock) {
+      val record = sockets[connectionId]
+      val state = Arguments.createMap()
+      state.putBoolean("connected", !invalidated && record?.connected == true)
+      state.putDouble("queuedBytes", record?.socket?.queueSize()?.toDouble() ?: 0.0)
+      promise.resolve(state)
+    }
+  }
+
+
+  @ReactMethod
   fun disconnect(connectionId: String, promise: Promise) {
     synchronized(socketLock) {
       sockets.remove(connectionId)?.let { it.writer.close(); it.socket.cancel() }
@@ -179,7 +191,10 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   private fun gatewayListener(connectionId: String) = object : WebSocketListener() {
     override fun onOpen(webSocket: WebSocket, response: Response) {
       synchronized(socketLock) {
-        if (sockets[connectionId]?.socket === webSocket) emit(connectionId, "connected")
+        if (sockets[connectionId]?.socket === webSocket) {
+          sockets[connectionId]?.connected = true
+          emit(connectionId, "connected")
+        }
       }
     }
 

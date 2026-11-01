@@ -37,6 +37,8 @@ type PinnedGatewayModule = {
   connectSocket(options: SocketConnectOptions): Promise<void>;
   sendText(connectionId: string, text: string): Promise<void>;
   disconnect(connectionId: string): Promise<void>;
+
+  socketState(connectionId: string): Promise<{connected: boolean; queuedBytes: number}>;
 };
 
 const nativeModule = NativeModules.PinnedGateway as PinnedGatewayModule | undefined;
@@ -74,6 +76,11 @@ function normalizeTls(options: TransportTlsOptions): TransportTlsOptions {
 }
 
 export const PinnedGateway = {
+
+  socketState(connectionId: string): Promise<{connected: boolean; queuedBytes: number}> {
+    if (!connectionId.trim()) throw new Error('connectionId 不能为空。');
+    return nativeModule.socketState(connectionId.trim());
+  },
   postJson(options: HttpsPostOptions): Promise<NativeHttpResponse> {
     return nativeModule.postJson({
       endpoint: normalizeEndpoint(options.endpoint),

@@ -2,7 +2,7 @@ import routes from '../../packages/remote-contract/routes.json';
 import {validateNegotiation, validateDurableOperation, validateResource} from '../../packages/remote-contract';
 import {decodeStructuredPage} from './structuredContent';
 
-import {completeHistory, readSized} from './historyRead';
+import {readSized} from './historyRead';
 
 type Raw = (method: string, params?: Record<string, unknown>, timeout?: number, requestId?: string) => Promise<unknown>;
 const error = (code: string) => Object.assign(new Error(code), {code});
@@ -27,7 +27,7 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
   }
   async function route(method: string, params: Record<string, unknown>, timeout: number, commandId: string, issuedAt: number) {
     if (method === 'conversation.config.get') timeout = 120000;
-    if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.control.get', 'conversation.view.get', 'conversation.history.chunk.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
+    if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.control.get', 'conversation.view.get', 'conversation.history.payload.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
     if (!advertised.includes('remote.contract.negotiate')) return raw(method, params, timeout, commandId);
     await negotiate();
     if (!negotiation || negotiation.selected.minor < 1) return raw(method, params, timeout, commandId);
@@ -64,7 +64,7 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
         return {ok: true};
       }
 
-      return method === 'conversation.messages.list' ? completeHistory(decodeStructuredPage(response.value), chunkParams => raw('conversation.history.chunk.get', chunkParams, timeout)) : response.value;
+      return method === 'conversation.messages.list' ? decodeStructuredPage(response.value) : response.value;
     }
     if (routes.transfers.includes(method)) return raw('transfer.request', {method, params}, timeout, commandId);
 

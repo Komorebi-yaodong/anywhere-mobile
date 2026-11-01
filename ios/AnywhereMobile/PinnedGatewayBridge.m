@@ -25,6 +25,11 @@ RCT_EXTERN_METHOD(sendText:(NSString *)connectionId
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(socketState:(NSString *)connectionId
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+
 RCT_EXTERN_METHOD(disconnect:(NSString *)connectionId
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)

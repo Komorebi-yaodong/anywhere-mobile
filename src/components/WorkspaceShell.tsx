@@ -390,6 +390,12 @@ export function WorkspaceShell({
         request<{ok: true; assistants: RemoteAssistant[]}>(desktop.id, 'conversation.assistants.list'),
         request<{ok: true; assistants: WorkspaceBootstrap['assistants']}>(desktop.id, 'workspace.assistants.list'),
       ]);
+      // Metadata is sufficient for first paint; optional avatar downloads must
+      // not leave the entire workspace blank behind a slow resource.
+      setBootstrap(value);
+      setRouteAssistants(routes.assistants || []);
+      setLoadingWorkspace(false);
+
       const cachedAvatar = desktop.avatarCache;
       let nextAvatarCache: AvatarCache | undefined;
       if (value.profile.avatar) {

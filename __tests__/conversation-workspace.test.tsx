@@ -1,4 +1,6 @@
 import React from 'react';
+
+import {AppState, type AppStateStatus} from 'react-native';
 import TestRenderer, {act} from 'react-test-renderer';
 import {useConversationWorkspace} from '../src/hooks/useConversationWorkspace';
 import type {DesktopStatus} from '../src/domain/pairing';
@@ -88,6 +90,44 @@ function fixture() {
 }
 
 describe('conversation workspace state boundaries', () => {
+
+  beforeEach(() => {jest.spyOn(AppState, 'addEventListener').mockImplementation(() => ({remove: jest.fn()}));});
+  afterEach(() => jest.restoreAllMocks());
+
+  it('pauses business polling in background and reconciles on resume without replaying writes', async () => {
+    jest.useFakeTimers(); let listener!: (state: AppStateStatus) => void;
+    const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_name, callback) => {listener = callback; return {remove: jest.fn()};});
+    const f = fixture(); let root!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      const content = f.state.messages;
+      await act(async () => listener('background'));
+      f.rpc.mockClear();
+      await act(async () => jest.advanceTimersByTime(15000));
+      expect(f.rpc).not.toHaveBeenCalled();
+      expect(f.state.messages).toEqual(content);
+      await act(async () => listener('active'));
+      expect(f.rpc.mock.calls.some(call => call[1] === 'conversation.messages.list')).toBe(true);
+      expect(f.tracked).not.toHaveBeenCalled();
+    } finally {await act(async () => root?.unmount()); spy.mockRestore(); jest.useRealTimers();}
+  });
+
+
+  it('restores a bounded read-only transcript immediately on revisit while the fresh read waits', async () => {
+    const f = fixture(); let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    const original = f.state.messages;
+    await act(async () => {f.state.selectConversation(B);});
+    const wait = deferred<unknown>(), base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A ? wait.promise : base(id, method, params));
+    await act(async () => {f.state.selectConversation(A);});
+    expect(f.state.messages).toEqual(original);
+    expect(f.state.authoritativeRuntime).toBeNull();
+    await act(async () => {wait.resolve(page(A, 'fresh authoritative body'));});
+    expect(f.state.messages[0].payload.content).toBe('fresh authoritative body');
+    await act(async () => root.unmount());
+  });
+
 
   it('never releases a selected writer on connection-status changes, only when actually leaving the workspace', async () => {
     const f = fixture(); let root!: TestRenderer.ReactTestRenderer;

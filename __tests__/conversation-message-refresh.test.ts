@@ -67,6 +67,23 @@ describe('message-page reads are coalesced, never concurrent', () => {
     refresh.cancel();
   });
 
+  it('starts a new conversation while an abandoned old read still waits, without old completion owning the new lane', async () => {
+    const old = deferred(), fresh = deferred();
+    const read = jest.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise).mockResolvedValue(undefined);
+    const refresh = createConversationMessageRefresh(read);
+    const first = refresh.request('conversation-A');
+    refresh.cancel();
+    const second = refresh.request('conversation-B');
+    expect(read.mock.calls.map(([id]) => id)).toEqual(['conversation-A', 'conversation-B']);
+    const trailing = refresh.request('conversation-B');
+    old.resolve(); await first; await flush();
+    expect(read).toHaveBeenCalledTimes(2);
+    fresh.resolve(); await second; await trailing; await flush();
+    expect(read).toHaveBeenCalledTimes(3);
+    refresh.cancel();
+  });
+
+
   it('keeps the scheduler usable after a failed read', async () => {
     const read = jest.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined);
     const refresh = createConversationMessageRefresh(read);

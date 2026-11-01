@@ -1,5 +1,7 @@
 import type {PairedDesktop} from '../domain/pairing';
 
+import {AppState} from 'react-native';
+
 import {createBusinessRouter} from './businessRouter';
 import {createResultTransferReader, RESULT_TRANSFER_CAPABILITY} from './resultTransfer';
 import {ADAPTIVE_TRANSFER_CAPABILITY} from './adaptiveTransfer';
@@ -168,6 +170,12 @@ export class RemoteClient {
     this.onEvent = options.onEvent;
   }
 
+  private armConnectDeadline(code: string, timeoutMs: number): void {
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = setTimeout(() => this.failConnection(new RemoteRpcError(code)), timeoutMs);
+  }
+
+
   async connect(): Promise<void> {
     if (this.status !== 'idle' && this.status !== 'closed') {
       throw remoteError('remote_client_state_invalid');
@@ -178,10 +186,7 @@ export class RemoteClient {
     const connected = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
       this.connectReject = reject;
-      this.connectTimer = setTimeout(
-        () => this.failConnection(new RemoteRpcError('remote_connect_timeout')),
-        20_000,
-      );
+      this.armConnectDeadline('remote_transport_connect_timeout', 15_000);
     });
     try {
       const nativeConnect = PinnedGateway.connectSocket({
@@ -281,6 +286,12 @@ export class RemoteClient {
     return {requestId, response};
   }
 
+  async nativeState() {
+    if (this.status !== 'online') return {connected: false, queuedBytes: 0};
+    return PinnedGateway.socketState(this.connectionId);
+  }
+
+
   async close(): Promise<void> {
     this.connectReject?.(new RemoteRpcError('remote_client_closed'));
     this.cleanup(true);
@@ -302,6 +313,8 @@ export class RemoteClient {
     }
     try {
       if (event.type === 'connected') {
+
+        this.armConnectDeadline('remote_handshake_timeout', 10_000);
         const handshake = createSessionHello({
           rootSecret: this.rootSecret,
           deviceId: this.identity.deviceId,
@@ -406,23 +419,26 @@ export class RemoteClient {
       this.business.welcome(event.payload.capabilities);
       this.operationBatchSupported = Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes('operation.status.batch');
 
-      this.setStatus('online');
+      // Internal readiness permits only initialization RPCs. Do not publish
+      // online until the transfer contract is ready for business reads.
+      this.status = 'online';
+      this.armConnectDeadline('remote_initialization_timeout', 8_000);
       if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes(RESULT_TRANSFER_CAPABILITY)) {
         const generation = this.eventGeneration;
         this.transferEnabled = true; // The request below explicitly opts in before any ready event can arrive.
         const adaptive = event.payload.capabilities.includes(ADAPTIVE_TRANSFER_CAPABILITY);
         if (adaptive) this.cryptoSession?.enableAdaptiveTransfers();
         this.transfers = createResultTransferReader((method, params) => this.rawRequestTracked(method, params, 20_000).response, adaptive);
-        this.rawRequestTracked<{capabilities: string[]}>('remote.transfer.negotiate', {capabilities: [RESULT_TRANSFER_CAPABILITY, ...(adaptive ? [ADAPTIVE_TRANSFER_CAPABILITY] : [])]}).response.then(reply => {
+        this.rawRequestTracked<{capabilities: string[]}>('remote.transfer.negotiate', {capabilities: [RESULT_TRANSFER_CAPABILITY, ...(adaptive ? [ADAPTIVE_TRANSFER_CAPABILITY] : [])]}, 8_000).response.then(reply => {
           if (generation !== this.eventGeneration || this.status !== 'online') return;
           this.transferEnabled = reply?.capabilities?.includes(RESULT_TRANSFER_CAPABILITY) === true;
           this.finishConnect();
-        }).catch(() => {if (generation === this.eventGeneration && this.status === 'online') {this.transferEnabled = false; this.finishConnect();}});
+        }).catch(error => {if (generation === this.eventGeneration && this.status === 'online') this.failConnection(asError(error));});
       } else this.finishConnect();
 
       if (Array.isArray(event.payload.capabilities) && event.payload.capabilities.includes('operation.status.get')) {
         const recover = async () => {
-          if (this.operationRecoveryRunning || this.status !== 'online') return;
+          if (this.operationRecoveryRunning || this.status !== 'online' || AppState.currentState === 'background' || AppState.currentState === 'inactive') return;
           this.operationRecoveryRunning = true;
           try {await this.reconcilePendingOperations();}
           catch {if (this.status === 'online') this.onEvent?.({kind: 'event', event: 'remote.operation.recovery.failed', payload: {}});}
@@ -519,6 +535,8 @@ export class RemoteClient {
   }
 
   private finishConnect(): void {
+
+    this.setStatus('online');
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = undefined;

@@ -3,7 +3,7 @@ import type {ConversationMessagesResult, RemoteRequest} from './api';
 
 import {decodeStructuredPage} from './structuredContent';
 
-import {completeHistory, readSized} from './historyRead';
+import {completeHistory, readSized, type HistoryReadOptions} from './historyRead';
 
 export type ConversationView = View<ConversationMessagesResult>;
 const invalid = () => Object.assign(new Error('remote_contract_invalid'), {code: 'remote_contract_invalid'});
@@ -14,8 +14,8 @@ export function createBusinessSession(desktopId: string, request: RemoteRequest)
   let negotiation: Promise<Negotiation | null> | undefined;
   let ticket = 0;
   let negotiatedView = false;
-  const views = new Map<string, {ticket: number; value: ConversationView}>();
-  function reset() {generation++; negotiation = undefined; negotiatedView = false; views.clear();}
+  const views = new Map<string, {ticket: number; value: ConversationView; bytes: number}>();
+  function reset() {generation++; negotiation = undefined; views.clear();}
   async function discover() {
     const status = await request<{capabilities?: string[]}>(desktopId, 'remote.status.get');
     if (!Array.isArray(status?.capabilities) || !status.capabilities.includes('remote.contract.negotiate')) return null;
@@ -34,19 +34,36 @@ export function createBusinessSession(desktopId: string, request: RemoteRequest)
     const result = await negotiate();
     return Boolean(result && capabilities.every(capability => result.capabilities.includes(capability)));
   }
-  async function read(conversationId: string, pageSize = 50): Promise<ConversationView | null> {
+  async function read(conversationId: string, pageSize = 50, options: HistoryReadOptions = {}): Promise<ConversationView | null> {
     const started = generation;
     if (!await enabled()) return null;
     if (generation !== started) throw invalid();
     negotiatedView = true;
     const currentTicket = ++ticket;
     const raw = await readSized(size => request<any>(desktopId, 'conversation.view.get', {conversationId, pageSize: size}), pageSize);
-    const page = await completeHistory(decodeStructuredPage(raw.page), params => request(desktopId, 'conversation.history.chunk.get', params));
+    const initial = validateView<ConversationMessagesResult>({...raw, page: decodeStructuredPage(raw.page)});
+    if (generation !== started || initial.runtime.conversationId !== conversationId || initial.page.conversation.conversationId !== conversationId) throw invalid();
+    const page = await completeHistory(initial.page, params => request(desktopId, 'conversation.history.payload.get', params), {
+      onPage: preview => {
+        const previous = views.get(conversationId);
+        if (previous && (previous.ticket > currentTicket || previous.value.serverEpoch === initial.serverEpoch && previous.value.sequence > initial.sequence)) return;
+        options.onPage?.(preview);
+      },
+
+      previousPage: options.previousPage || views.get(conversationId)?.value.page,
+      isCurrent: () => generation === started && (!options.isCurrent || options.isCurrent()),
+    });
     const value = validateView<ConversationMessagesResult>({...raw, page});
     if (generation !== started || value.runtime.conversationId !== conversationId) throw invalid();
     const previous = views.get(conversationId);
     if (previous && (previous.ticket > currentTicket || previous.value.serverEpoch === value.serverEpoch && previous.value.sequence > value.sequence)) return previous.value;
-    views.set(conversationId, {ticket: currentTicket, value});
+    const bytes = JSON.stringify(value).length * 2;
+    views.delete(conversationId);
+    views.set(conversationId, {ticket: currentTicket, value, bytes});
+    // Share message objects with the workspace, but bound strong references so
+    // visiting conversations does not create a second unbounded body cache.
+    while (views.size > 6 || views.size > 1 && [...views.values()].reduce((sum, item) => sum + item.bytes, 0) > 16 * 1024 * 1024) views.delete(views.keys().next().value!);
+    if (bytes > 16 * 1024 * 1024) views.set(conversationId, {ticket: currentTicket, bytes: 0, value: {...value, page: {...value.page, messages: []}}});
     return value;
   }
   async function dirty(conversationId: string): Promise<boolean> {

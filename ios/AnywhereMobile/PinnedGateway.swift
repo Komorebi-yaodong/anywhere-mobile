@@ -222,6 +222,16 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
     }
   }
 
+  @objc(socketState:resolver:rejecter:)
+  func socketState(_ connectionId: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+    let connected = withStateLock {
+      guard let socket = sockets[connectionId] else { return false }
+      return socket.state == .running && socket.closeCode == .invalid
+    }
+    resolve(["connected": connected, "queuedBytes": 0])
+  }
+
+
   @objc(disconnect:resolver:rejecter:)
   func disconnect(
     _ connectionId: String,

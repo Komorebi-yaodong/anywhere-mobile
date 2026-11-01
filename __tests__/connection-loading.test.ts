@@ -1,0 +1,30 @@
+import {createConversationSnapshots} from '../src/remote/conversationSnapshots';
+import {createEndpointHealth} from '../src/remote/endpointHealth';
+import type {ConversationMessagesResult} from '../src/remote/api';
+const page = (id: string, content = 'ok') => ({conversation: {conversationId: id}, messages: [{uiMessageId: id, payload: {content}}], tasks: [], page: {hasMore: false}} as unknown as ConversationMessagesResult);
+it('bounds read-only snapshots by LRU count/heap size and supports deletion invalidation', () => {
+ const snapshots = createConversationSnapshots(3000, 2);
+ snapshots.put(page('A')); snapshots.put(page('B'));
+ expect(snapshots.get('A')?.messages[0].uiMessageId).toBe('A');
+ snapshots.put(page('C'));
+ expect(snapshots.get('B')).toBeNull();
+ expect(snapshots.get('A')).not.toHaveProperty('runtime');
+ snapshots.remove('A'); expect(snapshots.get('A')).toBeNull();
+ snapshots.put(page('C', '中'.repeat(3000)));
+ expect(snapshots.get('C')).toBeNull();
+});
+it('ranks only trusted endpoints, cools failures, retries earliest when all cool and never deadlocks', () => {
+ let now = 1000;
+ const health = createEndpointHealth(() => now);
+ const paired = ['https://paired-lan', 'https://paired-tunnel'];
+ expect(health.order('desktop', paired)).toEqual(paired);
+ health.fail('desktop', paired[0]);
+ expect(health.order('desktop', paired)).toEqual([paired[1]]);
+ health.success('desktop', paired[1]); now += 10000;
+ expect(health.order('desktop', paired)).toEqual([paired[1], paired[0]]);
+ health.fail('desktop', paired[1]); health.fail('desktop', paired[0]);
+ expect(health.order('desktop', paired)).toHaveLength(1);
+ now += 120000;
+ expect(new Set(health.order('desktop', paired))).toEqual(new Set(paired));
+ expect(health.order('other', paired)).toEqual(paired);
+});

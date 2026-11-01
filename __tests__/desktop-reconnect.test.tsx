@@ -8,6 +8,8 @@ import {useDesktops} from '../src/hooks/useDesktops';
 type MockClient = {onStatus: (status: RemoteClientStatus, detail?: string) => void};
 const mockClients: MockClient[] = [];
 const mockProbe = jest.fn(async () => ({}));
+
+const mockNativeState = jest.fn(async () => ({connected: true, queuedBytes: 0}));
 const mockConnectAttempt = jest.fn(async () => undefined);
 const mockInitialize = jest.fn(async () => ({}));
 let mockAppStateListener: (state: AppStateStatus) => void;
@@ -42,6 +44,8 @@ jest.mock('../src/remote/client', () => ({
       this.options.onStatus('online');
     }
     async request(method: string) { return method === 'remote.ping' ? mockProbe() : mockInitialize(); }
+
+    async nativeState() { return mockNativeState(); }
     async close() { this.options.onStatus('closed'); }
   },
 }));
@@ -53,6 +57,8 @@ describe('Desktop reconnect lifecycle', () => {
   beforeEach(() => {
     jest.useFakeTimers(); mockClients.length = 0;
     mockProbe.mockReset().mockResolvedValue({});
+
+    mockNativeState.mockReset().mockResolvedValue({connected: true, queuedBytes: 0});
     mockConnectAttempt.mockReset().mockResolvedValue(undefined);
     mockInitialize.mockReset().mockResolvedValue({});
     mockRemoveListener.mockClear();
@@ -192,6 +198,26 @@ describe('Desktop reconnect lifecycle', () => {
     expect(latest.desktops[0].status).toBe('在线');
     await act(async () => root.unmount());
   });
+
+  it('replaces a native-closed socket without waiting for the application ping timeout', async () => {
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<Harness />);});
+    mockNativeState.mockResolvedValueOnce({connected: false, queuedBytes: 0});
+    await act(async () => {mockAppStateListener('background'); mockAppStateListener('active');});
+    expect(mockProbe).not.toHaveBeenCalled();
+    expect(mockClients).toHaveLength(2);
+    await act(async () => root.unmount());
+  });
+  it('does not enqueue a foreground probe behind native upload bytes', async () => {
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<Harness />);});
+    mockNativeState.mockResolvedValueOnce({connected: true, queuedBytes: 524288});
+    await act(async () => {mockAppStateListener('background'); mockAppStateListener('active');});
+    expect(mockProbe).not.toHaveBeenCalled();
+    expect(mockClients).toHaveLength(1);
+    await act(async () => root.unmount());
+  });
+
 
   it('manual reconnect does not await a stalled initialization from the old connection', async () => {
     let release!: (value: {}) => void;

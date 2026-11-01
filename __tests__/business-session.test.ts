@@ -49,6 +49,23 @@ it('accepts frozen v1 plus unknown optional fields and rejects unknown critical 
   view.runtime.execution.state = 'new_unsafe_state';
   expect(() => validateView(view)).toThrow('remote_contract_invalid');
 });
+it('never publishes an older concurrent preview or accepts runtime authority from a reset session', async () => {
+  const {rpc, sdk} = fixture(); await sdk.enabled();
+  const slow = deferred<unknown>(); let count = 0;
+  const base = rpc.getMockImplementation()!;
+  rpc.mockImplementation((id, method) => method === 'conversation.view.get' ? ++count === 1 ? slow.promise : Promise.resolve({...clone(frozen), sequence: 9}) : base(id, method));
+  const oldPreview = jest.fn();
+  const first = sdk.read(CID, 50, {onPage: oldPreview});
+  await Promise.resolve(); await Promise.resolve();
+  await sdk.read(CID);
+  slow.resolve({...clone(frozen), sequence: 7});
+  expect((await first)?.sequence).toBe(9);
+  expect(oldPreview).not.toHaveBeenCalled();
+  sdk.reset();
+  expect(sdk.runtime(CID)).toBeNull();
+  expect(sdk.usesView()).toBe(true);
+});
+
 it('never lets an older concurrent snapshot overwrite a newer view', async () => {
   const {rpc, sdk} = fixture();
   await sdk.enabled();
