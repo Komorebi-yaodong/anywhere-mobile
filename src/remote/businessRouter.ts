@@ -97,5 +97,5 @@ export function createBusinessRouter(raw: Raw, persistence?: {remember: (id: str
     }
     throw error('remote_method_unavailable');
   }
-  return {welcome, route};
+  return {welcome, route, prepareNativeTransfer: async () => {await negotiate(); if (!negotiation || negotiation.selected.minor < 1) throw error('remote_contract_negotiation_required'); return true;}};
 }

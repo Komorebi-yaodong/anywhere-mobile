@@ -238,7 +238,7 @@ function deriveSessionMaterial({
   };
 }
 
-export function completeSessionHello({
+export function completeSessionHelloKeys({
   state,
   accept,
   expectedDeviceId,
@@ -248,7 +248,7 @@ export function completeSessionHello({
   accept: SessionAccept | Record<string, unknown>;
   expectedDeviceId?: string;
   expectedDesktopId?: string;
-}): RemoteCryptoSession {
+}): {sessionId: string; clientToDesktopKey: Uint8Array; desktopToClientKey: Uint8Array} {
   if (
     !accept ||
     accept.type !== 'remote.session.accept' ||
@@ -309,13 +309,12 @@ export function completeSessionHello({
     ephemeralSecret,
   });
   ephemeralSecret.fill(0);
-  return createRemoteCryptoSession({
-    sessionId,
-    sendKey: material.clientToDesktopKey,
-    receiveKey: material.desktopToClientKey,
-    sendDirection: 'client-to-desktop',
-    receiveDirection: 'desktop-to-client',
-  });
+  return material;
+}
+
+export function completeSessionHello(options: Parameters<typeof completeSessionHelloKeys>[0]): RemoteCryptoSession {
+  const material = completeSessionHelloKeys(options);
+  return createRemoteCryptoSession({sessionId: material.sessionId, sendKey: material.clientToDesktopKey, receiveKey: material.desktopToClientKey, sendDirection: 'client-to-desktop', receiveDirection: 'desktop-to-client'});
 }
 
 export function createRemoteCryptoSession({

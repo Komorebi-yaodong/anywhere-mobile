@@ -25,6 +25,7 @@ import {
 export type DesktopRuntime = PairedDesktop & {
   status: DesktopStatus;
   detail?: string;
+  connectionGeneration?: number;
 };
 
 const pingEveryMs = 20_000;
@@ -78,11 +79,22 @@ export function useDesktops() {
     [replaceDesktops],
   );
 
-  const persist = useCallback(async (current: DesktopRuntime[]) => {
-    await saveDesktopIndex(
-      current.map(({status: _status, detail: _detail, ...desktop}) => desktop),
-    );
-  }, []);
+  const mutationTail = useRef<Promise<unknown>>(Promise.resolve());
+  const mutateIndex = useCallback((change: (current: DesktopRuntime[]) => DesktopRuntime[]) => {
+    const next = mutationTail.current.catch(() => undefined).then(async () => {
+      const before = desktopsRef.current;
+      const proposed = change(before);
+      await saveDesktopIndex(proposed.map(({status: _status, detail: _detail, connectionGeneration: _generation, ...desktop}) => desktop));
+      // Apply only the requested fields to the latest runtime after storage.
+      // The mutation callback must be pure: connection callbacks remain sole
+      // owners of status/generation while this persistence lane waits.
+      replaceDesktops(change(desktopsRef.current));
+    });
+    mutationTail.current = next.catch(() => undefined);
+    return next;
+  }, [replaceDesktops]);
+
+
 
   const clearReconnect = useCallback((desktopId: string) => {
     const timer = reconnectTimers.current.get(desktopId);
@@ -163,7 +175,7 @@ export function useDesktops() {
               if (status === 'online') {
                 becameOnline = true;
                 onlineSince = Date.now();
-                update(desktop.id, {status: '在线', detail: undefined});
+                update(desktop.id, {status: '在线', detail: undefined, connectionGeneration: generation});
               } else if (status === 'connecting' || status === 'handshaking') {
                 update(desktop.id, {
                   status: '连接中',
@@ -205,15 +217,8 @@ export function useDesktops() {
             }).catch(() => undefined);
             if (connectGenerations.current.get(desktop.id) !== generation || clients.current.get(desktop.id) !== client) return;
             if (candidate.endpoint !== desktop.endpoint) {
-              const next = desktopsRef.current.map(item => item.id === desktop.id
-                ? {...item, endpoint: candidate.endpoint, endpoints: candidate.endpoints, tlsMode: candidate.tlsMode}
-                : item);
-              try {
-                await persist(next);
-              } catch {
-                // The authenticated socket remains valid; retry persistence on a later state update.
-              }
-              replaceDesktops(next);
+              await mutateIndex(current => current.map(item => item.id === desktop.id && connectGenerations.current.get(desktop.id) === generation
+                ? {...item, endpoint: candidate.endpoint, endpoints: candidate.endpoints, tlsMode: candidate.tlsMode} : item)).catch(() => undefined);
             }
             return;
           } catch (error) {
@@ -240,7 +245,7 @@ export function useDesktops() {
         if (connecting.current.get(desktop.id) === run) connecting.current.delete(desktop.id);
       }
     },
-    [clearReconnect, persist, replaceDesktops, scheduleReconnect, update],
+    [clearReconnect, mutateIndex, scheduleReconnect, update],
   );
   connectRef.current = connect;
 
@@ -416,34 +421,25 @@ export function useDesktops() {
       });
       const name = connectionName?.trim().replace(/\s+/g, ' ').slice(0, 80);
       const namedDesktop = {...desktop, name: name || desktop.name};
-      const next = [
-        ...desktopsRef.current.filter(item => item.id !== namedDesktop.id),
-        {...namedDesktop, status: '连接中' as const},
-      ];
       try {
-        await persist(next);
+        await mutateIndex(current => [...current.filter(item => item.id !== namedDesktop.id), {...namedDesktop, status: '连接中' as const}]);
       } catch (error) {
         await removeDesktopCredential(desktop.id).catch(() => undefined);
         throw error;
       }
-      replaceDesktops(next);
-      await connect(namedDesktop).catch(() => undefined);
+      connect(namedDesktop).catch(() => undefined);
       return namedDesktop;
     },
-    [connect, persist, replaceDesktops],
+    [connect, mutateIndex],
   );
 
   const rename = useCallback(
     async (desktopId: string, value: string) => {
       const name = value.trim().replace(/\s+/g, ' ').slice(0, 80);
       if (!name) throw new Error('请输入连接名称。');
-      const next = desktopsRef.current.map(item =>
-        item.id === desktopId ? {...item, name} : item,
-      );
-      await persist(next);
-      replaceDesktops(next);
+      await mutateIndex(current => current.map(item => item.id === desktopId ? {...item, name} : item));
     },
-    [persist, replaceDesktops],
+    [mutateIndex],
   );
 
   const updateProfile = useCallback(
@@ -451,26 +447,17 @@ export function useDesktops() {
       desktopId: string,
       profile: Pick<PairedDesktop, 'profileName' | 'avatarCache'>,
     ) => {
-      const next = desktopsRef.current.map(item =>
-        item.id === desktopId ? {...item, ...profile} : item,
-      );
-      await persist(next);
-      replaceDesktops(next);
+      await mutateIndex(current => current.map(item => item.id === desktopId ? {...item, ...profile} : item));
     },
-    [persist, replaceDesktops],
+    [mutateIndex],
   );
 
 
   const updateAvatarCache = useCallback(
     async (desktopId: string, avatarCache: PairedDesktop['avatarCache']) => {
-      const current = desktopsRef.current;
-      const next = current.map(item =>
-        item.id === desktopId ? {...item, ...(avatarCache ? {avatarCache} : {avatarCache: undefined})} : item,
-      );
-      await persist(next);
-      replaceDesktops(next);
+      await mutateIndex(current => current.map(item => item.id === desktopId ? {...item, avatarCache} : item));
     },
-    [persist, replaceDesktops],
+    [mutateIndex],
   );
 
 
@@ -486,11 +473,9 @@ export function useDesktops() {
       clients.current.delete(desktop.id);
       await client?.close().catch(() => undefined);
       await removeDesktopCredential(desktop.id);
-      const next = desktopsRef.current.filter(item => item.id !== desktop.id);
-      await persist(next);
-      replaceDesktops(next);
+      await mutateIndex(current => current.filter(item => item.id !== desktop.id));
     },
-    [clearReconnect, persist, replaceDesktops],
+    [clearReconnect, mutateIndex],
   );
 
   const request = useCallback(

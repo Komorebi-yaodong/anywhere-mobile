@@ -3,6 +3,8 @@ import type {PairedDesktop} from '../domain/pairing';
 import {AppState} from 'react-native';
 
 import {createBusinessRouter} from './businessRouter';
+
+import {createSharedReads} from './sharedReads';
 import {createResultTransferReader, RESULT_TRANSFER_CAPABILITY} from './resultTransfer';
 import {ADAPTIVE_TRANSFER_CAPABILITY} from './adaptiveTransfer';
 import {
@@ -16,15 +18,17 @@ import {validateDurableOperation} from '../../packages/remote-contract';
 import {randomBase64Url} from './crypto';
 import {gatewayFailureDetail, localFailureDetail, safeRemoteFailureCode} from './connectionDiagnostics';
 import {
-  completeSessionHello,
+  completeSessionHelloKeys,
   createSessionHello,
-  EncryptedFrame,
-  RemoteCryptoSession,
   SessionAccept,
   SessionHelloState,
 } from './session';
 import {
   REMOTE_PROTOCOL_VERSION,
+
+  encodeBase64Url,
+
+  stableStringify,
   REMOTE_SOCKET_PATH,
   remoteError,
 } from './protocol';
@@ -78,7 +82,9 @@ export class RemoteClient {
   private status: RemoteClientStatus = 'idle';
   private unsubscribe?: () => void;
   private helloState?: SessionHelloState;
-  private cryptoSession?: RemoteCryptoSession;
+  private nativeSession = false;
+
+  private readonly imageTasks = new Map<string, {cancelled: boolean; progress?: (value: any) => void}>();
   private connectResolve?: () => void;
   private connectReject?: (error: Error) => void;
   private connectTimer?: ReturnType<typeof setTimeout>;
@@ -105,6 +111,8 @@ export class RemoteClient {
   });
 
   private operationBatchSupported = false;
+
+  private readonly sharedReads = createSharedReads();
   private recoveryCursor = 0;
 
   private async reconcilePendingOperations(): Promise<void> {
@@ -207,11 +215,37 @@ export class RemoteClient {
     params: Record<string, unknown> = {},
     timeoutMs = 20_000,
   ): Promise<T> {
-    return this.requestTracked<T>(method, params, timeoutMs).response;
+    if (method === 'local.image.upload') {
+      if (this.status !== 'online' || !this.nativeSession) throw remoteError('remote_client_offline');
+      const taskId = String(params.taskId || '');
+      if (!/^[A-Za-z0-9_-]{16,160}$/.test(taskId) || this.imageTasks.has(taskId) || this.imageTasks.size >= 8) throw remoteError('remote_upload_busy');
+      const task = {cancelled: false, progress: typeof params.onProgress === 'function' ? params.onProgress as (value: any) => void : undefined};
+      this.imageTasks.set(taskId, task);
+      const generation = this.eventGeneration;
+      let handle = '';
+      try {
+        const wrapped = await this.business.prepareNativeTransfer();
+        if (task.cancelled || generation !== this.eventGeneration) throw remoteError('remote_upload_cancelled');
+        handle = await PinnedGateway.registerImage(this.connectionId, String(params.path || ''), String(params.name || ''), String(params.type || ''));
+        if (generation !== this.eventGeneration || this.status !== 'online') throw remoteError('remote_client_closed');
+        if (task.cancelled) throw remoteError('remote_upload_cancelled');
+        return JSON.parse(await PinnedGateway.uploadImage(this.connectionId, handle, taskId, wrapped)) as T;
+      } finally {
+        this.imageTasks.delete(taskId);
+        if (handle) await PinnedGateway.releaseImage(this.connectionId, handle).catch(() => undefined);
+      }
+    }
+    if (method === 'local.image.cancel') {
+      const taskId = String(params.taskId || '');
+      const task = this.imageTasks.get(taskId); if (task) task.cancelled = true;
+      await PinnedGateway.cancelImage(this.connectionId, taskId);return {ok: true} as T;
+    }
+
+    return this.sharedReads.read(method, params, () => this.requestTracked<T>(method, params, timeoutMs).response);
   }
 
   requestTracked<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 20000): {requestId: string; response: Promise<T>} {
-    if (this.status !== 'online' || !this.cryptoSession) throw new RemoteRpcError('remote_client_offline');
+    if (this.status !== 'online' || !this.nativeSession) throw new RemoteRpcError('remote_client_offline');
     const issuedAt = Date.now();
     const requestId = `command-${issuedAt}-${randomBase64Url(18)}`;
     this.submittingOperations.add(requestId);
@@ -225,7 +259,7 @@ export class RemoteClient {
     timeoutMs = 20_000,
     suppliedRequestId?: string,
   ): {requestId: string; response: Promise<T>} {
-    if (this.status !== 'online' || !this.cryptoSession) {
+    if (this.status !== 'online' || !this.nativeSession) {
       throw new RemoteRpcError('remote_client_offline');
     }
     const requestId = suppliedRequestId || `request-${randomBase64Url(18)}`;
@@ -251,23 +285,23 @@ export class RemoteClient {
     const submit = this.sendQueue
       .catch(() => undefined)
       .then(async () => {
-        if (this.status !== 'online' || !this.cryptoSession) {
+        if (this.status !== 'online' || !this.nativeSession) {
           throw new RemoteRpcError('remote_client_offline');
         }
-        const frame = this.cryptoSession.encrypt({
+        const payload = {
           kind: 'request',
           requestId,
           method,
           params,
-        });
+        };
         startTimeout?.();
-        await PinnedGateway.sendText(this.connectionId, JSON.stringify(frame));
+        await PinnedGateway.sendPayload(this.connectionId, stableStringify(payload));
       });
     this.sendQueue = submit.catch(() => undefined);
     submit.catch(error => {
       // Local validation failed before encrypt committed a sequence or a frame
       // reached native transport. Reject only this request, keep WSS usable.
-      if (['remote_payload_size_invalid', 'remote_canonical_value_invalid'].includes((error as {code?: string})?.code || '')) {
+      if (['remote_payload_size_invalid', 'remote_canonical_value_invalid', 'remote_send_capacity'].includes((error as {code?: string})?.code || '')) {
         this.rejectPending(requestId, error);
         return;
       }
@@ -311,6 +345,8 @@ export class RemoteClient {
     if (event.connectionId !== this.connectionId || this.status === 'closed') {
       return;
     }
+
+
     try {
       if (event.type === 'connected') {
 
@@ -328,8 +364,15 @@ export class RemoteClient {
         );
         return;
       }
+      if (event.type === 'uploadProgress') {
+        const progress = JSON.parse(event.message || '{}');
+        const task = this.imageTasks.get(progress.taskId);
+        if (task && !task.cancelled && ['hashing', 'creating', 'waiting_first_ack', 'uploading', 'completing'].includes(progress.stage) && Number.isSafeInteger(progress.bytes) && Number.isSafeInteger(progress.total) && progress.total > 0 && progress.total <= 25 * 1024 * 1024 && progress.bytes >= 0 && progress.bytes <= progress.total) task.progress?.(progress);
+        return;
+      }
+
       if (event.type === 'message') {
-        this.handleText(event.message ?? '');
+        await this.handleText(event.message ?? '');
         return;
       }
       if (event.type === 'error' || event.type === 'disconnected') {
@@ -339,7 +382,7 @@ export class RemoteClient {
               ? 'remote_transport_error'
               : 'remote_transport_closed',
           ),
-          gatewayFailureDetail(event),
+          event.failureCode === 'remote_pong_timeout' ? 'transport:pong_timeout' : event.failureCode === 'remote_write_timeout' ? 'transport:write_timeout' : event.failureCode ? `mobile:${safeRemoteFailureCode(event.failureCode)}` : gatewayFailureDetail(event),
         );
       }
     } catch (error) {
@@ -348,7 +391,7 @@ export class RemoteClient {
     }
   }
 
-  private handleText(text: string): void {
+  private async handleText(text: string): Promise<void> {
     let message: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(text);
@@ -362,21 +405,24 @@ export class RemoteClient {
         : remoteError('remote_socket_message_invalid');
     }
 
-    if (!this.cryptoSession) {
+    if (!this.nativeSession) {
       if (!this.helloState) {
         throw remoteError('remote_session_state_invalid');
       }
-      this.cryptoSession = completeSessionHello({
+      const material = completeSessionHelloKeys({
         state: this.helloState,
         accept: message as SessionAccept,
         expectedDeviceId: this.identity.deviceId,
         expectedDesktopId: this.desktop.id,
       });
+      this.nativeSession = true;
       this.helloState = undefined;
+      try {await PinnedGateway.installSession(this.connectionId, material.sessionId, encodeBase64Url(material.clientToDesktopKey), encodeBase64Url(material.desktopToClientKey));}
+      finally {material.clientToDesktopKey.fill(0); material.desktopToClientKey.fill(0);}
       return;
     }
 
-    const payload = this.cryptoSession.decrypt(message as EncryptedFrame);
+    const payload = message; // Native AEAD/sequence validation completed before this event.
     if (payload.kind === 'response') {
       this.handleResponse(payload);
       return;
@@ -427,7 +473,7 @@ export class RemoteClient {
         const generation = this.eventGeneration;
         this.transferEnabled = true; // The request below explicitly opts in before any ready event can arrive.
         const adaptive = event.payload.capabilities.includes(ADAPTIVE_TRANSFER_CAPABILITY);
-        if (adaptive) this.cryptoSession?.enableAdaptiveTransfers();
+        if (adaptive) await PinnedGateway.enableSessionTransfers(this.connectionId);
         this.transfers = createResultTransferReader((method, params) => this.rawRequestTracked(method, params, 20_000).response, adaptive);
         this.rawRequestTracked<{capabilities: string[]}>('remote.transfer.negotiate', {capabilities: [RESULT_TRANSFER_CAPABILITY, ...(adaptive ? [ADAPTIVE_TRANSFER_CAPABILITY] : [])]}, 8_000).response.then(reply => {
           if (generation !== this.eventGeneration || this.status !== 'online') return;
@@ -549,12 +595,12 @@ export class RemoteClient {
   private failConnection(error: Error, detail?: string): void {
     if (this.status === 'closed') return;
     this.connectReject?.(error);
-    this.cleanup(false);
+    this.cleanup(false, Object.assign(error, {detail: detail ?? localFailureDetail(error)}));
     this.setStatus('closed', detail ?? localFailureDetail(error));
     PinnedGateway.disconnect(this.connectionId).catch(() => undefined);
   }
 
-  private cleanup(closeStatus: boolean): void {
+  private cleanup(closeStatus: boolean, cause: Error = new RemoteRpcError('remote_client_closed')): void {
 
     this.eventGeneration += 1;
     this.transfers?.close();
@@ -573,11 +619,13 @@ export class RemoteClient {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.helloState = undefined;
-    this.cryptoSession?.close();
-    this.cryptoSession = undefined;
+    this.nativeSession = false;
+
+    for (const task of this.imageTasks.values()) task.cancelled = true;
+    this.imageTasks.clear();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new RemoteRpcError('remote_client_closed'));
+      pending.reject(cause);
     }
     this.pending.clear();
     this.sendQueue = Promise.resolve();

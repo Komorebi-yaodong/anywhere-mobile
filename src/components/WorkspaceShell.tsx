@@ -25,6 +25,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { DesktopRuntime } from '../hooks/useDesktops';
 import type {AvatarCache} from '../domain/pairing';
+
+import {imageProgressText} from '../services/nativeImageUpload';
 import { useConversationWorkspace } from '../hooks/useConversationWorkspace';
 import { useAttachmentQueue } from '../hooks/useAttachmentQueue';
 import type {
@@ -150,6 +152,11 @@ function workspaceNotice(error: unknown, fallback: string): string {
   const code = error instanceof Error ? error.message : String(error || '');
   const messages: Record<string, string> = {
     remote_client_closed: '连接被重置，正在恢复。',
+
+    remote_pong_timeout: '连接心跳超时，照片未上传完成。',
+    remote_write_timeout: '照片传输超时，请恢复连接后重试。',
+    remote_upload_failed: '照片上传未完成，请稍后重试。',
+    remote_upload_response_invalid: '照片上传确认异常，未完成上传。',
     remote_transport_closed: '连接已关闭，正在恢复。',
     remote_transport_error: '安全连接暂时不可用，正在重连。',
 
@@ -287,6 +294,11 @@ export function WorkspaceShell({
 
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [notice, setNotice] = useState('');
+
+  const [photoNotice, setPhotoNotice] = useState('');
+  const photoController = useRef<AbortController | null>(null);
+  const photoScope = `${desktop.id}:${workspace.selectedConversationId}`;
+  useEffect(() => () => {photoController.current?.abort();}, [photoScope]);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('agents');
   const [settingsRefreshSignal, setSettingsRefreshSignal] = useState(0);
 
@@ -381,22 +393,32 @@ export function WorkspaceShell({
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
 
+  const avatarState = useRef({desktop, agentAvatarCaches, agentAvatarSources});
+  avatarState.current = {desktop, agentAvatarCaches, agentAvatarSources};
+  const workspaceRead = useRef(0);
+
   const refreshWorkspace = useCallback(async () => {
     if (desktop.status !== '在线') return;
     setLoadingWorkspace(true);
+
+    const epoch = ++workspaceRead.current;
+    const connectionGeneration = desktop.connectionGeneration;
+    const isCurrent = () => epoch === workspaceRead.current && avatarState.current.desktop.id === desktop.id && avatarState.current.desktop.status === '在线' && avatarState.current.desktop.connectionGeneration === connectionGeneration;
+    const {agentAvatarCaches: cachedAgents, agentAvatarSources: cachedSources} = avatarState.current;
     try {
       const [value, routes, assistantMetadata] = await Promise.all([
         request<WorkspaceBootstrap>(desktop.id, 'workspace.bootstrap.get'),
         request<{ok: true; assistants: RemoteAssistant[]}>(desktop.id, 'conversation.assistants.list'),
         request<{ok: true; assistants: WorkspaceBootstrap['assistants']}>(desktop.id, 'workspace.assistants.list'),
       ]);
+      if (!isCurrent()) return;
       // Metadata is sufficient for first paint; optional avatar downloads must
       // not leave the entire workspace blank behind a slow resource.
       setBootstrap(value);
       setRouteAssistants(routes.assistants || []);
       setLoadingWorkspace(false);
 
-      const cachedAvatar = desktop.avatarCache;
+      const cachedAvatar = avatarState.current.desktop.avatarCache;
       let nextAvatarCache: AvatarCache | undefined;
       if (value.profile.avatar) {
         try {
@@ -425,8 +447,8 @@ export function WorkspaceShell({
         await removeAvatarCache(cachedAvatar);
       }
       if (
-        updateProfile &&
-        (value.profile.displayName !== desktop.profileName ||
+        isCurrent() && updateProfile &&
+        (value.profile.displayName !== avatarState.current.desktop.profileName ||
           nextAvatarCache?.version !== cachedAvatar?.version ||
           nextAvatarCache?.uri !== cachedAvatar?.uri)
       ) {
@@ -466,7 +488,7 @@ export function WorkspaceShell({
             desktopId: desktop.id,
             resource,
             request,
-            previous: agentAvatarCaches[item.code],
+            previous: cachedAgents[item.code],
             displayName: item.name,
           });
           return {code: item.code, cache, source: cache?.uri || item.icon || ''};
@@ -479,17 +501,18 @@ export function WorkspaceShell({
       // loaded; refreshing the route must not discard it and trigger a state
       // oscillation or a redundant validation request.
       const nextAgentCaches: Record<string, AvatarCache> = Object.fromEntries(
-        Object.entries(agentAvatarCaches).filter(([code, cache]) =>
+        Object.entries(cachedAgents).filter(([code, cache]) =>
           resources[code]?.version === cache.version,
         ),
       );
       const nextAgentSources: Record<string, string> = Object.fromEntries(
-        Object.entries(agentAvatarSources).filter(([code]) => Boolean(nextAgentCaches[code])),
+        Object.entries(cachedSources).filter(([code]) => Boolean(nextAgentCaches[code])),
       );
       for (const item of resolved) {
         if (item.cache) nextAgentCaches[item.code] = item.cache;
         if (item.source) nextAgentSources[item.code] = item.source;
       }
+      if (!isCurrent()) return;
       setAgentAvatarResources(resources);
       setAgentAvatarCaches(current => sameAvatarCacheRecords(current, nextAgentCaches) ? current : nextAgentCaches);
       setAgentAvatarSources(current => sameStringRecords(current, nextAgentSources) ? current : nextAgentSources);
@@ -502,11 +525,8 @@ export function WorkspaceShell({
       setLoadingWorkspace(false);
     }
   }, [
-    agentAvatarCaches,
-    agentAvatarSources,
-    desktop.avatarCache,
     desktop.id,
-    desktop.profileName,
+    desktop.connectionGeneration,
     desktop.status,
     request,
     updateProfile,
@@ -514,6 +534,8 @@ export function WorkspaceShell({
 
   useEffect(() => {
     refreshWorkspace().catch(() => undefined);
+    const invalidate = () => {workspaceRead.current++;};
+    return invalidate;
   }, [refreshWorkspace]);
 
 
@@ -814,58 +836,35 @@ export function WorkspaceShell({
 
 
   const pickPhoto = async () => {
-    if (!requireControl()) return;
-    setSheet(null);
+    if (!requireControl() || photoController.current) return;
+    const controller = new AbortController(); photoController.current = controller;
+    setPhotoNotice(''); setSheet(null);
     try {
-      const result = await launchImageLibrary({
-        mediaType: 'photo',
-        selectionLimit: 1,
-        includeBase64: false,
-      });
+      const result = await launchImageLibrary({mediaType: 'photo', selectionLimit: 1, includeBase64: false});
       const asset = result.assets?.[0];
-      if (!asset?.uri) return;
-      const { pickPhotoUpload } = await import('../services/mediaAttachment');
-      const upload = await pickPhotoUpload({
-        desktopId: desktop.id,
-        request,
-        uri: asset.uri,
-        name: asset.fileName || '照片.jpg',
-        type: asset.type || 'image/jpeg',
-        onProgress: value => setNotice(`${value.stage === 'hashing' ? '校验照片' : '上传照片'} ${Math.round(value.bytes / value.total * 100)}%`),
-      });
-      attachments.addCapturedUpload(upload);
-      setNotice('');
-    } catch {
-      setNotice('照片选择或上传失败。');
-    }
+      if (!asset?.uri || controller.signal.aborted) return;
+      const {pickPhotoUpload} = await import('../services/mediaAttachment');
+      const upload = await pickPhotoUpload({desktopId: desktop.id, request, uri: asset.uri,
+        name: asset.fileName || '照片.jpg', type: asset.type || 'image/jpeg', signal: controller.signal,
+        onProgress: value => {if (!controller.signal.aborted) setPhotoNotice(imageProgressText(value));}});
+      if (!controller.signal.aborted) {attachments.addCapturedUpload(upload);setPhotoNotice('');}
+      else request(desktop.id, 'attachment.abort', {uploadId: upload.uploadId}).catch(() => undefined);
+    } catch (error) {if (!controller.signal.aborted) setPhotoNotice(workspaceNotice(error, '照片选择或上传失败。'));}
+    finally {if (photoController.current === controller) photoController.current = null;}
   };
 
   const uploadCapturedPhoto = async (path: string) => {
-    if (!requireControl()) {
-      setShowCamera(false);
-      return;
-    }
     setShowCamera(false);
+    if (!requireControl() || photoController.current) return;
+    const controller = new AbortController(); photoController.current = controller;setPhotoNotice('');
     try {
-      const { uploadCapturedPhoto: uploadPhoto } = await import(
-        '../services/mediaAttachment'
-      );
-      const upload = await uploadPhoto({
-        desktopId: desktop.id,
-        request,
-        path,
-        onProgress: value =>
-          setNotice(
-            `${
-              value.stage === 'hashing' ? '校验照片' : '上传照片'
-            } ${Math.round((value.bytes / value.total) * 100)}%`,
-          ),
-      });
-      attachments.addCapturedUpload(upload);
-      setNotice('');
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : '照片上传失败。');
-    }
+      const {uploadCapturedPhoto: uploadPhoto} = await import('../services/mediaAttachment');
+      const upload = await uploadPhoto({desktopId: desktop.id, request, path, signal: controller.signal,
+        onProgress: value => {if (!controller.signal.aborted) setPhotoNotice(imageProgressText(value));}});
+      if (!controller.signal.aborted) {attachments.addCapturedUpload(upload);setPhotoNotice('');}
+      else request(desktop.id, 'attachment.abort', {uploadId: upload.uploadId}).catch(() => undefined);
+    } catch (error) {if (!controller.signal.aborted) setPhotoNotice(workspaceNotice(error, '照片上传失败。'));}
+    finally {if (photoController.current === controller) photoController.current = null;}
   };
 
   const send = async () => {
@@ -1114,9 +1113,9 @@ export function WorkspaceShell({
         </View>
       ) : null}
 
-      {notice ? (
-        <Pressable style={styles.notice} onPress={() => setNotice('')}>
-          <Text style={styles.noticeText}>{notice}</Text>
+      {photoNotice || notice ? (
+        <Pressable style={styles.notice} onPress={() => {if (photoController.current) photoController.current.abort();setPhotoNotice('');setNotice('');}}>
+          <Text style={styles.noticeText}>{photoNotice || notice}</Text>
         </Pressable>
       ) : null}
       {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在连接…'}</Text></View> : null}

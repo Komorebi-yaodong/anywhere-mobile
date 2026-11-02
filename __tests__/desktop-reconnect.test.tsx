@@ -5,6 +5,8 @@ import type {RemoteClientStatus} from '../src/remote/client';
 import type {PairedDesktop} from '../src/domain/pairing';
 import {useDesktops} from '../src/hooks/useDesktops';
 
+import {saveDesktopIndex} from '../src/services/secureStore';
+
 type MockClient = {onStatus: (status: RemoteClientStatus, detail?: string) => void};
 const mockClients: MockClient[] = [];
 const mockProbe = jest.fn(async () => ({}));
@@ -54,6 +56,24 @@ let latest!: ReturnType<typeof useDesktops>;
 function Harness() { latest = useDesktops(); return null; }
 
 describe('Desktop reconnect lifecycle', () => {
+
+  it('a slow profile save preserves a later native close, and serialized metadata patches do not overwrite each other', async () => {
+    let root!: TestRenderer.ReactTestRenderer, release!: () => void;
+    await act(async () => {root = TestRenderer.create(<Harness />);});
+    const save = saveDesktopIndex as jest.Mock;
+    save.mockImplementationOnce(() => new Promise<void>(resolve => {release = resolve;}));
+    let first!: Promise<void>, second!: Promise<void>;
+    await act(async () => {first = latest.updateProfile(mockDesktop.id, {profileName: 'new profile'}); second = latest.rename(mockDesktop.id, 'new name');});
+    await act(async () => {mockClients[0].onStatus('closed', 'transport:pong_timeout');});
+    expect(latest.desktops[0].status).toBe('离线');
+    await act(async () => {release(); await first; await second;});
+    expect(latest.desktops[0]).toMatchObject({status: '离线', profileName: 'new profile', name: 'new name'});
+    expect(latest.desktops[0].detail).toContain('pong_timeout');
+    const persisted = save.mock.calls.at(-1)![0][0];
+    expect(persisted).not.toHaveProperty('status'); expect(persisted).not.toHaveProperty('connectionGeneration');
+    await act(async () => root.unmount());
+  });
+
   beforeEach(() => {
     jest.useFakeTimers(); mockClients.length = 0;
     mockProbe.mockReset().mockResolvedValue({});

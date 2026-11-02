@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+
+		AA02AA02AA02AA02AA02AA01 /* GatewayNativeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02AA02AA02AA02AA02AA03; };
+		AA02AA02AA02AA02AA02AA02 /* GatewayNativeUploads.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02AA02AA02AA02AA02AA04; };
 		0C80B921A6F3F58F76C31292 /* libPods-AnywhereMobile.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-AnywhereMobile.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
@@ -16,6 +19,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+
+		AA02AA02AA02AA02AA02AA03 /* GatewayNativeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnywhereMobile/GatewayNativeSession.swift; sourceTree = "<group>"; };
+		AA02AA02AA02AA02AA02AA04 /* GatewayNativeUploads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnywhereMobile/GatewayNativeUploads.swift; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* AnywhereMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnywhereMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = AnywhereMobile/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = AnywhereMobile/Info.plist; sourceTree = "<group>"; };
@@ -49,6 +55,9 @@
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				A1B2C3D4E5F60708090A0B0A /* PinnedGateway.swift */,
 				A1B2C3D4E5F60708090A0B0B /* PinnedGatewayBridge.m */,
+
+				AA02AA02AA02AA02AA02AA03 /* GatewayNativeSession.swift */,
+				AA02AA02AA02AA02AA02AA04 /* GatewayNativeUploads.swift */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -253,6 +262,9 @@
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
 				A1B2C3D4E5F60708090A0B0C /* PinnedGateway.swift in Sources */,
 				A1B2C3D4E5F60708090A0B0D /* PinnedGatewayBridge.m in Sources */,
+
+				AA02AA02AA02AA02AA02AA01 /* GatewayNativeSession.swift in Sources */,
+				AA02AA02AA02AA02AA02AA02 /* GatewayNativeUploads.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

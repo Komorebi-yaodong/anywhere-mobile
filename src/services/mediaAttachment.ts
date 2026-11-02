@@ -1,6 +1,7 @@
 import type { RemoteRequest } from '../remote/api';
 
-import {attachmentFileSource} from './attachmentFileSource';
+import {uploadNativeImage, type ImageProgress} from './nativeImageUpload';
+
 import {
   uploadAttachment,
   validateAttachment,
@@ -15,13 +16,17 @@ export async function pickPhotoUpload({
   name,
   type,
   onProgress,
+
+  signal,
 }: {
   desktopId: string;
   request: RemoteRequest;
   uri: string;
   name: string;
   type: string;
-  onProgress?: (progress: {stage: 'hashing' | 'uploading'; bytes: number; total: number}) => void;
+
+  signal?: AbortSignal;
+  onProgress?: (progress: ImageProgress) => void;
 }): Promise<RemoteUpload> {
   const { keepLocalCopy } = await import('@react-native-documents/picker');
   const { FileSystem } = await import('react-native-file-access');
@@ -35,13 +40,7 @@ export async function pickPhotoUpload({
     ? decodeURIComponent(copy.localUri.slice(7))
     : copy.localUri;
   try {
-    const stat = await FileSystem.stat(path);
-    return await uploadAttachment({
-      desktopId,
-      request,
-      onProgress,
-      source: attachmentFileSource(path, {name, type, size: stat.size}),
-    });
+    return await uploadNativeImage({desktopId, request, path, name, type, signal, onProgress});
   } finally {
     await FileSystem.unlink(path).catch(() => undefined);
   }
@@ -101,25 +100,14 @@ export async function uploadCapturedPhoto({
   request: RemoteRequest;
   path: string;
   signal?: AbortSignal;
-  onProgress?: (value: {
-    stage: 'hashing' | 'uploading';
-    bytes: number;
-    total: number;
-  }) => void;
+  onProgress?: (value: ImageProgress) => void;
 }): Promise<RemoteUpload> {
   const { FileSystem } = await import('react-native-file-access');
   const safePath = String(path || '');
   if (!safePath || safePath.includes('..')) throw new Error('拍摄照片不可用。');
   try {
-    const stat = await FileSystem.stat(safePath);
     const name = `照片-${Date.now()}.jpg`;
-    return await uploadAttachment({
-      desktopId,
-      request,
-      signal,
-      onProgress,
-      source: attachmentFileSource(safePath, {name, type: 'image/jpeg', size: stat.size}),
-    });
+    return await uploadNativeImage({desktopId, request, signal, onProgress, path: safePath, name, type: 'image/jpeg'});
   } finally {
     await FileSystem.unlink(safePath).catch(() => undefined);
   }

@@ -90,6 +90,8 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
     let connectionId: String
     let session: URLSession
     let pingTimer: DispatchSourceTimer
+    let native: GatewayNativeSession
+    let uploads: GatewayNativeUploads
   }
 
   private let stateLock = NSLock()
@@ -185,12 +187,29 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
           // Let the shared close path emit exactly one transport event.
         }
       }
+      let native = GatewayNativeSession(send: { [weak socket] text, completion in
+        guard let socket else { completion(NativeGatewayFailure(code: "remote_client_closed")); return }
+        socket.send(.string(text), completionHandler: completion)
+      }, deliver: { [weak self, weak socket] text in
+        guard let self, let socket, self.withStateLock({ self.sockets[connectionId] === socket }) else { return }
+        self.emit(connectionId, type: "message", message: text)
+      }, failure: { [weak self, weak socket] code in
+        guard let self, let socket, self.withStateLock({ self.sockets[connectionId] === socket }) else { return }
+        self.closeSocket(connectionId, code: .protocolError)
+        self.emit(connectionId, type: "error", failureKind: "protocol", failureCode: code)
+      })
+      let uploads = GatewayNativeUploads(session: native) { [weak self, weak socket] task, stage, bytes, total in
+        guard let self, let socket, self.withStateLock({ self.sockets[connectionId] === socket }),
+              let text = try? GatewayNativeCrypto.json(["taskId": task, "stage": stage, "bytes": bytes, "total": total]) else { return }
+        self.emit(connectionId, type: "uploadProgress", message: text)
+      }
+
       withStateLock {
         sockets[connectionId] = socket
         socketContexts[ObjectIdentifier(socket)] = SocketContext(
           connectionId: connectionId,
           session: session,
-          pingTimer: pingTimer
+          pingTimer: pingTimer, native: native, uploads: uploads
         )
       }
       pingTimer.resume()
@@ -209,18 +228,46 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    guard let socket = withStateLock({ sockets[connectionId] }) else {
-      reject("SOCKET_UNAVAILABLE", "桌面连接不可用。", nil)
-      return
-    }
-    socket.send(.string(text)) { error in
-      if let error {
-        reject("SOCKET_SEND_FAILED", self.safeError(error), error)
-      } else {
-        resolve(nil)
-      }
-    }
+    guard let context = nativeContext(connectionId) else { reject("remote_client_closed", "连接已关闭。", nil); return }
+    context.native.send(text, encrypted: false, completion: bridge(resolve, reject))
   }
+
+  private func nativeContext(_ id: String) -> SocketContext? {
+    withStateLock { guard let socket = sockets[id] else { return nil }; return socketContexts[ObjectIdentifier(socket)] }
+  }
+  private func bridge(_ resolve: @escaping RCTPromiseResolveBlock, _ reject: @escaping RCTPromiseRejectBlock) -> GatewayNativeSession.Reply {
+    { result in switch result { case .success(let value): resolve(value); case .failure(let error): let code = (error as? NativeGatewayFailure)?.code ?? "remote_transport_error"; reject(code, code, nil) } }
+  }
+  @objc(installSession:sessionId:sendKey:receiveKey:resolver:rejecter:)
+  func installSession(_ id: String, sessionId: String, sendKey: String, receiveKey: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let context = nativeContext(id) else { reject("remote_client_closed", "连接已关闭。", nil); return }
+    context.native.install(id: sessionId, send: sendKey, receive: receiveKey, completion: bridge(resolve, reject))
+  }
+  @objc(enableSessionTransfers:resolver:rejecter:)
+  func enableSessionTransfers(_ id: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let context = nativeContext(id) else { reject("remote_client_closed", "连接已关闭。", nil); return }
+    context.native.adaptive(bridge(resolve, reject))
+  }
+  @objc(sendPayload:payload:resolver:rejecter:)
+  func sendPayload(_ id: String, payload: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let context = nativeContext(id) else { reject("remote_client_closed", "连接已关闭。", nil); return }
+    context.native.send(payload, completion: bridge(resolve, reject))
+  }
+  @objc(registerImage:path:name:type:resolver:rejecter:)
+  func registerImage(_ id: String, path: String, name: String, type: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let context = nativeContext(id) else { reject("remote_client_closed", "连接已关闭。", nil); return }
+    context.uploads.register(path: path, name: name, type: type, completion: bridge(resolve, reject))
+  }
+  @objc(uploadImage:handle:task:wrapped:resolver:rejecter:)
+  func uploadImage(_ id: String, handle: String, task: String, wrapped: Bool, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let context = nativeContext(id) else { reject("remote_client_closed", "连接已关闭。", nil); return }
+    context.uploads.upload(handle: handle, task: task, wrapped: wrapped, completion: bridge(resolve, reject))
+  }
+  @objc(cancelImage:task:resolver:rejecter:)
+  func cancelImage(_ id: String, task: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) { nativeContext(id)?.uploads.cancel(task); resolve(nil) }
+  @objc(releaseImage:handle:resolver:rejecter:)
+  func releaseImage(_ id: String, handle: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) { nativeContext(id)?.uploads.release(handle); resolve(nil) }
+
 
   @objc(socketState:resolver:rejecter:)
   func socketState(_ connectionId: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
@@ -276,6 +323,9 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
   ) {
     guard let context = removeSocket(webSocketTask) else { return }
     context.pingTimer.cancel()
+
+    context.uploads.close()
+    context.native.close()
     context.session.finishTasksAndInvalidate()
     removePolicy(for: context.session)
     emit(context.connectionId, type: "disconnected", closeCode: closeCode.rawValue,
@@ -289,7 +339,8 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
       case .success(let message):
         switch message {
         case .string(let text):
-          self.emit(connectionId, type: "message", message: text)
+          guard self.withStateLock({ self.sockets[connectionId] === socket }) else { return }
+          self.nativeContext(connectionId)?.native.receive(text)
           self.receiveNext(socket, connectionId: connectionId)
         case .data:
           socket.cancel(with: .unsupportedData, reason: nil)
@@ -301,6 +352,9 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
       case .failure(let error):
         if let context = self.removeSocket(socket) {
           context.pingTimer.cancel()
+
+          context.uploads.close()
+          context.native.close()
           context.session.invalidateAndCancel()
           self.removePolicy(for: context.session)
           if socket.closeCode != .invalid {
@@ -426,6 +480,8 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
       return (socket, context)
     }
     guard let (socket, context) = record else { return }
+    context.uploads.close()
+    context.native.close()
     context.pingTimer.cancel()
     socket.cancel(with: code, reason: nil)
     context.session.invalidateAndCancel()
@@ -517,7 +573,7 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
 
   private func emit(
     _ connectionId: String, type: String, message: String? = nil,
-    closeCode: Int? = nil, closeReason: String? = nil, failureKind: String? = nil
+    closeCode: Int? = nil, closeReason: String? = nil, failureKind: String? = nil, failureCode: String? = nil
   ) {
     var body: [String: Any] = ["connectionId": connectionId, "type": type]
     if let message { body["message"] = message }
@@ -527,6 +583,8 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
       body["closeReason"] = Self.safeCloseReasons.contains(closeReason) ? closeReason : "other"
     }
     if let failureKind { body["failureKind"] = failureKind }
+
+    if let failureCode, failureCode.range(of: "^remote_[a-z0-9_]+$", options: .regularExpression) != nil { body["failureCode"] = failureCode }
     sendEvent(withName: Self.eventName, body: body)
   }
 

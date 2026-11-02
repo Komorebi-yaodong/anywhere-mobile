@@ -11,6 +11,14 @@ import type {GatewayEvent} from '../src/native/PinnedGateway';
 
 let mockListener: ((event: GatewayEvent) => void) | undefined;
 let mockServerSession: RemoteCryptoSession | undefined;
+
+let mockNativeCrypto: RemoteCryptoSession | undefined;
+const mockBeforeKeys: Array<{connectionId: string; frame: any}> = [];
+function mockReceive(connectionId: string, frame: any) {
+  if (!frame || frame.type !== 'remote.encrypted') {mockListener?.({connectionId, type: 'message', message: JSON.stringify(frame)});return;}
+  if (!mockNativeCrypto) {mockBeforeKeys.push({connectionId, frame});return;}
+  mockListener?.({connectionId, type: 'message', message: JSON.stringify(mockNativeCrypto.decrypt(frame))});
+}
 const mockSentTexts: string[] = [];
 let mockHoldBusinessSend: Promise<void> | undefined;
 
@@ -66,12 +74,8 @@ jest.mock('../src/native/PinnedGateway', () => ({
           serverNonce: 'QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8',
         });
         mockServerSession = accepted.session;
-        mockListener?.({connectionId, type: 'message', message: JSON.stringify(accepted.accept)});
-        mockListener?.({
-          connectionId,
-          type: 'message',
-          message: JSON.stringify(
-            mockServerSession.encrypt({
+        mockReceive(connectionId, accepted.accept);
+        mockReceive(connectionId, mockServerSession.encrypt({
               kind: 'event',
               event: 'remote.welcome',
               payload: {
@@ -80,9 +84,7 @@ jest.mock('../src/native/PinnedGateway', () => ({
                 device: {deviceId: mockIdentity.deviceId},
                 capabilities: mockTransfer ? ['remote.transfer.v1', ...(mockAdaptive ? ['remote.transfer.adaptive.v1'] : [])] : mockV11 ? ['remote.contract.negotiate', 'resource.get', 'command.submit', 'operation.status.get'] : {},
               },
-            }),
-          ),
-        });
+            }));
         return;
       }
       if (message.type === 'remote.encrypted') {
@@ -120,10 +122,28 @@ jest.mock('../src/native/PinnedGateway', () => ({
           ok: !mockRpcErrorCode,
           ...(mockRpcErrorCode ? {error: {code: mockRpcErrorCode}} : transfer ? {transfer} : {result: value}),
         });
-        mockListener?.({connectionId, type: 'message', message: JSON.stringify(response)});
+        mockReceive(connectionId, response);
       }
     }),
     disconnect: jest.fn(async () => undefined),
+
+    registerImage: jest.fn(async () => 'image-native-fixture-handle'),
+    uploadImage: jest.fn(async () => JSON.stringify({uploadId: 'image-native-fixture-upload', state: 'completed'})),
+    releaseImage: jest.fn(async () => undefined),
+    cancelImage: jest.fn(async () => undefined),
+
+    installSession: jest.fn(async (_connectionId, sessionId, sendKey, receiveKey) => {
+      const {createRemoteCryptoSession} = require('../src/remote/session');
+      const {decodeBase64Url} = require('../src/remote/protocol');
+      mockNativeCrypto = createRemoteCryptoSession({sessionId, sendKey: decodeBase64Url(sendKey), receiveKey: decodeBase64Url(receiveKey), sendDirection: 'client-to-desktop', receiveDirection: 'desktop-to-client'});
+      for (const item of mockBeforeKeys.splice(0)) mockReceive(item.connectionId, item.frame);
+    }),
+    enableSessionTransfers: jest.fn(async () => mockNativeCrypto?.enableAdaptiveTransfers()),
+    sendPayload: jest.fn(async (connectionId, payload) => {
+      const {PinnedGateway: gateway} = require('../src/native/PinnedGateway');
+      const frame = mockNativeCrypto!.encrypt(JSON.parse(payload));
+      await gateway.sendText(connectionId, JSON.stringify(frame));
+    }),
   },
   subscribeGatewayEvents: (callback: typeof mockListener) => {
     mockListener = callback;
@@ -162,6 +182,8 @@ describe('RemoteClient encrypted transport boundary', () => {
   beforeEach(() => {
     mockListener = undefined;
     mockServerSession = undefined;
+
+    mockNativeCrypto = undefined; mockBeforeKeys.length = 0;
     mockSentTexts.length = 0;
     mockHoldBusinessSend = undefined;
     mockRpcErrorCode = undefined;
@@ -192,6 +214,39 @@ describe('RemoteClient encrypted transport boundary', () => {
       expect(await result).toBe(code);
       expect(statuses.at(-1)).toBe('closed');
     } finally {await client.close(); jest.useRealTimers();}
+  });
+
+
+  it('cancels an image while native registration waits and never starts upload or sends its path on WSS', async () => {
+    mockV11 = true;
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    let finish!: (handle: string) => void;
+    (PinnedGateway.registerImage as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {finish = resolve;}));
+    (PinnedGateway.uploadImage as jest.Mock).mockClear();
+    const taskId = 'native-image-cancel-fixture';
+    const result = client.request('local.image.upload', {path: '/cache/private-selected-photo', name: 'photo.jpg', type: 'image/jpeg', taskId}).catch(error => error.code);
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    await client.request('local.image.cancel', {taskId});finish('image-cancel-handle');
+    expect(await result).toBe('remote_upload_cancelled');
+    expect(PinnedGateway.uploadImage).not.toHaveBeenCalled();
+    expect(PinnedGateway.releaseImage).toHaveBeenCalledWith(client.connectionId, 'image-cancel-handle');
+    expect(mockSentTexts.join('')).not.toContain('/cache/private-selected-photo');
+    await client.close();
+  });
+  it('routes only its current native image task progress without exposing picture data to business events', async () => {
+    mockV11 = true; const onEvent = jest.fn(), onProgress = jest.fn();
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}, onEvent});await client.connect();
+    let finish!: (value: string) => void;
+    (PinnedGateway.uploadImage as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {finish = resolve;}));
+    const taskId = 'native-image-progress-fixture';
+    const result = client.request('local.image.upload', {path: '/cache/photo', name: 'photo.jpg', type: 'image/jpeg', taskId, onProgress});
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    const progress = {taskId, stage: 'waiting_first_ack', bytes: 0, total: 839680};
+    mockListener?.({connectionId: client.connectionId, type: 'uploadProgress', message: JSON.stringify(progress)});
+    mockListener?.({connectionId: client.connectionId, type: 'uploadProgress', message: JSON.stringify({...progress, taskId: 'old-task'})});
+    expect(onProgress).toHaveBeenCalledTimes(1);expect(onProgress).toHaveBeenCalledWith(progress);
+    finish(JSON.stringify({uploadId: 'image-done', state: 'completed'}));await result;await client.close();
   });
 
 
@@ -239,7 +294,7 @@ describe('RemoteClient encrypted transport boundary', () => {
       mockHoldChunk = new Promise<void>(resolve => {release = resolve;});
       const tasks = Array.from({length: 10}, () => ({content: '完整任务'.repeat(1200)}));
       const ref = mockSnapshot({kind: 'event', event: 'conversation.tasks.updated', payload: {conversationId: 'conversation-full-event-fixture', tasks}});
-      const emit = (value: Record<string, unknown>) => mockListener?.({connectionId: client.connectionId, type: 'message', message: JSON.stringify(mockServerSession!.encrypt(value))});
+      const emit = (value: Record<string, unknown>) => mockReceive(client.connectionId, mockServerSession!.encrypt(value));
       emit({kind: 'event', event: 'remote.transfer.ready', payload: {transfer: ref}});
       emit({kind: 'event', event: 'assistant.completed', payload: {conversationId: 'conversation-full-event-fixture', requestId: 'request-terminal-fixture'}});
       for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -563,7 +618,8 @@ describe('RemoteClient encrypted transport boundary', () => {
     await client.connect();
     mockServerSession!.encrypt({kind: 'event', event: 'fixture.skipped'});
     const skippedSequence = mockServerSession!.encrypt({kind: 'event', event: 'fixture.next'});
-    mockListener?.({connectionId: client.connectionId, type: 'message', message: JSON.stringify(skippedSequence)});
+    expect(() => mockReceive(client.connectionId, skippedSequence)).toThrow('remote_frame_out_of_order');
+    mockListener?.({connectionId: client.connectionId, type: 'error', failureKind: 'protocol', failureCode: 'remote_frame_out_of_order'});
     expect(onStatus).toHaveBeenLastCalledWith('closed', 'mobile:remote_frame_out_of_order');
   });
 
@@ -574,7 +630,7 @@ describe('RemoteClient encrypted transport boundary', () => {
     await client.connect();
     const rejection = mockServerSession!.encrypt({kind: 'event', event: 'remote.error',
       payload: {code: 'remote_frame_auth_failed'}});
-    mockListener?.({connectionId: client.connectionId, type: 'message', message: JSON.stringify(rejection)});
+    mockReceive(client.connectionId, rejection);
     expect(onStatus).toHaveBeenLastCalledWith('closed', 'server_error:remote_frame_auth_failed');
   });
 

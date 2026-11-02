@@ -15,7 +15,9 @@
     "test:desktop-interop": "node scripts/desktop-interop.cjs",
     "test:pairing-interop": "node scripts/pairing-fallback-interop.cjs",
     "test:phone-fixture": "node scripts/phone-fixture.mjs",
-    "test:native-upload": "node scripts/native-upload-probe.cjs"
+    "test:native-upload": "node scripts/native-upload-probe.cjs",
+    "test:native-session": "node scripts/native-session-probe.cjs",
+    "test:native-image": "node scripts/native-image-probe.cjs"
   },
   "dependencies": {
     "@noble/ciphers": "^2.4.0",

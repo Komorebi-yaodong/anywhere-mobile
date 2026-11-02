@@ -24,11 +24,19 @@ final class GatewaySocketWriter {
   private final ArrayDeque<Pending> queue = new ArrayDeque<>();
   private boolean closed;
 
+  private int queuedBytes;
+
   private static final class Pending {
+
+    java.util.concurrent.Callable<String> prepare;
     String text;
     final Runnable resolve;
     final Consumer<String> reject;
     long started;
+
+    int weight;
+
+    Runnable submitted = () -> {};
     Pending(String text, Runnable resolve, Consumer<String> reject) {
       this.text = text; this.resolve = resolve; this.reject = reject;
     }
@@ -43,21 +51,47 @@ final class GatewaySocketWriter {
   }
 
   synchronized void send(String text, Runnable resolve, Consumer<String> reject) {
+
+    if (queue.size() >= 32) {reject.accept("remote_send_capacity");return;}
     if (closed || !current.getAsBoolean()) {reject.accept("SOCKET_UNAVAILABLE"); return;}
     if (text.getBytes(StandardCharsets.UTF_8).length > MAX_FRAME_BYTES) {
       reject.accept("SOCKET_FRAME_TOO_LARGE"); return;
     }
-    Pending pending = new Pending(text, resolve, reject);
+    int weight = text.length() * 2;
+    if (queuedBytes + weight > 32 * 1024 * 1024) {reject.accept("remote_send_capacity");return;}
+    Pending pending = new Pending(text, resolve, reject);pending.weight = weight;queuedBytes += weight;
     queue.add(pending);
     if (queue.size() == 1) executor.execute(() -> start(pending));
   }
 
+  synchronized void sendPrepared(java.util.concurrent.Callable<String> prepare, int weight, Runnable resolve, Consumer<String> reject) {
+    sendPrepared(prepare, weight, () -> {}, resolve, reject);
+  }
+  synchronized void sendPrepared(java.util.concurrent.Callable<String> prepare, int weight, Runnable submitted, Runnable resolve, Consumer<String> reject) {
+    if (closed || !current.getAsBoolean()) {reject.accept("SOCKET_UNAVAILABLE");return;}
+    if (queue.size() >= 32) {reject.accept("remote_send_capacity");return;}
+    if (weight < 1 || queuedBytes + weight > 32 * 1024 * 1024) {reject.accept("remote_send_capacity");return;}
+    Pending pending = new Pending(null, resolve, reject);pending.prepare = prepare;pending.submitted = submitted;pending.weight = weight;queuedBytes += weight;queue.add(pending);
+    if (queue.size() == 1) executor.execute(() -> start(pending));
+  }
+
+
   private synchronized void start(Pending pending) {
     if (closed || queue.peek() != pending || pending.started != 0) return;
     if (!current.getAsBoolean()) {close(); return;}
+    if (pending.prepare != null) {
+      try {pending.text = pending.prepare.call();pending.prepare = null;}
+      catch (Exception error) {
+        pending.prepare = null;queue.remove();queuedBytes -= pending.weight;pending.reject.accept(error.getMessage() != null && error.getMessage().startsWith("remote_") ? error.getMessage() : "remote_encrypt_failed");
+        Pending next = queue.peek();if (next != null) executor.execute(() -> start(next));return;
+      }
+    }
+
     pending.started = System.nanoTime();
     try {
       if (!socket.send(pending.text)) {close(); return;}
+
+      pending.submitted.run();
       pending.text = null;
       poll(pending);
     } catch (Exception error) {close();}
@@ -67,7 +101,7 @@ final class GatewaySocketWriter {
     if (closed || queue.peek() != pending) return;
     if (!current.getAsBoolean()) {close(); return;}
     if (socket.queueSize() == 0) {
-      queue.remove();
+      queue.remove();queuedBytes -= pending.weight;
       pending.resolve.run();
       Pending next = queue.peek();
       if (next != null) executor.execute(() -> start(next));
@@ -84,8 +118,8 @@ final class GatewaySocketWriter {
   private void closeWith(String code) {
     if (closed) return;
     closed = true;
-    for (Pending pending : queue) {pending.text = null; pending.reject.accept(code);}
-    queue.clear();
+    for (Pending pending : queue) {pending.text = null; pending.prepare = null; pending.reject.accept(code);}
+    queue.clear();queuedBytes = 0;
     executor.shutdownNow();
   }
 }

@@ -25,17 +25,28 @@ export type NativeHttpResponse = {
 
 export type GatewayEvent = {
   connectionId: string;
-  type: 'connected' | 'disconnected' | 'error' | 'message';
+  type: 'connected' | 'disconnected' | 'error' | 'message' | 'uploadProgress';
   message?: string;
   closeCode?: number;
   closeReason?: string;
   failureKind?: string;
+
+  failureCode?: string;
 };
 
 type PinnedGatewayModule = {
   postJson(options: HttpsPostOptions): Promise<NativeHttpResponse>;
   connectSocket(options: SocketConnectOptions): Promise<void>;
   sendText(connectionId: string, text: string): Promise<void>;
+
+  installSession(connectionId: string, sessionId: string, sendKey: string, receiveKey: string): Promise<void>;
+  enableSessionTransfers(connectionId: string): Promise<void>;
+  sendPayload(connectionId: string, payload: string): Promise<void>;
+
+  registerImage(connectionId: string, path: string, name: string, type: string): Promise<string>;
+  uploadImage(connectionId: string, handle: string, task: string, wrapped: boolean): Promise<string>;
+  cancelImage(connectionId: string, task: string): Promise<void>;
+  releaseImage(connectionId: string, handle: string): Promise<void>;
   disconnect(connectionId: string): Promise<void>;
 
   socketState(connectionId: string): Promise<{connected: boolean; queuedBytes: number}>;
@@ -76,6 +87,15 @@ function normalizeTls(options: TransportTlsOptions): TransportTlsOptions {
 }
 
 export const PinnedGateway = {
+
+  registerImage: (connectionId: string, path: string, name: string, type: string) => nativeModule.registerImage(connectionId, path, name, type),
+  uploadImage: (connectionId: string, handle: string, task: string, wrapped: boolean) => nativeModule.uploadImage(connectionId, handle, task, wrapped),
+  cancelImage: (connectionId: string, task: string) => nativeModule.cancelImage(connectionId, task),
+  releaseImage: (connectionId: string, handle: string) => nativeModule.releaseImage(connectionId, handle),
+
+  installSession: (connectionId: string, sessionId: string, sendKey: string, receiveKey: string) => nativeModule.installSession(connectionId, sessionId, sendKey, receiveKey),
+  enableSessionTransfers: (connectionId: string) => nativeModule.enableSessionTransfers(connectionId),
+  sendPayload: (connectionId: string, payload: string) => nativeModule.sendPayload(connectionId, payload),
 
   socketState(connectionId: string): Promise<{connected: boolean; queuedBytes: number}> {
     if (!connectionId.trim()) throw new Error('connectionId 不能为空。');

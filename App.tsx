@@ -69,9 +69,13 @@ function AppContent() {
   const mathJaxRef = useRef<MathJaxRendererRef>(null);
   MathRenderer.Init(mathJaxRef);
 
+  const desktopSnapshot = useRef(desktops);
+  desktopSnapshot.current = desktops;
+  const onlineConnections = desktops.filter(item => item.status === '在线').map(item => `${item.id}:${item.connectionGeneration || 0}`).join('|');
+
   useEffect(() => {
     let cancelled = false;
-    for (const desktop of desktops) {
+    for (const desktop of desktopSnapshot.current) {
       if (desktop.status !== '在线') continue;
       request<WorkspaceBootstrap>(desktop.id, 'workspace.bootstrap.get')
         .then(async bootstrap => {
@@ -121,7 +125,7 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
-  }, [desktops, request, updateProfile]);
+  }, [onlineConnections, request, updateProfile]);
 
 
   const normalizedCode = pairingCode.replace(/\D/g, '').slice(0, 6);
@@ -154,7 +158,7 @@ function AppContent() {
       setCandidate(null);
       setRawPayload('');
       setPairingCode('');
-      Alert.alert('连接成功', '正在连接你的Anywhere。');
+      Alert.alert('配对成功', '正在连接你的 Anywhere。');
     } catch (error) {
       Alert.alert(
         '配对失败',

@@ -36,7 +36,7 @@ import javax.net.ssl.X509TrustManager
 class PinnedGatewayModule(private val context: ReactApplicationContext) :
   ReactContextBaseJavaModule(context) {
 
-  private data class SocketRecord(val socket: WebSocket, val client: OkHttpClient, val writer: GatewaySocketWriter, @Volatile var connected: Boolean = false)
+  private data class SocketRecord(val socket: WebSocket, val client: OkHttpClient, val writer: GatewaySocketWriter, val session: GatewaySession, val uploads: GatewayUploads, @Volatile var connected: Boolean = false)
 
   private val sockets = ConcurrentHashMap<String, SocketRecord>()
   private val socketLock = Any()
@@ -86,10 +86,19 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
 
       synchronized(socketLock) {
         check(!invalidated) { "Transport module closed" }
-        sockets.remove(connectionId)?.let { it.writer.close(); it.socket.cancel() }
+        sockets.remove(connectionId)?.let { it.uploads.close(); it.session.close(); it.writer.close(); it.socket.cancel() }
         val socket = client.newWebSocket(request, gatewayListener(connectionId))
         val writer = GatewaySocketWriter(socket) { sockets[connectionId]?.socket === socket && !invalidated }
-        sockets[connectionId] = SocketRecord(socket, client, writer)
+        val session = GatewaySession(writer,
+          { text -> if (sockets[connectionId]?.socket === socket) emit(connectionId, "message", text) },
+          { code -> if (removeSocketIfCurrent(connectionId, socket)) { socket.cancel(); emit(connectionId, "error", failureKind = "protocol", failureCode = code) } })
+        val uploads = GatewayUploads(session, java.io.File(context.cacheDir, "gateway-images/$connectionId"),
+          arrayOf(context.cacheDir, context.externalCacheDir),
+          { task, stage, bytes, total -> if (sockets[connectionId]?.socket === socket) {
+            val progress = org.json.JSONObject().put("taskId", task).put("stage", stage).put("bytes", bytes).put("total", total)
+            emit(connectionId, "uploadProgress", progress.toString())
+          } })
+        sockets[connectionId] = SocketRecord(socket, client, writer, session, uploads)
       }
       promise.resolve(null)
     } catch (error: Exception) {
@@ -110,6 +119,55 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun installSession(connectionId: String, sessionId: String, sendKey: String, receiveKey: String, promise: Promise) {
+    val record = sockets[connectionId]
+    if (record == null) { promise.reject("remote_client_closed", "连接已关闭。"); return }
+    record.session.install(sessionId, sendKey, receiveKey, { promise.resolve(null) }, { code -> promise.reject(code, code) })
+  }
+
+  @ReactMethod
+  fun enableSessionTransfers(connectionId: String, promise: Promise) {
+    try { val record = sockets[connectionId] ?: throw IllegalStateException("remote_client_closed"); record.session.adaptive(); promise.resolve(null) }
+    catch (error: Exception) { promise.reject("remote_session_state_invalid", "连接初始化失败。") }
+  }
+
+  @ReactMethod
+  fun sendPayload(connectionId: String, payload: String, promise: Promise) {
+    val record = sockets[connectionId]
+    if (record == null) {promise.reject("remote_client_closed", "连接已关闭。");return}
+    if (payload.length > 12 * 1024 * 1024) {promise.reject("remote_payload_size_invalid", "请求过大。");return}
+    record.session.send(payload, {promise.resolve(null)}, {code -> promise.reject(code, code)})
+  }
+
+
+  @ReactMethod
+  fun registerImage(connectionId: String, path: String, name: String, type: String, promise: Promise) {
+    val record = sockets[connectionId]
+    if (record == null || !record.session.active()) {promise.reject("remote_client_closed", "连接已关闭。");return}
+    record.uploads.register(path, name, type, {handle -> promise.resolve(handle)}, {code -> promise.reject(code, code)})
+  }
+
+  @ReactMethod
+  fun uploadImage(connectionId: String, handle: String, task: String, wrapped: Boolean, promise: Promise) {
+    val record = sockets[connectionId]
+    if (record == null) {promise.reject("remote_client_closed", "连接已关闭。");return}
+    record.uploads.upload(handle, task, wrapped, {value -> promise.resolve(value.toString())}, {code -> promise.reject(code, code)})
+  }
+
+  @ReactMethod
+  fun cancelImage(connectionId: String, task: String, promise: Promise) {
+    sockets[connectionId]?.uploads?.cancel(task)
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun releaseImage(connectionId: String, handle: String, promise: Promise) {
+    sockets[connectionId]?.uploads?.release(handle)
+    promise.resolve(null)
+  }
+
+
+  @ReactMethod
   fun socketState(connectionId: String, promise: Promise) {
     synchronized(socketLock) {
       val record = sockets[connectionId]
@@ -124,7 +182,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   @ReactMethod
   fun disconnect(connectionId: String, promise: Promise) {
     synchronized(socketLock) {
-      sockets.remove(connectionId)?.let { it.writer.close(); it.socket.cancel() }
+      sockets.remove(connectionId)?.let { it.uploads.close(); it.session.close(); it.writer.close(); it.socket.cancel() }
     }
     promise.resolve(null)
   }
@@ -205,7 +263,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
           webSocket.cancel()
           emit(connectionId, "error", failureKind = "frame_too_large")
         } else {
-          emit(connectionId, "message", text)
+          sockets[connectionId]?.session?.receive(text)
         }
       }
     }
@@ -255,6 +313,10 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
     synchronized(socketLock) {
       val record = sockets[connectionId]
       if (record != null && record.socket === webSocket && sockets.remove(connectionId, record)) {
+        record.uploads.close(if (failureCode == "SOCKET_PONG_TIMEOUT") "remote_pong_timeout" else if (failureCode == "SOCKET_WRITE_TIMEOUT") "remote_write_timeout" else "remote_client_closed")
+
+        record.session.close()
+
         record.writer.close(failureCode)
         true
       } else false
@@ -263,7 +325,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   override fun invalidate() {
     synchronized(socketLock) {
       invalidated = true
-      sockets.values.forEach { it.writer.close(); it.socket.cancel() }
+      sockets.values.forEach { it.uploads.close(); it.session.close(); it.writer.close(); it.socket.cancel() }
       sockets.clear()
     }
     super.invalidate()
@@ -286,7 +348,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
 
   private fun emit(
     connectionId: String, type: String, message: String? = null,
-    closeCode: Int? = null, closeReason: String? = null, failureKind: String? = null
+    closeCode: Int? = null, closeReason: String? = null, failureKind: String? = null, failureCode: String? = null
   ) {
     if (invalidated) return
     val event = Arguments.createMap().apply {
@@ -297,6 +359,8 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
       closeCode?.takeIf { it in 1000..4999 }?.let { putInt("closeCode", it) }
       closeReason?.let { putString("closeReason", if (it in safeCloseReasons) it else "other") }
       failureKind?.let { putString("failureKind", it) }
+
+      failureCode?.takeIf { it.matches(Regex("remote_[a-z0-9_]+")) }?.let { putString("failureCode", it) }
     }
     context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
       .emit(EVENT_NAME, event)
