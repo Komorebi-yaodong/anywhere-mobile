@@ -56,6 +56,22 @@ final class GatewayNativeCrypto {
     guard frame.utf8.count <= maximum else { throw NativeGatewayFailure(code: "remote_payload_size_invalid") }
     sendSequence += 1; return frame
   }
+  func encryptBinary(_ metadata: String, data: Data) throws -> Data {
+    guard !closed, sendSequence <= 9007199254740991, nonceCounter < UInt64.max else {throw NativeGatewayFailure(code: "remote_session_closed")}
+    let meta = Data(metadata.utf8)
+    guard meta.count >= 2, meta.count <= 1024, data.count > 0, data.count <= 2 * 1024 * 1024 else {throw NativeGatewayFailure(code: "remote_binary_frame_invalid")}
+    var length = UInt32(meta.count).bigEndian
+    var plain = withUnsafeBytes(of: &length) {Data($0)}; plain.append(meta); plain.append(data)
+    defer {plain.resetBytes(in: 0..<plain.count)}
+    var counter = nonceCounter.bigEndian; var nonce = prefix; withUnsafeBytes(of: &counter) {nonce.append(contentsOf: $0)}; nonceCounter += 1
+    let auth = Data(try Self.json(["direction": "client-to-desktop", "sequence": sendSequence, "sessionId": id, "type": "remote.binary", "v": 2]).utf8)
+    let sealed = try AES.GCM.seal(plain, using: SymmetricKey(data: sendKey), nonce: AES.GCM.Nonce(data: nonce), authenticating: auth)
+    var sequence = sendSequence.bigEndian
+    var frame = Data("AWB1".utf8); withUnsafeBytes(of: &sequence) {frame.append(contentsOf: $0)}; frame.append(nonce); frame.append(sealed.ciphertext); frame.append(sealed.tag)
+    guard frame.count <= maximum else {throw NativeGatewayFailure(code: "remote_payload_size_invalid")}
+    sendSequence += 1; return frame
+  }
+
   func decrypt(_ text: String) throws -> String {
     guard !closed else { throw NativeGatewayFailure(code: "remote_session_closed") }
     guard text.utf8.count <= maximum else { throw NativeGatewayFailure(code: "remote_payload_size_invalid") }
@@ -97,7 +113,7 @@ final class GatewayNativeSession {
     Self.traceLock.lock(); Self.rows.append(row); if Self.rows.count > 256 { Self.rows.removeFirst() }; Self.traceLock.unlock()
   }
 
-  private struct Write { let value: String; let encrypted: Bool; let check: () throws -> Void; let submitted: () -> Void; let reply: Reply; let enqueued = ProcessInfo.processInfo.systemUptime }
+  private struct Write { let value: String; let encrypted: Bool; let check: () throws -> Void; let submitted: () -> Void; let reply: Reply; let raw: Data?; let enqueued = ProcessInfo.processInfo.systemUptime }
   private let queue = DispatchQueue(label: "gateway.native-session")
   private let lock = NSLock()
   private var closed = false
@@ -108,10 +124,11 @@ final class GatewayNativeSession {
   private var writing = false
   private var bytes = 0
   private let sendText: (String, @escaping (Error?) -> Void) -> Void
+  private let sendData: (Data, @escaping (Error?) -> Void) -> Void
   private let deliver: (String) -> Void
   private let failure: (String) -> Void
   var consumeResponse: ([String: Any]) -> Bool = { _ in false }
-  init(send: @escaping (String, @escaping (Error?) -> Void) -> Void, deliver: @escaping (String) -> Void, failure: @escaping (String) -> Void) { sendText = send; self.deliver = deliver; self.failure = failure; trace("connection") }
+  init(send: @escaping (String, @escaping (Error?) -> Void) -> Void, binary: @escaping (Data, @escaping (Error?) -> Void) -> Void, deliver: @escaping (String) -> Void, failure: @escaping (String) -> Void) { sendText = send; sendData = binary; self.deliver = deliver; self.failure = failure; trace("connection") }
   private func isClosed() -> Bool { lock.lock(); defer { lock.unlock() }; return closed }
   func install(id: String, send: String, receive: String, completion: @escaping Reply) {
     queue.async {
@@ -154,13 +171,13 @@ final class GatewayNativeSession {
     let plain = try crypto.decrypt(text); unaccount(text)
     if !consumeResponse(try GatewayNativeCrypto.object(plain)) { deliver(plain) }
   }
-  func send(_ value: String, encrypted: Bool = true, check: @escaping () throws -> Void = {}, submitted: @escaping () -> Void = {}, completion: @escaping Reply) {
+  func send(_ value: String, encrypted: Bool = true, check: @escaping () throws -> Void = {}, submitted: @escaping () -> Void = {}, raw: Data? = nil, completion: @escaping Reply) {
     guard value.utf8.count <= 16 * 1024 * 1024 else { completion(.failure(NativeGatewayFailure(code: "remote_payload_size_invalid"))); return }
     queue.async {
       guard !self.isClosed() else { completion(.failure(NativeGatewayFailure(code: "remote_client_closed"))); return }
-      guard self.writes.count < 32, self.bytes + value.utf8.count * 2 <= 32 * 1024 * 1024 else { completion(.failure(NativeGatewayFailure(code: "remote_send_capacity"))); return }
-      self.writes.append(Write(value: value, encrypted: encrypted, check: check, submitted: submitted, reply: completion))
-      self.bytes += value.utf8.count * 2
+      guard self.writes.count < 32, self.bytes + (value.utf8.count * 2 + (raw?.count ?? 0)) <= 32 * 1024 * 1024 else { completion(.failure(NativeGatewayFailure(code: "remote_send_capacity"))); return }
+      self.writes.append(Write(value: value, encrypted: encrypted, check: check, submitted: submitted, reply: completion, raw: raw))
+      self.bytes += (value.utf8.count * 2 + (raw?.count ?? 0))
       self.trace("queued", bytes: self.bytes)
       self.pump()
     }
@@ -169,24 +186,28 @@ final class GatewayNativeSession {
     guard !writing, !writes.isEmpty, !isClosed() else { return }
     let item = writes[0]
     let text: String
+    var binaryFrame: Data?
     do {
       try item.check()
-      if item.encrypted { guard let crypto else { throw NativeGatewayFailure(code: "remote_session_state_invalid") }; text = try crypto.encrypt(item.value) }
+      if item.encrypted { guard let crypto else { throw NativeGatewayFailure(code: "remote_session_state_invalid") }; if let raw = item.raw {binaryFrame = try crypto.encryptBinary(item.value, data: raw);text = ""} else {text = try crypto.encrypt(item.value)} }
       else { text = item.value }
-    } catch { writes.removeFirst(); bytes -= item.value.utf8.count * 2; item.reply(.failure(error)); pump(); return }
+    } catch { writes.removeFirst(); bytes -= (item.value.utf8.count * 2 + (item.raw?.count ?? 0)); item.reply(.failure(error)); pump(); return }
     writing = true; item.submitted()
 
     let began = ProcessInfo.processInfo.systemUptime
-    trace("submitted", bytes: text.utf8.count, elapsed: (began - item.enqueued) * 1000)
+    trace("submitted", bytes: binaryFrame?.count ?? text.utf8.count, elapsed: (began - item.enqueued) * 1000)
     let timeout = DispatchWorkItem { [weak self] in self?.fail(NativeGatewayFailure(code: "remote_write_timeout")) }
     queue.asyncAfter(deadline: .now() + 65, execute: timeout)
-    sendText(text) { error in self.queue.async {
+    let send: (@escaping (Error?) -> Void) -> Void = { completion in
+      if let frame = binaryFrame {self.sendData(frame, completion)} else {self.sendText(text, completion)}
+    }
+    send { error in self.queue.async {
       timeout.cancel(); guard !self.isClosed() else { return }
       if let error { self.fail(error); return }
       guard !self.writes.isEmpty else { return }
 
-      self.trace("drained", bytes: text.utf8.count, elapsed: (ProcessInfo.processInfo.systemUptime - began) * 1000)
-      self.writes.removeFirst(); self.bytes -= item.value.utf8.count * 2; self.writing = false; item.reply(.success("")); self.pump()
+      self.trace("drained", bytes: binaryFrame?.count ?? text.utf8.count, elapsed: (ProcessInfo.processInfo.systemUptime - began) * 1000)
+      self.writes.removeFirst(); self.bytes -= (item.value.utf8.count * 2 + (item.raw?.count ?? 0)); self.writing = false; item.reply(.success("")); self.pump()
     } }
   }
   private func fail(_ error: Error) { let code = (error as? NativeGatewayFailure)?.code ?? "remote_transport_error"; trace("failure", code: code); close(code: code); failure(code) }

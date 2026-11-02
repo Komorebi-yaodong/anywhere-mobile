@@ -16,6 +16,10 @@ final class GatewayUploads implements AutoCloseable {
   private final File directory;
   private final File[] allowedRoots;
   private final Progress progress;
+
+  interface Optimizer {Optimized optimize(File file,String name,String type) throws Exception;}
+  static final class Optimized {final String name,type;Optimized(String name,String type){this.name=name;this.type=type;}}
+  private final Optimizer optimizer;
   private final ExecutorService executor = new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(8),task -> {Thread t = new Thread(task, "gateway-picture-upload");t.setDaemon(true);return t;});
   private final Map<String, Snapshot> files = new HashMap<>();
   private final ConcurrentHashMap<String, CompletableFuture<JSONObject>> replies = new ConcurrentHashMap<>();
@@ -29,7 +33,10 @@ final class GatewayUploads implements AutoCloseable {
     Snapshot(File f, String n, String t, long s) {file=f;name=n;type=t;size=s;}
   }
   GatewayUploads(GatewaySession session, File directory, File[] allowedRoots, Progress progress) {
-    this.session=session;this.directory=directory;this.allowedRoots=allowedRoots;this.progress=progress;
+    this(session,directory,allowedRoots,progress,(file,name,type)->new Optimized(name,type));
+  }
+  GatewayUploads(GatewaySession session,File directory,File[] allowedRoots,Progress progress,Optimizer optimizer) {
+    this.session=session;this.directory=directory;this.allowedRoots=allowedRoots;this.progress=progress;this.optimizer=optimizer;
     session.responseHandler(this::response);
   }
   private void check() {if (closed) throw new IllegalStateException(closeCode);if (cancelled || Thread.currentThread().isInterrupted()) throw new IllegalStateException("remote_upload_cancelled");}
@@ -56,8 +63,11 @@ final class GatewayUploads implements AutoCloseable {
           for(int n;(n=in.read(buffer))!=-1;) {if(closed)throw new IllegalStateException(closeCode);size+=n;if(size>MAX_FILE)throw new IllegalArgumentException("remote_upload_size_invalid");out.write(buffer,0,n);}
         }finally{Arrays.fill(buffer,(byte)0);}
         if(size<1)throw new IllegalArgumentException("remote_upload_size_invalid");
+        Optimized optimized=optimizer.optimize(copy,name,type);size=copy.length();
+        if(closed)throw new IllegalStateException(closeCode);
+
         String handle=UUID.randomUUID().toString();
-        synchronized(this){if(closed || files.size()>=8 || retained+activeBytes+size>MAX_TOTAL)throw new IllegalStateException("remote_upload_capacity");files.put(handle,new Snapshot(copy,name,type,size));retained+=size;}
+        synchronized(this){if(closed || files.size()>=8 || retained+activeBytes+size>MAX_TOTAL)throw new IllegalStateException("remote_upload_capacity");files.put(handle,new Snapshot(copy,optimized.name,optimized.type,size));retained+=size;}
         copy=null;resolve.accept(handle);
       }catch(Exception error){reject.accept(code(error));}finally{if(copy!=null)copy.delete();}
     });}catch(RejectedExecutionException error){reject.accept(closeCode);}
@@ -68,7 +78,8 @@ final class GatewayUploads implements AutoCloseable {
     try {executor.execute(() -> {
       String uploadId="";
       try {
-        check();progress.report(task,"hashing",0,file.size);
+        check();rpc("remote.image.binary.negotiate",new JSONObject(),false);
+        progress.report(task,"hashing",0,file.size);
 
         session.trace("upload_start",null,file.size,0);
         MessageDigest hash=MessageDigest.getInstance("SHA-256");byte[] buffer=new byte[65536];long hashed=0;
@@ -82,11 +93,12 @@ final class GatewayUploads implements AutoCloseable {
         if(peer<1 || peer>(adaptive?8*1024*1024:512*1024))throw new IllegalStateException("remote_upload_response_invalid");
         Sizer sizing=new Sizer(Math.min(peer,2*1024*1024));long offset=0;int index=0;
         try(RandomAccessFile input=new RandomAccessFile(file.file,"r")) {
-          while(offset<file.size){check();int length=Math.min(sizing.size,(int)(file.size-offset));byte[] bytes=new byte[length];long start=System.nanoTime();String data;
-            try{input.readFully(bytes);data=GatewayCrypto.base64(bytes);}finally{Arrays.fill(bytes,(byte)0);}
+          while(offset<file.size){check();int length=Math.min(sizing.size,(int)(file.size-offset));byte[] bytes=new byte[length];long start=System.nanoTime();
+            input.readFully(bytes);
             long preparation=TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start);
             progress.report(task,index==0?"waiting_first_ack":"uploading",offset,file.size);
-            JSONObject ack=rpc("attachment.chunk",new JSONObject().put("uploadId",uploadId).put("index",index).put("data",data),wrapped).getJSONObject("upload");
+            JSONObject ack;
+            try{ack=rpc("attachment.chunk",new JSONObject().put("uploadId",uploadId).put("index",index),wrapped,bytes).getJSONObject("upload");}finally{Arrays.fill(bytes,(byte)0);}
             if(!uploadId.equals(ack.getString("uploadId")) || ack.getLong("receivedBytes")!=offset+length || ack.getInt("nextChunkIndex")!=index+1)throw new IllegalStateException("remote_upload_response_invalid");
             offset+=length;index++;if(adaptive)sizing.observe(length,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start),preparation);
             progress.report(task,"uploading",offset,file.size);
@@ -106,16 +118,21 @@ final class GatewayUploads implements AutoCloseable {
       }finally{file.file.delete();synchronized(this){activeTask="";activeBytes=0;cancelled=false;} }
     });}catch(RejectedExecutionException error){file.file.delete();synchronized(this){activeTask="";activeBytes=0;}reject.accept(closeCode);}
   }
-  private JSONObject rpc(String method, JSONObject params, boolean wrapped) throws Exception {
+  private JSONObject rpc(String method, JSONObject params, boolean wrapped) throws Exception {return rpc(method,params,wrapped,null);}
+  private JSONObject rpc(String method, JSONObject params, boolean wrapped, byte[] bytes) throws Exception {
+
     check();String id=prefix+UUID.randomUUID();CompletableFuture<JSONObject> reply=new CompletableFuture<>();CompletableFuture<Void> submitted=new CompletableFuture<>();
     java.util.concurrent.atomic.AtomicBoolean valid = new java.util.concurrent.atomic.AtomicBoolean(true);
     replies.put(id,reply);
 
     long began=System.nanoTime();
-    session.trace("rpc_"+method.substring("attachment.".length()),null,"attachment.chunk".equals(method)?params.optString("data").length():0,0);
+    session.trace(method.startsWith("attachment.")?"rpc_"+method.substring("attachment.".length()):"queued",null,bytes==null?0:bytes.length,0);
     reply.whenComplete((value,error)->{if(error!=null)submitted.completeExceptionally(error);});
     JSONObject request=new JSONObject().put("kind","request").put("requestId",id).put("method",wrapped?"transfer.request":method).put("params",wrapped?new JSONObject().put("method",method).put("params",params):params);
-    session.sendChecked(request.toString(),()->{if(!valid.get())throw new IllegalStateException("remote_upload_cancelled");check();},()->submitted.complete(null),()->{},code->{submitted.completeExceptionally(new IllegalStateException(code));reply.completeExceptionally(new IllegalStateException(code));});
+    Runnable permit=()->{if(!valid.get())throw new IllegalStateException("remote_upload_cancelled");check();};
+    Consumer<String> failed=code->{submitted.completeExceptionally(new IllegalStateException(code));reply.completeExceptionally(new IllegalStateException(code));};
+    if(bytes!=null)session.sendChunk(id,params.getString("uploadId"),params.getInt("index"),bytes,permit,()->submitted.complete(null),failed);
+    else session.sendChecked(request.toString(),permit,()->submitted.complete(null),()->{},failed);
     try {
       // No ACK timer while waiting behind another native writer. Submission has
       // its own bounded wait; native submission starts the existing 90s ACK limit.

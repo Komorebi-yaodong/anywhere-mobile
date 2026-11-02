@@ -190,6 +190,9 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
       let native = GatewayNativeSession(send: { [weak socket] text, completion in
         guard let socket else { completion(NativeGatewayFailure(code: "remote_client_closed")); return }
         socket.send(.string(text), completionHandler: completion)
+      }, binary: { [weak socket] data, completion in
+        guard let socket else {completion(NativeGatewayFailure(code: "remote_client_closed"));return}
+        socket.send(.data(data), completionHandler: completion)
       }, deliver: { [weak self, weak socket] text in
         guard let self, let socket, self.withStateLock({ self.sockets[connectionId] === socket }) else { return }
         self.emit(connectionId, type: "message", message: text)

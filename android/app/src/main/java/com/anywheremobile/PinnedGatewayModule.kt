@@ -97,7 +97,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
           { task, stage, bytes, total -> if (sockets[connectionId]?.socket === socket) {
             val progress = org.json.JSONObject().put("taskId", task).put("stage", stage).put("bytes", bytes).put("total", total)
             emit(connectionId, "uploadProgress", progress.toString())
-          } })
+          } }, GatewayImageOptimizer::optimize)
         sockets[connectionId] = SocketRecord(socket, client, writer, session, uploads)
       }
       promise.resolve(null)

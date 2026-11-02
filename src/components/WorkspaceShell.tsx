@@ -48,6 +48,8 @@ import {
   type ConversationConfigResult,
 } from '../remote/commands';
 import { PhotoCapture } from './PhotoCapture';
+
+import {PhotoUploadNotice} from './PhotoUploadNotice';
 import { useAudioRecording } from '../hooks/useAudioRecording';
 import {
   GlobalSettings,
@@ -301,6 +303,7 @@ export function WorkspaceShell({
   const [notice, setNotice] = useState('');
 
   const [photoNotice, setPhotoNotice] = useState('');
+  const [photoBusy, setPhotoBusy] = useState(false);
   const photoController = useRef<AbortController | null>(null);
   const photoScope = `${desktop.id}:${workspace.selectedConversationId}`;
   useEffect(() => () => {photoController.current?.abort();}, [photoScope]);
@@ -859,12 +862,13 @@ export function WorkspaceShell({
 
   const pickPhoto = async () => {
     if (!requireControl() || photoController.current) return;
-    const controller = new AbortController(); photoController.current = controller;
+    const controller = new AbortController(); photoController.current = controller;setPhotoBusy(true);
     setPhotoNotice(''); setSheet(null);
     try {
       const result = await launchImageLibrary({mediaType: 'photo', selectionLimit: 1, includeBase64: false});
       const asset = result.assets?.[0];
       if (!asset?.uri || controller.signal.aborted) return;
+      setPhotoNotice('正在处理照片…');
       const {pickPhotoUpload} = await import('../services/mediaAttachment');
       const upload = await pickPhotoUpload({desktopId: desktop.id, request, uri: asset.uri,
         name: asset.fileName || '照片.jpg', type: asset.type || 'image/jpeg', signal: controller.signal,
@@ -872,13 +876,13 @@ export function WorkspaceShell({
       if (!controller.signal.aborted) {attachments.addCapturedUpload(upload);setPhotoNotice('');}
       else request(desktop.id, 'attachment.abort', {uploadId: upload.uploadId}).catch(() => undefined);
     } catch (error) {if (!controller.signal.aborted) setPhotoNotice(workspaceNotice(error, '照片选择或上传失败。'));}
-    finally {if (photoController.current === controller) photoController.current = null;}
+    finally {if (photoController.current === controller) {photoController.current = null;setPhotoBusy(false);}}
   };
 
   const uploadCapturedPhoto = async (path: string) => {
     setShowCamera(false);
     if (!requireControl() || photoController.current) return;
-    const controller = new AbortController(); photoController.current = controller;setPhotoNotice('');
+    const controller = new AbortController(); photoController.current = controller;setPhotoBusy(true);setPhotoNotice('正在处理照片…');
     try {
       const {uploadCapturedPhoto: uploadPhoto} = await import('../services/mediaAttachment');
       const upload = await uploadPhoto({desktopId: desktop.id, request, path, signal: controller.signal,
@@ -886,7 +890,7 @@ export function WorkspaceShell({
       if (!controller.signal.aborted) {attachments.addCapturedUpload(upload);setPhotoNotice('');}
       else request(desktop.id, 'attachment.abort', {uploadId: upload.uploadId}).catch(() => undefined);
     } catch (error) {if (!controller.signal.aborted) setPhotoNotice(workspaceNotice(error, '照片上传失败。'));}
-    finally {if (photoController.current === controller) photoController.current = null;}
+    finally {if (photoController.current === controller) {photoController.current = null;setPhotoBusy(false);}}
   };
 
   const send = async () => {
@@ -1136,9 +1140,9 @@ export function WorkspaceShell({
       ) : null}
 
       {photoNotice || notice ? (
-        <Pressable style={styles.notice} onPress={() => {if (photoController.current) photoController.current.abort();setPhotoNotice('');setNotice('');}}>
-          <Text style={styles.noticeText}>{photoNotice || notice}</Text>
-        </Pressable>
+        <PhotoUploadNotice text={photoNotice || notice} active={photoBusy && Boolean(photoController.current && !photoController.current.signal.aborted)} style={styles.notice} textStyle={styles.noticeText}
+          onCancel={() => {photoController.current?.abort();setPhotoNotice('已取消上传。');}}
+          onClose={() => {setPhotoNotice('');setNotice('');}} />
       ) : null}
       {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在连接…'}</Text></View> : null}
       <View style={styles.retainedWorkspace} pointerEvents={!connected && mode !== 'chat' && mode !== 'settings' ? 'none' : 'auto'}>

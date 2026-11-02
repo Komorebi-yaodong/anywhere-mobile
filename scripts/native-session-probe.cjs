@@ -30,7 +30,15 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
  assert.equal((await rpc({op:'decrypt',frame:corrupt})).code,'remote_frame_auth_failed');assert.deepEqual((await rpc({op:'decrypt',frame:valid})).value,answer);
  await rpc({op:'adaptive'});desktop.enableAdaptiveTransfers();
  for(const size of [512*1024,820*1024,2*1024*1024,8*1024*1024]){const request={...payload,params:{data:Buffer.alloc(size,7).toString('base64url')}};const result=await rpc({op:'encrypt',payload:request});assert.equal(result.ok,true);assert.deepEqual(desktop.decrypt(result.value),request);}
- await rpc({op:'close'});assert.equal((await rpc({op:'encrypt',payload})).ok,false);
+ const binaryRaw=Buffer.alloc(128*1024,0x6c),uploadId='upload-native-binary-fixture';
+ const binary=Buffer.from((await rpc({op:'binary',uploadId,index:0,data:binaryRaw.toString('base64url')})).value,'base64');
+ assert.ok(binary.length<binaryRaw.length+1024);const corruptBinary=Buffer.from(binary);corruptBinary[corruptBinary.length-1]=(corruptBinary[corruptBinary.length-1]+1)%256;
+ assert.throws(()=>desktop.decryptBinary(corruptBinary),error=>error.code==='remote_frame_auth_failed');
+ const decoded=desktop.decryptBinary(binary);assert.deepEqual(decoded.params.params.data,binaryRaw);assert.equal(decoded.params.params.uploadId,uploadId);
+ assert.throws(()=>desktop.decryptBinary(binary),error=>error.code==='remote_frame_replayed');
+ const mixed=(await rpc({op:'encrypt',payload})).value;assert.deepEqual(desktop.decrypt(mixed),payload);
+
+await rpc({op:'close'});assert.equal((await rpc({op:'encrypt',payload})).ok,false);
  console.log(JSON.stringify({ok:true,suite:'production-java-crypto-desktop-interop',coverage:'UTF8/nonBMP/AAD/tag/replay/sequence/512KiB/820KiB/2MiB/8MiB/close'}));
  }finally{desktop?.close();child.stdin.end();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

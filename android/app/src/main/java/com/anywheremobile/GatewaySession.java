@@ -108,6 +108,13 @@ final class GatewaySession implements AutoCloseable {
       }
     });
   }
+  void sendChunk(String id,String uploadId,int index,byte[] bytes,Runnable check,Runnable submitted,Consumer<String> reject) {
+    GatewayCrypto current=crypto;
+    if(closed.get()||current==null){reject.accept("remote_client_closed");return;}
+    final byte[] owned=bytes.clone();
+    writer.sendBinary(()->{try{if(closed.get())throw new IllegalStateException("remote_client_closed");check.run();return current.encryptBinary(id,uploadId,index,owned);}finally{java.util.Arrays.fill(owned,(byte)0);}},bytes.length*2+2048,submitted,()->{},code->{java.util.Arrays.fill(owned,(byte)0);reject.accept(code);if(code.startsWith("SOCKET_"))java.util.concurrent.ForkJoinPool.commonPool().execute(()->fail("remote_transport_error"));});
+  }
+
   private void fail(String code) {if (closed.get()) return;trace("failure",code,writer.queuedSize(),0);close();failure.accept(code);}
   public void close() {
     GatewayCrypto current;

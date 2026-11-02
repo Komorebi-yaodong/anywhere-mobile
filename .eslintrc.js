@@ -1,5 +1,7 @@
 module.exports = {
   root: true,
+
+  ignorePatterns: ['android/**/build/**', 'build/**', 'ios/build/**'],
   extends: '@react-native',
   overrides: [{
     files: ['scripts/android-release.cjs', 'scripts/desktop-interop.cjs', 'scripts/native-upload-probe.cjs', 'scripts/pairing-fallback-interop.cjs', 'scripts/native-session-probe.cjs', 'scripts/native-image-probe.cjs'],

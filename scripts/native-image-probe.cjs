@@ -58,10 +58,13 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
  let pongCount=0;const events=[],pending=new Map();let next=0;
  function waitFor(predicate,ms=15000){const existing=events.find(predicate);if(existing)return Promise.resolve(existing);return new Promise((resolve,reject)=>{const started=Date.now();const timer=setInterval(()=>{const found=events.find(predicate);if(found){clearInterval(timer);resolve(found);}else if(Date.now()-started>ms){clearInterval(timer);reject(Error('probe event timeout'));}},10);});}
  wss.on('connection',socket=>{peer=socket;session=createRemoteCryptoSession({sessionId,sendKey:Buffer.from(receive),receiveKey:Buffer.from(send),sendDirection:'desktop-to-client',receiveDirection:'client-to-desktop'});session.enableAdaptiveTransfers();socket.on('ping',()=>pongCount++);
- socket.on('message',raw=>{
-  let request;try{request=session.decrypt(JSON.parse(raw));}catch(error){networkFailure=error;socket.close();return;}
+ let binaryEnabled=false;
+ socket.on('message',(raw,isBinary)=>{
+  let request;try{if(isBinary&&!binaryEnabled)throw Error('binary before negotiation');request=isBinary?session.decryptBinary(raw):session.decrypt(JSON.parse(raw));}catch(error){networkFailure=error;socket.close();return;}
   (async()=>{
-   const result=request.method==='remote.ping'?{ok:true,echo:'native-mixed-ping'}:await business.transfer(context,request.requestId,request.params);
+   let result;
+   if(request.method==='remote.image.binary.negotiate'){binaryEnabled=true;result={ok:true};}
+   else result=request.method==='remote.ping'?{ok:true,echo:'native-mixed-ping'}:await business.transfer(context,request.requestId,request.params);
    if(socket.readyState===1)socket.send(JSON.stringify(session.encrypt({kind:'response',requestId:request.requestId,ok:true,result})));
   })().catch(error=>{if(socket.readyState===1)socket.send(JSON.stringify(session.encrypt({kind:'response',requestId:request.requestId,ok:false,error:{code:error.code||'remote_fixture_error'}})));});
  });});
@@ -69,7 +72,7 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
    let result;
    if(method==='attachment.begin')result=await manager.begin({deviceId,requestId,params,adaptive:true});
    else if(method==='attachment.chunk'){
-    chunkCount++;const now=Date.now();chunkSizes.push(Buffer.from(params.data,'base64url').length);if(previousChunkAt)chunkElapsed.push(now-previousChunkAt);previousChunkAt=now;result=await manager.chunk({deviceId,params,adaptive:true});
+    chunkCount++;const now=Date.now();chunkSizes.push(Buffer.from(params.data,'base64url').length);if(previousChunkAt)chunkElapsed.push(now-previousChunkAt);previousChunkAt=now;result=Buffer.isBuffer(params.data)?await manager.chunkBytes({deviceId,params:{uploadId:params.uploadId,index:params.index},data:params.data,adaptive:true}):await manager.chunk({deviceId,params,adaptive:true});
     if(params.index===0 && mode!=='normal'){
      firstChunk?.();
      if(mode==='hold')await new Promise(resolve=>{releaseAck=resolve;});
@@ -109,8 +112,8 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
    assert.equal(upload.size,size);assert.equal(upload.sha256,crypto.createHash('sha256').update(Buffer.alloc(size,0x6c)).digest('base64url'));
    const elapsedMs=Date.now()-started;
    assert.equal(chunkSizes[0],128*1024);assert.ok(chunkSizes.every(bytes=>bytes<=128*1024),'slow link must not grow large frames');
-   assert.ok(pongCount-initialPings>=2,'multiple actual heartbeat cycles while uploading');
-   assert.ok(elapsedMs<90000,'707380 byte photo must not take five minutes on 24KiB/s proxy');
+   assert.ok(pongCount-initialPings>=1,'actual heartbeat during binary upload');
+   assert.ok(elapsedMs<45000,'binary should beat prior 53.6s text baseline');
    const after=pongCount,postLimit=Date.now()+35000;while(pongCount<after+2){if(Date.now()>postLimit)throw Error('post upload heartbeat timeout');await new Promise(resolve=>setTimeout(resolve,100));}
    assert.equal((await rpc('ping')).ok,true);assert.ok(!events.some(x=>x.event==='socket-failure'||x.event==='failure'));
    console.log(JSON.stringify({ok:true,suite:'buffered-proxy-native-image',rateBytes:proxyRate,rawBytes:size,elapsedMs,chunkSizes,chunkElapsed,pingsDuring:after-initialPings,pingsAfter:pongCount-after,wireBytes}));

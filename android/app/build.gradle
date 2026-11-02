@@ -113,6 +113,12 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
+    testOptions {
+        unitTests.includeAndroidResources = false
+        unitTests.all { systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2' }
+    }
+
+
     namespace "com.anywheremobile"
     defaultConfig {
         applicationId "com.anywheremobile"
@@ -163,6 +169,8 @@ android {
 }
 
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
     // Explicit dependency: PinnedGatewayModule uses OkHttp for private, certificate-pinned HTTPS/WSS sessions.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

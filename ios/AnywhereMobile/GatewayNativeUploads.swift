@@ -1,4 +1,7 @@
 import Foundation
+
+import UIKit
+import ImageIO
 import CryptoKit
 
 /// Immutable app-cache snapshots, scoped to exactly one native connection.
@@ -47,6 +50,44 @@ final class GatewayNativeUploads {
       do { completion(.success(try work())) } catch { completion(.failure(error)) }
     }
   }
+  // Match view_image: no resizing; one PNG, opaque JPEG80, smaller only.
+  private func optimize(_ url: URL, name: String, type: String) throws -> (String, String, Int) {
+    let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+    guard size <= 20 * 1024 * 1024, ["image/jpeg", "image/png"].contains(type) else {return (name, type, size)}
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {throw NativeGatewayFailure(code: "remote_upload_image_invalid")}
+    if CGImageSourceGetCount(source) != 1 {return (name, type, size)}
+    guard
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
+          width > 0, height > 0, Int64(width) * Int64(height) <= 24 * 1024 * 1024 else {throw NativeGatewayFailure(code: "remote_upload_dimensions_invalid")}
+    guard let image = UIImage(contentsOfFile: url.path) else {throw NativeGatewayFailure(code: "remote_upload_image_invalid")}
+    let rotated = image.imageOrientation == .left || image.imageOrientation == .right || image.imageOrientation == .leftMirrored || image.imageOrientation == .rightMirrored
+    let outputWidth = rotated ? height : width, outputHeight = rotated ? width : height
+    let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = false
+    let normalized = UIGraphicsImageRenderer(size: CGSize(width: CGFloat(outputWidth), height: CGFloat(outputHeight)), format: format).image { _ in image.draw(in: CGRect(x: 0, y: 0, width: CGFloat(outputWidth), height: CGFloat(outputHeight))) }
+    guard let cg = normalized.cgImage else {throw NativeGatewayFailure(code: "remote_upload_image_invalid")}
+    var transparent = false
+    // Render explicitly to premultiplied RGBA strips so bitmap byte layout is unambiguous.
+    var strip = [UInt8](repeating: 0, count: outputWidth * 4 * min(64, outputHeight))
+    for top in stride(from: 0, to: outputHeight, by: 64) {
+      let rows = min(64, outputHeight - top)
+      strip.withUnsafeMutableBytes { buffer in
+        if let context = CGContext(data: buffer.baseAddress, width: outputWidth, height: rows, bitsPerComponent: 8, bytesPerRow: outputWidth * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) {
+          if let crop = cg.cropping(to: CGRect(x: 0, y: CGFloat(top), width: CGFloat(outputWidth), height: CGFloat(rows))) {context.draw(crop, in: CGRect(x: 0, y: 0, width: CGFloat(outputWidth), height: CGFloat(rows)))} else {transparent = true}
+        } else {transparent = true}
+      }
+      if stride(from: 3, to: outputWidth * rows * 4, by: 4).contains(where: {strip[$0] < 255}) {transparent = true}
+      if transparent {break}
+    }
+    guard var best = normalized.pngData() else {throw NativeGatewayFailure(code: "remote_upload_image_invalid")}
+    var mime = "image/png", suffix = "png"
+    if !transparent, let jpeg = normalized.jpegData(compressionQuality: 0.8), jpeg.count < best.count {best = jpeg; mime = "image/jpeg"; suffix = "jpg"}
+    guard best.count < size else {return (name, type, size)}
+    try best.write(to: url, options: .atomic)
+    let stem = (name as NSString).deletingPathExtension
+    return ((stem.isEmpty ? "image" : stem) + "." + suffix, mime, best.count)
+  }
+
   func register(path: String, name: String, type: String, completion: @escaping Completion) {
     enqueue(completion) {
       try self.check()
@@ -74,12 +115,14 @@ final class GatewayNativeUploads {
         size += bytes.count; guard size <= 25 * 1024 * 1024 else { throw NativeGatewayFailure(code: "remote_upload_size_invalid") }; try output.write(contentsOf: bytes)
       }
       guard size > 0 else { throw NativeGatewayFailure(code: "remote_upload_size_invalid") }
+      try output.close(); try input.close()
+      let optimized = try self.optimize(target, name: name, type: type); size = optimized.2
       let handle = UUID().uuidString
       self.lock.lock(); defer { self.lock.unlock() }
       let expired = self.files.filter { Date().timeIntervalSince($0.value.created) >= 600 }
       for (key, file) in expired { self.files.removeValue(forKey: key); self.retained -= file.size; try? FileManager.default.removeItem(at: file.url) }
       guard !self.closed, self.files.count < 8, self.retained + self.activeBytes + size <= 64 * 1024 * 1024 else { throw NativeGatewayFailure(code: "remote_upload_capacity") }
-      self.files[handle] = Snapshot(url: target, name: name, type: type, size: size, created: Date()); self.retained += size; keep = true
+      self.files[handle] = Snapshot(url: target, name: optimized.0, type: optimized.1, size: size, created: Date()); self.retained += size; keep = true
       return handle
     }
   }
@@ -96,7 +139,8 @@ final class GatewayNativeUploads {
         if removeDirectory { try? FileManager.default.removeItem(at: self.directory) }
       }
       do {
-        try self.check(); self.progress(task, "hashing", 0, file.size)
+        try self.check(); _ = try self.rpc("remote.image.binary.negotiate", [:], wrapped: false)
+        self.progress(task, "hashing", 0, file.size)
 
         self.session.trace("upload_start", bytes: file.size)
         let input = try FileHandle(forReadingFrom: file.url); defer { try? input.close() }
@@ -114,9 +158,9 @@ final class GatewayNativeUploads {
         while offset < file.size {
           try self.check(); let length = min(sizing.size, file.size - offset); let started = ProcessInfo.processInfo.systemUptime
           let bytes = try input.read(upToCount: length) ?? Data(); guard bytes.count == length else { throw NativeGatewayFailure(code: "remote_upload_source_changed") }
-          let data = GatewayNativeCrypto.b64(bytes); let preparation = (ProcessInfo.processInfo.systemUptime - started) * 1000
+          let preparation = (ProcessInfo.processInfo.systemUptime - started) * 1000
           self.progress(task, index == 0 ? "waiting_first_ack" : "uploading", offset, file.size)
-          let response = try self.rpc("attachment.chunk", ["uploadId": id, "index": index, "data": data], wrapped: wrapped)
+          let response = try self.rpc("attachment.chunk", ["uploadId": id, "index": index], wrapped: wrapped, raw: bytes)
           guard let ack = response["upload"] as? [String: Any], ack["uploadId"] as? String == id, ack["receivedBytes"] as? Int == offset + length, ack["nextChunkIndex"] as? Int == index + 1 else { throw NativeGatewayFailure(code: "remote_upload_response_invalid") }
           offset += length; index += 1
           if adaptive { sizing.observe(bytes: length, elapsed: (ProcessInfo.processInfo.systemUptime - started) * 1000, processing: preparation) }
@@ -137,7 +181,7 @@ final class GatewayNativeUploads {
       }
     }
   }
-  private func rpc(_ method: String, _ params: [String: Any], wrapped: Bool) throws -> [String: Any] {
+  private func rpc(_ method: String, _ params: [String: Any], wrapped: Bool, raw: Data? = nil) throws -> [String: Any] {
     try check(); let id = prefix + UUID().uuidString
     let waiter = Waiter(); let submission = Waiter(); let permit = Permit()
     let began = ProcessInfo.processInfo.systemUptime
@@ -147,7 +191,8 @@ final class GatewayNativeUploads {
     lock.lock(); replies[id] = waiter; lock.unlock()
     defer { permit.invalidate(); lock.lock(); replies.removeValue(forKey: id); lock.unlock() }
     let payload: [String: Any] = ["kind": "request", "requestId": id, "method": wrapped ? "transfer.request" : method, "params": wrapped ? ["method": method, "params": params] : params]
-    session.send(try GatewayNativeCrypto.json(payload), check: { try permit.check(); try self.check() }, submitted: { submission.finish(.success([:])) }, completion: { result in
+    let outgoing = raw == nil ? payload : ["requestId": id, "uploadId": params["uploadId"]!, "index": params["index"]!]
+    session.send(try GatewayNativeCrypto.json(outgoing), check: { try permit.check(); try self.check() }, submitted: { submission.finish(.success([:])) }, raw: raw, completion: { result in
       if case .failure(let error) = result { submission.finish(.failure(error)); waiter.finish(.failure(error)) }
     })
     // Poll the submission waiter in small windows so cancel/close also settles

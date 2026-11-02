@@ -58,6 +58,24 @@ final class GatewayCrypto implements AutoCloseable {
       return text;
     } finally {Arrays.fill(plaintext, (byte)0); if (encrypted != null) Arrays.fill(encrypted, (byte)0);}
   }
+  synchronized ByteString encryptBinary(String requestId, String uploadId, int index, byte[] bytes) throws Exception {
+    check();
+    if (!requestId.matches("[A-Za-z0-9._:-]{8,160}") || !uploadId.matches("[A-Za-z0-9._:-]{16,160}") || index<0 || bytes.length<1 || bytes.length>2*1024*1024) throw new IllegalArgumentException("remote_binary_frame_invalid");
+    if(sendSequence>9007199254740991L || nonceCounter==Long.MAX_VALUE)throw new IllegalStateException("remote_sequence_invalid");
+    byte[] meta=new JSONObject().put("requestId",requestId).put("uploadId",uploadId).put("index",index).toString().getBytes(StandardCharsets.UTF_8);
+    byte[] plain=ByteBuffer.allocate(4+meta.length+bytes.length).putInt(meta.length).put(meta).put(bytes).array();
+    byte[] nonce=ByteBuffer.allocate(12).put(noncePrefix).putLong(nonceCounter++).array();
+    byte[] encrypted=null;
+    try {
+      String aadText="{\"direction\":\"client-to-desktop\",\"sequence\":"+sendSequence+",\"sessionId\":"+JSONObject.quote(sessionId)+",\"type\":\"remote.binary\",\"v\":2}";
+      Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,new SecretKeySpec(sendKey,"AES"),new GCMParameterSpec(128,nonce));cipher.updateAAD(aadText.getBytes(StandardCharsets.UTF_8));encrypted=cipher.doFinal(plain);
+      byte[] frame=ByteBuffer.allocate(24+encrypted.length).put(new byte[]{65,87,66,49}).putLong(sendSequence).put(nonce).put(encrypted).array();
+      if(frame.length>maximum)throw new IllegalArgumentException("remote_payload_size_invalid");
+      sendSequence++;return ByteString.of(frame);
+    }finally{Arrays.fill(plain,(byte)0);if(encrypted!=null)Arrays.fill(encrypted,(byte)0);}
+  }
+
+
   synchronized String decrypt(String text) throws Exception {
     check();
     if (text.getBytes(StandardCharsets.UTF_8).length > maximum) throw new IllegalArgumentException("remote_payload_size_invalid");

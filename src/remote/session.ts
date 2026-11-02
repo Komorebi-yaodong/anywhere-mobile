@@ -71,6 +71,9 @@ export interface RemoteCryptoSession {
   readonly sessionId: string;
   readonly expectedReceiveSequence: number;
   encrypt(payload: Record<string, unknown>, nonce?: Uint8Array): EncryptedFrame;
+
+  /** Reference interoperability encoder; production picture bytes stay native. */
+  encryptBinary(metadata: {requestId: string; uploadId: string; index: number}, data: Uint8Array): Uint8Array;
   decrypt(frame: EncryptedFrame | Record<string, unknown>): Record<string, unknown>;
   enableAdaptiveTransfers(): void;
   close(): void;
@@ -409,6 +412,29 @@ export function createRemoteCryptoSession({
         aad.fill(0);
       }
     },
+    encryptBinary(metadata, data) {
+      assertOpen();
+      normalizeIdentifier(metadata.requestId, 'requestId', {minLength: 8, maxLength: 160});
+      normalizeIdentifier(metadata.uploadId, 'uploadId', {minLength: 16, maxLength: 160});
+      if (sendDirection !== 'client-to-desktop' || !Number.isSafeInteger(metadata.index) || metadata.index < 0 || data.length < 1 || data.length > 2 * 1024 * 1024) throw remoteError('remote_binary_frame_invalid');
+      const sequence = normalizeSequence(nextSendSequence);
+      const meta = canonicalBytes(metadata), length = new Uint8Array(4);
+      new DataView(length.buffer).setUint32(0, meta.length);
+      const plaintext = concatBytes(length, meta, data);
+      const aad = canonicalBytes({direction: sendDirection, sequence, sessionId: safeSessionId, type: 'remote.binary', v: 2});
+      try {
+        const encrypted = encryptAead({key: ownedSendKey, plaintext, aad});
+        const head = new Uint8Array(24);head.set([65, 87, 66, 49]);
+        const view = new DataView(head.buffer);
+        view.setUint32(4, Math.floor(sequence / 4294967296));view.setUint32(8, sequence % 4294967296);
+        head.set(decodeBase64Url(encrypted.nonce), 12);
+        const frame = concatBytes(head, decodeBase64Url(encrypted.ciphertext), decodeBase64Url(encrypted.tag));
+        if (frame.length > maxFrameBytes) throw remoteError('remote_payload_size_invalid');
+        nextSendSequence++;
+        return frame;
+      } finally {plaintext.fill(0);aad.fill(0);}
+    },
+
     decrypt(frame) {
       assertOpen();
 

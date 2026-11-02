@@ -36,6 +36,9 @@ final class GatewaySocketWriter {
 
     java.util.concurrent.Callable<String> prepare;
     String text;
+
+    okio.ByteString binary;
+    java.util.concurrent.Callable<okio.ByteString> prepareBinary;
     final Runnable resolve;
     final Consumer<String> reject;
     long started;
@@ -87,27 +90,35 @@ final class GatewaySocketWriter {
   }
 
 
+  synchronized void sendBinary(java.util.concurrent.Callable<okio.ByteString> prepare, int weight, Runnable submitted, Runnable success, Consumer<String> reject) {
+    if(closed || !current.getAsBoolean()){reject.accept("SOCKET_UNAVAILABLE");return;}
+    if(queue.size()>=32 || weight<1 || queuedBytes+weight>32*1024*1024){reject.accept("remote_send_capacity");return;}
+    Pending item=new Pending(null,success,reject);item.prepareBinary=prepare;item.weight=weight;item.submitted=submitted;queue.add(item);queuedBytes+=weight;
+    observer.record("queued",null,queuedBytes,0);if(queue.size()==1)executor.execute(()->start(item));
+  }
+
+
   private synchronized void start(Pending pending) {
     if (closed || queue.peek() != pending || pending.started != 0) return;
     if (!current.getAsBoolean()) {close(); return;}
-    if (pending.prepare != null) {
-      try {pending.text = pending.prepare.call();pending.prepare = null;}
+    if (pending.prepare != null || pending.prepareBinary != null) {
+      try {if(pending.prepareBinary!=null){pending.binary=pending.prepareBinary.call();pending.prepareBinary=null;}else{pending.text = pending.prepare.call();pending.prepare = null;}}
       catch (Exception error) {
-        pending.prepare = null;queue.remove();queuedBytes -= pending.weight;pending.reject.accept(error.getMessage() != null && error.getMessage().startsWith("remote_") ? error.getMessage() : "remote_encrypt_failed");
+        pending.prepare = null;pending.prepareBinary=null;pending.binary=null;queue.remove();queuedBytes -= pending.weight;pending.reject.accept(error.getMessage() != null && error.getMessage().startsWith("remote_") ? error.getMessage() : "remote_encrypt_failed");
         Pending next = queue.peek();if (next != null) executor.execute(() -> start(next));return;
       }
     }
 
     pending.started = System.nanoTime();
 
-    pending.frameBytes = pending.text.getBytes(StandardCharsets.UTF_8).length;
+    pending.frameBytes = pending.binary!=null?pending.binary.size():pending.text.getBytes(StandardCharsets.UTF_8).length;
     try {
-      if (!socket.send(pending.text)) {close(); return;}
+      if (!(pending.binary!=null?socket.send(pending.binary):socket.send(pending.text))) {close(); return;}
 
       pending.submitted.run();
 
       observer.record("submitted",null,pending.frameBytes,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pending.enqueued));
-      pending.text = null;
+      pending.text = null;pending.binary=null;pending.prepareBinary=null;
       poll(pending);
     } catch (Exception error) {close();}
   }
@@ -137,7 +148,7 @@ final class GatewaySocketWriter {
     closed = true;
 
     observer.record("failure",code,queuedSize(),queue.peek()==null?0:TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-queue.peek().enqueued));
-    for (Pending pending : queue) {pending.text = null; pending.prepare = null; pending.reject.accept(code);}
+    for (Pending pending : queue) {pending.text = null;pending.binary=null;pending.prepareBinary=null; pending.prepare = null; pending.reject.accept(code);}
     queue.clear();queuedBytes = 0;
     executor.shutdownNow();
   }
