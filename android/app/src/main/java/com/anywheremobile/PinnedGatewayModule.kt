@@ -194,6 +194,10 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
   @ReactMethod
   fun removeListeners(count: Int) = Unit
 
+  @ReactMethod
+  fun connectionDiagnostics(promise: Promise) { promise.resolve(GatewaySession.diagnostics()) }
+
+
   private fun transportClient(options: ReadableMap, endpoint: String, webSocket: Boolean = false): OkHttpClient {
     val builder = OkHttpClient.Builder()
       .followRedirects(false)
@@ -313,6 +317,7 @@ class PinnedGatewayModule(private val context: ReactApplicationContext) :
     synchronized(socketLock) {
       val record = sockets[connectionId]
       if (record != null && record.socket === webSocket && sockets.remove(connectionId, record)) {
+        record.session.trace("failure", failureCode, record.writer.queuedSize(), 0)
         record.uploads.close(if (failureCode == "SOCKET_PONG_TIMEOUT") "remote_pong_timeout" else if (failureCode == "SOCKET_WRITE_TIMEOUT") "remote_write_timeout" else "remote_client_closed")
 
         record.session.close()

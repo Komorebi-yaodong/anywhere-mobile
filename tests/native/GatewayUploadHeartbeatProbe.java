@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.*;
 public final class GatewayUploadHeartbeatProbe {
   private static final int FRAME_BYTES = 466512;
   private static final int FRAMES = 8;
-  private static final int RATE_BYTES = 64 * 1024;
+  private static int RATE_BYTES = 64 * 1024;
   private static void check(boolean condition, String message) {
     if (!condition) throw new AssertionError(message);
   }
@@ -28,9 +28,11 @@ public final class GatewayUploadHeartbeatProbe {
   public static void main(String[] args) throws Exception {
     final boolean largeControl = args.length > 0 && args[0].equals("--large-control");
     final boolean sequential = args.length > 0 && args[0].equals("--sequential");
-    final int frameBytes = largeControl ? 14913506 : sequential ? 932546 : FRAME_BYTES;
-    final int frameCount = largeControl ? 1 : sequential ? 4 : FRAMES;
-    final int window = sequential ? 1 : 3;
+    final boolean slowSingle = args.length > 0 && args[0].equals("--slow-single");
+    if (slowSingle) RATE_BYTES = 16 * 1024;
+    final int frameBytes = largeControl ? 14913506 : sequential || slowSingle ? 932546 : FRAME_BYTES;
+    final int frameCount = largeControl || slowSingle ? 1 : sequential ? 4 : FRAMES;
+    final int window = sequential || slowSingle ? 1 : 3;
     ServerSocket listener = new ServerSocket();listener.setReceiveBufferSize(32768);
     listener.bind(new InetSocketAddress("127.0.0.1", 0));
     AtomicInteger received = new AtomicInteger(), pings = new AtomicInteger(), peak = new AtomicInteger();
@@ -115,6 +117,12 @@ public final class GatewayUploadHeartbeatProbe {
       check(peerError.get() == null, "peer failure: " + peerError.get());
       check(acknowledged.get() == frameCount && received.get() == frameCount, "all chunks acknowledged");
       check(peak.get() == window, "application receipt window must match the selected policy");
+      if (slowSingle) {
+        check(elapsed > 45000, "must actually rate-limit the data frame");
+        System.out.println("{\"suite\":\"single-frame-slow-uplink\",\"ok\":true,\"frameBytes\":" + frameBytes + ",\"rateBytesPerSecond\":" + RATE_BYTES + ",\"elapsedMs\":" + elapsed + ",\"pingsAnswered\":" + pings.get() + "}");
+        return;
+      }
+
       check(elapsed > 45000 && pings.get() >= 2, "must exercise multiple actual heartbeat cycles");
       System.out.println("{\"suite\":\"sustained-upload-heartbeat\",\"ok\":true,\"frameBytes\":" + frameBytes + ",\"rateBytesPerSecond\":" + RATE_BYTES + ",\"frames\":" + frameCount + ",\"peakInFlight\":" + peak.get() + ",\"pingsAnswered\":" + pings.get() + ",\"elapsedMs\":" + elapsed + "}");
     } finally {

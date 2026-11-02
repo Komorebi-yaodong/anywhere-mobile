@@ -12,6 +12,9 @@ RCT_EXTERN_METHOD(deleteCapture:(NSString *)captureId resolver:(RCTPromiseResolv
 
 @interface RCT_EXTERN_MODULE(PinnedGateway, RCTEventEmitter)
 
+RCT_EXTERN_METHOD(connectionDiagnostics:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+
+
 RCT_EXTERN_METHOD(installSession:(NSString *)connectionId sessionId:(NSString *)sessionId sendKey:(NSString *)sendKey receiveKey:(NSString *)receiveKey resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(enableSessionTransfers:(NSString *)connectionId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(sendPayload:(NSString *)connectionId payload:(NSString *)payload resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)

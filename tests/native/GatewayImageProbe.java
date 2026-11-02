@@ -71,6 +71,8 @@ public final class GatewayImageProbe {
           java.util.function.Consumer<String> fail=code->{try{output(new JSONObject().put("id",id).put("ok",false).put("code",code));}catch(Exception e){throw new RuntimeException(e);}};
           switch(op){
             case "install":sessions.get().install(command.getString("session"),command.getString("send"),command.getString("receive"),()->ok.accept(""),fail);break;
+            case "diagnostics":ok.accept(GatewaySession.diagnostics());break;
+
             case "adaptive":sessions.get().adaptive();ok.accept("");break;
             case "register":uploads.get().register(command.getString("path"),command.optString("name","synthetic.jpg"),"image/jpeg",ok,fail);break;
             case "upload":uploads.get().upload(command.getString("handle"),command.getString("task"),true,value->ok.accept(value.toString()),fail);break;

@@ -4,13 +4,15 @@ import {attachmentFileSource} from './attachmentFileSource';
 import type {RemoteRequest} from '../remote/api';
 import {randomBase64Url} from '../remote/crypto';
 import {RemoteUpload, uploadAttachment, validateAttachment} from '../remote/attachments';
+import {uploadNativeImage, type ImageProgress} from './nativeImageUpload';
+import {controlledErrorCode} from '../remote/transportTrace';
 
 /** Reads only a document explicitly selected by the user. Never forwards its URI. */
 export async function pickAndUploadAttachment({desktopId, request, signal, onProgress}: {
   desktopId: string;
   request: RemoteRequest;
   signal?: AbortSignal;
-  onProgress?: (progress: {stage: 'hashing' | 'uploading'; bytes: number; total: number}) => void;
+  onProgress?: (progress: ImageProgress) => void;
 }): Promise<RemoteUpload | null> {
   const picker = await pick({mode: 'open', allowMultiSelection: false, allowVirtualFiles: false}).catch(error => {
     if (isErrorWithCode(error) && error.code === errorCodes.OPERATION_CANCELED) return null;
@@ -31,6 +33,8 @@ export async function pickAndUploadAttachment({desktopId, request, signal, onPro
     ? decodeURIComponent(copy.localUri.slice('file://'.length))
     : copy.localUri;
   try {
+    if (type.startsWith('image/')) return await uploadNativeImage({desktopId, request, path, name, type, signal, onProgress});
+
     const stat = await FileSystem.stat(path);
     return await uploadAttachment({
       desktopId, request, signal, onProgress,
@@ -38,8 +42,7 @@ export async function pickAndUploadAttachment({desktopId, request, signal, onPro
     });
   } catch (error) {
     // Native errors may contain local paths: expose only controlled protocol codes.
-    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
-    throw new Error(/^remote_[a-z0-9_]+$/.test(code) ? code : '所选附件读取或上传失败。');
+    throw new Error(controlledErrorCode(error));
   } finally {
     // Only this function's generated cache copy is removed; never delete the source.
     await FileSystem.unlink(path).catch(() => undefined);

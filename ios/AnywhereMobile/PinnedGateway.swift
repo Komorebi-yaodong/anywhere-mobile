@@ -232,6 +232,10 @@ final class PinnedGateway: RCTEventEmitter, URLSessionDelegate, URLSessionWebSoc
     context.native.send(text, encrypted: false, completion: bridge(resolve, reject))
   }
 
+  @objc(connectionDiagnostics:rejecter:)
+  func connectionDiagnostics(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) { resolve(GatewayNativeSession.diagnostics()) }
+
+
   private func nativeContext(_ id: String) -> SocketContext? {
     withStateLock { guard let socket = sockets[id] else { return nil }; return socketContexts[ObjectIdentifier(socket)] }
   }

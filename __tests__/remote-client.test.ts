@@ -250,6 +250,30 @@ describe('RemoteClient encrypted transport boundary', () => {
   });
 
 
+  it('preserves a native image error code even if the bridge error is not an Error instance', async () => {
+    mockV11 = true;
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();
+    (PinnedGateway.uploadImage as jest.Mock).mockRejectedValueOnce({code: 'remote_pong_timeout', message: '/private/selected/photo'});
+    try {
+      await expect(client.request('local.image.upload', {path: '/cache/photo', name: 'photo.jpg', type: 'image/jpeg', taskId: 'native-image-error-code-fixture'})).rejects.toMatchObject({code: 'remote_pong_timeout', message: 'remote_pong_timeout'});
+      await expect(client.request('remote.ping')).resolves.toBeTruthy();
+    } finally {await client.close();}
+  });
+  it('does not let a throwing native upload progress callback close an otherwise healthy session', async () => {
+    mockV11 = true;
+    const client = new RemoteClient({desktop: mockDesktop, identity: mockIdentity, credential: {rootSecret: mockRootSecret}});
+    await client.connect();let finish!: (value: string) => void;
+    (PinnedGateway.uploadImage as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {finish = resolve;}));
+    const taskId = 'native-image-throwing-ui-fixture';
+    const result = client.request('local.image.upload', {path: '/cache/photo', name: 'photo.jpg', type: 'image/jpeg', taskId, onProgress: () => {throw Error('UI failure');}});
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    mockListener?.({connectionId: client.connectionId, type: 'uploadProgress', message: JSON.stringify({taskId, stage: 'waiting_first_ack', bytes: 0, total: 839680})});
+    await expect(client.request('remote.ping')).resolves.toBeTruthy();
+    finish(JSON.stringify({uploadId: 'completed-image'}));await result;await client.close();
+  });
+
+
   it('explicitly negotiates adaptive transfers before consuming larger response chunks', async () => {
     mockTransfer = true; mockAdaptive = true;
     const full = {text: '完整协商结果'.repeat(150000)}; mockTransferResult = full;

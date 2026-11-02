@@ -14,6 +14,8 @@ import {
 import type { DesktopRuntime } from '../src/hooks/useDesktops';
 import type { RemoteRequest, RemoteTrackedRequest } from '../src/remote/api';
 
+import {ActivityIndicator as ThemedActivityIndicator} from '../src/components/ThemedNative';
+
 import {ManagementSettings} from '../src/components/ManagementSettings';
 
 import {ConversationMessageList} from '../src/components/ConversationMessageList';
@@ -170,6 +172,33 @@ function workspaceProps() {
 function startTab(root: TestRenderer.ReactTestRenderer, label: string) {
   return root.root.findAll(node => node.props.accessibilityRole === 'tab' && node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0];
 }
+
+test('coalesces concurrent manual refreshes and does not show first-load UI for an already populated workspace', async () => {
+  const props = workspaceProps();let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  const request = props.request as jest.Mock;request.mockClear();
+  const fixture = {ok: true, profile: {displayName: 'Fixture'}, projects: [], assistants: []};
+  let release!: () => void;const gate = new Promise<void>(resolve => {release = resolve;});
+  request.mockImplementation(async () => {await gate;return fixture;});
+  const refresh = root.root.findAll(node => node.props.accessibilityLabel === '刷新' && typeof node.props.onPress === 'function')[0];
+  await act(async () => {refresh.props.onPress();refresh.props.onPress();});
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(root.root.findAllByType(ThemedActivityIndicator)).toHaveLength(0);
+  await act(async () => {release();await gate;});
+  await act(async () => root.unmount());
+});
+test('a late bootstrap failure from an old connection cannot overwrite the new connection notice', async () => {
+  const props = workspaceProps();const rejectOld: Array<(error: Error) => void> = [];
+  (props.request as jest.Mock).mockImplementation(() => new Promise((_resolve, reject) => {rejectOld.push(reject);}));
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  (props.request as jest.Mock).mockResolvedValue({ok: true, profile: {displayName: 'New Fixture'}, projects: [], assistants: []});
+  await act(async () => root.update(<WorkspaceShell {...props} desktop={{...props.desktop, connectionGeneration: 2}} />));
+  await act(async () => {for (const reject of rejectOld) reject(new Error('remote_request_timeout'));});
+  expect(root.root.findAllByType(Text).some(node => String(node.props.children).includes('等待 Desktop 响应超时'))).toBe(false);
+  await act(async () => root.unmount());
+});
+
 
 test('defaults to new chat with no opened sessions and keeps only the top refresh action', async () => {
  const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;

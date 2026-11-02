@@ -2,6 +2,8 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import type {RemoteRequest} from '../remote/api';
 import type {RemoteUpload} from '../remote/attachments';
 
+import {imageProgressText} from '../services/nativeImageUpload';
+
 export function useAttachmentQueue(desktopId: string, request: RemoteRequest) {
   const [uploads, setUploads] = useState<RemoteUpload[]>([]);
   const records = useRef<RemoteUpload[]>([]);
@@ -35,7 +37,7 @@ export function useAttachmentQueue(desktopId: string, request: RemoteRequest) {
       const upload = await pickAndUploadAttachment({
         desktopId, request, signal: active.signal,
         onProgress: value => {
-          if (mounted.current) setProgress(`${value.stage === 'hashing' ? '校验' : '上传'} ${Math.round(value.bytes / value.total * 100)}%`);
+          if (mounted.current) setProgress(imageProgressText(value, '附件'));
         },
       });
       if (upload && !active.signal.aborted && mounted.current) {

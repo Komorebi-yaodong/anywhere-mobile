@@ -13,9 +13,9 @@ export async function uploadNativeImage({desktopId, request, path, name, type, s
   try {return await request<RemoteUpload>(desktopId, 'local.image.upload', {path, name, type, taskId, onProgress});}
   finally {signal?.removeEventListener('abort', cancel);}
 }
-export function imageProgressText(value: ImageProgress): string {
+export function imageProgressText(value: ImageProgress, label = '照片'): string {
   if (value.stage === 'creating') return '正在建立上传…';
-  if (value.stage === 'waiting_first_ack') return '正在上传照片…';
+  if (value.stage === 'waiting_first_ack') return `正在上传${label}…`;
   if (value.stage === 'completing') return '正在完成校验…';
-  return `${value.stage === 'hashing' ? '校验照片' : '上传照片'} ${Math.round(value.bytes / value.total * 100)}%`;
+  return `${value.stage === 'hashing' ? '校验' : '上传'}${label} ${Math.round(value.bytes / value.total * 100)}%`;
 }

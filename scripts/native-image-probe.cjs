@@ -16,6 +16,8 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
 (async()=>{
  const {createRemoteCryptoSession}=await import(pathToFileURL(path.join(desktopRoot,'main/core/remote/cryptoSession.js')));
  const {createRemoteUploadManager}=await import(pathToFileURL(path.join(desktopRoot,'main/core/remote/uploadManager.js')));
+
+ const {createBusinessProtocol}=await import(pathToFileURL(path.join(desktopRoot,'main/core/remote/businessProtocol.js')));
  const {WebSocketServer}=dr('ws'),selfsigned=dr('selfsigned');
  const temp=await fsp.mkdtemp(path.join(os.tmpdir(),'anywhere-native-image-'));
  const certificate=await selfsigned.generate([{name:'commonName',value:'localhost'}],{algorithm:'sha256',keySize:2048,extensions:[{name:'basicConstraints',cA:false},{name:'keyUsage',digitalSignature:true,keyEncipherment:true},{name:'extKeyUsage',serverAuth:true},{name:'subjectAltName',altNames:[{type:2,value:'localhost'},{type:7,ip:'127.0.0.1'}]}]});
@@ -26,6 +28,9 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
  const send=crypto.randomBytes(32),receive=crypto.randomBytes(32),sessionId='session-native-image-loopback-0001',deviceId='device-native-image-loopback-0001';
  const server=https.createServer({key:certificate.private,cert:certificate.cert});
  const wss=new WebSocketServer({server,maxPayload:16*1024*1024,perMessageDeflate:false});
+ const business=createBusinessProtocol({readService:{},getManager:()=>({runtimeSnapshot:()=>({})}),dispatch:(_context,id,method,params)=>dispatchUpload(method,params,id)});
+ const context={device:{deviceId},capabilities:['attachment.begin','attachment.chunk','attachment.complete','attachment.abort']};
+ business.negotiate(context,{versions:[{major:1,minor:1}]});
  let child,peer,session,mode='normal',chunkCount=0,firstChunk,releaseAck,networkFailure;
  let pongCount=0;const events=[],pending=new Map();let next=0;
  function waitFor(predicate,ms=15000){const existing=events.find(predicate);if(existing)return Promise.resolve(existing);return new Promise((resolve,reject)=>{const started=Date.now();const timer=setInterval(()=>{const found=events.find(predicate);if(found){clearInterval(timer);resolve(found);}else if(Date.now()-started>ms){clearInterval(timer);reject(Error('probe event timeout'));}},10);});}
@@ -33,11 +38,13 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
  socket.on('message',raw=>{
   let request;try{request=session.decrypt(JSON.parse(raw));}catch(error){networkFailure=error;socket.close();return;}
   (async()=>{
-   let method=request.method,params=request.params;
-   if(method==='transfer.request'){method=params.method;params=params.params;}
+   const result=request.method==='remote.ping'?{ok:true,echo:'native-mixed-ping'}:await business.transfer(context,request.requestId,request.params);
+   if(socket.readyState===1)socket.send(JSON.stringify(session.encrypt({kind:'response',requestId:request.requestId,ok:true,result})));
+  })().catch(error=>{if(socket.readyState===1)socket.send(JSON.stringify(session.encrypt({kind:'response',requestId:request.requestId,ok:false,error:{code:error.code||'remote_fixture_error'}})));});
+ });});
+ async function dispatchUpload(method,params,requestId){
    let result;
-   if(method==='remote.ping')result={ok:true,echo:'native-mixed-ping'};
-   else if(method==='attachment.begin')result=await manager.begin({deviceId,requestId:request.requestId,params,adaptive:true});
+   if(method==='attachment.begin')result=await manager.begin({deviceId,requestId,params,adaptive:true});
    else if(method==='attachment.chunk'){
     chunkCount++;result=await manager.chunk({deviceId,params,adaptive:true});
     if(params.index===0 && mode!=='normal'){
@@ -48,9 +55,8 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
    }else if(method==='attachment.complete')result=await manager.complete({deviceId,params});
    else if(method==='attachment.abort')result=await manager.abort({deviceId,params});
    else throw Error('Unexpected method '+method);
-   if(socket.readyState===1)socket.send(JSON.stringify(session.encrypt({kind:'response',requestId:request.requestId,ok:true,result})));
-  })().catch(error=>{if(socket.readyState===1)socket.send(JSON.stringify(session.encrypt({kind:'response',requestId:request.requestId,ok:false,error:{code:error.code||'remote_fixture_error'}})));});
- });});
+   return result;
+ }
  try{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  child=spawn(java('java'),['-Dfile.encoding=UTF-8','-cp',[out,...jars].join(path.delimiter),'com.anywheremobile.GatewayImageProbe',`wss://127.0.0.1:${server.address().port}/api/v2/socket`,certPath,selected],{cwd:root,stdio:['pipe','pipe','inherit']});
@@ -74,6 +80,11 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
  mode='hold';chunkCount=0;entered=new Promise(resolve=>{firstChunk=resolve;});handle=await register(820*1024);
  const disconnected=rpc('upload',{handle,task:'native-image-disconnect-task'});await entered;
  await rpc('close');assert.equal((await disconnected).code,'remote_client_closed');releaseAck();
+ const trace=JSON.parse((await rpc('diagnostics')).value);
+ assert.ok(trace.length<=256);assert.ok(trace.some(row=>row.event==='submitted'));assert.ok(trace.some(row=>row.event==='drained'));assert.ok(trace.some(row=>row.event==='ack_failed'));
+ for(const row of trace)assert.ok(Object.keys(row).every(key=>['atMs','generation','event','bytes','elapsedMs','code'].includes(key)));
+ assert.ok(!JSON.stringify(trace).includes(temp));assert.ok(!JSON.stringify(trace).includes('native-image-'));
+
  child.stdin.end();await processExit;assert.equal(networkFailure,undefined);const snapshots=await fsp.readdir(path.join(selected,'snapshots'));assert.equal(snapshots.length,0);
  console.log(JSON.stringify({ok:true,suite:'production-java-image-tls-wss',coverage:'820KiB/5MiB/immutable snapshot/SHA/first ACK gate/mixed ping/native pong/cancel/bad ACK/private path/no replay/cleanup',pongCount}));
  }finally{

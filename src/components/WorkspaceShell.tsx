@@ -27,6 +27,8 @@ import type { DesktopRuntime } from '../hooks/useDesktops';
 import type {AvatarCache} from '../domain/pairing';
 
 import {imageProgressText} from '../services/nativeImageUpload';
+
+import {controlledErrorCode, traceTransport} from '../remote/transportTrace';
 import { useConversationWorkspace } from '../hooks/useConversationWorkspace';
 import { useAttachmentQueue } from '../hooks/useAttachmentQueue';
 import type {
@@ -149,13 +151,16 @@ type ViewMode = 'router' | 'chat' | 'settings';
 
 
 function workspaceNotice(error: unknown, fallback: string): string {
-  const code = error instanceof Error ? error.message : String(error || '');
+  const nativeCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  const code = typeof nativeCode === 'string' && /^remote_[a-z0-9_]{1,80}$/.test(nativeCode) ? nativeCode : error instanceof Error ? error.message : '';
   const messages: Record<string, string> = {
     remote_client_closed: '连接被重置，正在恢复。',
 
     remote_pong_timeout: '连接心跳超时，照片未上传完成。',
     remote_write_timeout: '照片传输超时，请恢复连接后重试。',
     remote_upload_failed: '照片上传未完成，请稍后重试。',
+
+    remote_request_timeout: '等待 Desktop 响应超时，本次操作未完成，请稍后重试。',
     remote_upload_response_invalid: '照片上传确认异常，未完成上传。',
     remote_transport_closed: '连接已关闭，正在恢复。',
     remote_transport_error: '安全连接暂时不可用，正在重连。',
@@ -396,14 +401,23 @@ export function WorkspaceShell({
   const avatarState = useRef({desktop, agentAvatarCaches, agentAvatarSources});
   avatarState.current = {desktop, agentAvatarCaches, agentAvatarSources};
   const workspaceRead = useRef(0);
+  const workspaceFlight = useRef<{key: string; promise: Promise<void>} | null>(null);
+  const workspaceReady = useRef(false);
 
-  const refreshWorkspace = useCallback(async () => {
-    if (desktop.status !== '在线') return;
-    setLoadingWorkspace(true);
-
+  const refreshWorkspace = useCallback((reason: 'connection' | 'manual' | 'mutation' = 'mutation'): Promise<void> => {
+    if (desktop.status !== '在线') return Promise.resolve();
+    const key = `${desktop.id}:${desktop.connectionGeneration || 0}`;
+    if (workspaceFlight.current?.key === key) {
+      traceTransport('refresh_join', {state: reason, generation: desktop.connectionGeneration});
+      return workspaceFlight.current.promise;
+    }
     const epoch = ++workspaceRead.current;
     const connectionGeneration = desktop.connectionGeneration;
     const isCurrent = () => epoch === workspaceRead.current && avatarState.current.desktop.id === desktop.id && avatarState.current.desktop.status === '在线' && avatarState.current.desktop.connectionGeneration === connectionGeneration;
+    const promise = Promise.resolve().then(async () => {
+    if (!isCurrent()) return;
+    setLoadingWorkspace(!workspaceReady.current);
+    traceTransport('refresh_start', {state: reason, generation: connectionGeneration});
     const {agentAvatarCaches: cachedAgents, agentAvatarSources: cachedSources} = avatarState.current;
     try {
       const [value, routes, assistantMetadata] = await Promise.all([
@@ -411,7 +425,8 @@ export function WorkspaceShell({
         request<{ok: true; assistants: RemoteAssistant[]}>(desktop.id, 'conversation.assistants.list'),
         request<{ok: true; assistants: WorkspaceBootstrap['assistants']}>(desktop.id, 'workspace.assistants.list'),
       ]);
-      if (!isCurrent()) return;
+      if (!isCurrent()) {traceTransport('refresh_stale', {generation: connectionGeneration});return;}
+      workspaceReady.current = true;
       // Metadata is sufficient for first paint; optional avatar downloads must
       // not leave the entire workspace blank behind a slow resource.
       setBootstrap(value);
@@ -443,7 +458,7 @@ export function WorkspaceShell({
         } catch {
           nextAvatarCache = cachedAvatar;
         }
-      } else if (cachedAvatar) {
+      } else if (cachedAvatar && isCurrent()) {
         await removeAvatarCache(cachedAvatar);
       }
       if (
@@ -477,6 +492,8 @@ export function WorkspaceShell({
       for (const item of mergedRoutes) {
         if (item.avatar?.kind === 'agent' && item.avatar.code === item.code) resources[item.code] = item.avatar;
       }
+      if (!isCurrent()) return;
+
       const resolved = await Promise.all(mergedRoutes.map(async item => {
         const resource = resources[item.code];
         if (!resource) {
@@ -518,12 +535,16 @@ export function WorkspaceShell({
       setAgentAvatarSources(current => sameStringRecords(current, nextAgentSources) ? current : nextAgentSources);
       setBootstrap(value);
       setRouteAssistants(mergedRoutes);
-      setNotice('');
+      traceTransport('refresh_done', {generation: connectionGeneration});
     } catch (error) {
-      setNotice(workspaceNotice(error, '无法读取 Desktop 工作区。'));
+      if (isCurrent()) {traceTransport('refresh_failed', {generation: connectionGeneration, code: controlledErrorCode(error)});setNotice(workspaceNotice(error, '无法读取 Desktop 工作区。'));}
     } finally {
-      setLoadingWorkspace(false);
+      if (isCurrent()) setLoadingWorkspace(false);
     }
+    });
+    workspaceFlight.current = {key, promise};
+    promise.finally(() => {if (workspaceFlight.current?.promise === promise) workspaceFlight.current = null;}).catch(() => undefined);
+    return promise;
   }, [
     desktop.id,
     desktop.connectionGeneration,
@@ -533,10 +554,11 @@ export function WorkspaceShell({
   ]);
 
   useEffect(() => {
-    refreshWorkspace().catch(() => undefined);
-    const invalidate = () => {workspaceRead.current++;};
+    if (desktop.status !== '在线') setLoadingWorkspace(false);
+    refreshWorkspace('connection').catch(() => undefined);
+    const invalidate = () => {workspaceRead.current++;workspaceFlight.current = null;};
     return invalidate;
-  }, [refreshWorkspace]);
+  }, [desktop.status, refreshWorkspace]);
 
 
   const conversationsByProject = useMemo(() => {
@@ -1083,7 +1105,7 @@ export function WorkspaceShell({
             }
             if (mode === 'chat') workspace.refreshMessages();
             else if (mode === 'settings') setSettingsRefreshSignal(current => current + 1);
-            else {refreshWorkspace(); workspace.refreshOpenedSessions().catch(() => undefined);}
+            else {refreshWorkspace('manual'); workspace.refreshOpenedSessions().catch(() => undefined);}
           }}
         />
         {mode === 'chat' ? (
@@ -1108,7 +1130,7 @@ export function WorkspaceShell({
       {workspace.error || attachments.error || audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || attachments.progress ? (
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            {audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || workspace.error || attachments.error || attachments.progress}
+            {audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || workspace.error || (attachments.error ? workspaceNotice(new Error(attachments.error), '附件上传失败。') : attachments.progress)}
           </Text>
         </View>
       ) : null}
@@ -1119,13 +1141,13 @@ export function WorkspaceShell({
         </Pressable>
       ) : null}
       {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在连接…'}</Text></View> : null}
-      <View style={styles.retainedWorkspace} pointerEvents={!connected && mode !== 'chat' ? 'none' : 'auto'}>
+      <View style={styles.retainedWorkspace} pointerEvents={!connected && mode !== 'chat' && mode !== 'settings' ? 'none' : 'auto'}>
       {!connected && !bootstrap && mode !== 'chat' && mode !== 'settings' ? (
         <Empty
           title="正在连接 Desktop"
           text={desktop.detail || '请确认远程服务仍在运行。'}
         />
-      ) : !workspace.configured ? (
+      ) : !workspace.configured && mode !== 'settings' ? (
         <Empty
           title="Desktop 尚未配置会话目录"
           text="请先在 Desktop 完成会话保存位置配置。"

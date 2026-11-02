@@ -5,6 +5,8 @@ import {AppState} from 'react-native';
 import {createBusinessRouter} from './businessRouter';
 
 import {createSharedReads} from './sharedReads';
+
+import {controlledErrorCode, traceTransport} from './transportTrace';
 import {createResultTransferReader, RESULT_TRANSFER_CAPABILITY} from './resultTransfer';
 import {ADAPTIVE_TRANSFER_CAPABILITY} from './adaptiveTransfer';
 import {
@@ -72,6 +74,8 @@ type ClientOptions = {
 };
 
 export class RemoteClient {
+  private static nextTraceGeneration = 0;
+  private readonly traceGeneration = ++RemoteClient.nextTraceGeneration;
   readonly connectionId = `connection-${randomBase64Url(18)}`;
 
   private readonly desktop: PairedDesktop;
@@ -222,6 +226,8 @@ export class RemoteClient {
       const task = {cancelled: false, progress: typeof params.onProgress === 'function' ? params.onProgress as (value: any) => void : undefined};
       this.imageTasks.set(taskId, task);
       const generation = this.eventGeneration;
+
+      traceTransport('image_start', {generation: this.traceGeneration});
       let handle = '';
       try {
         const wrapped = await this.business.prepareNativeTransfer();
@@ -229,7 +235,13 @@ export class RemoteClient {
         handle = await PinnedGateway.registerImage(this.connectionId, String(params.path || ''), String(params.name || ''), String(params.type || ''));
         if (generation !== this.eventGeneration || this.status !== 'online') throw remoteError('remote_client_closed');
         if (task.cancelled) throw remoteError('remote_upload_cancelled');
-        return JSON.parse(await PinnedGateway.uploadImage(this.connectionId, handle, taskId, wrapped)) as T;
+        const result = JSON.parse(await PinnedGateway.uploadImage(this.connectionId, handle, taskId, wrapped)) as T;
+        traceTransport('image_done', {generation: this.traceGeneration});
+        return result;
+      } catch (error) {
+        const code = controlledErrorCode(error);
+        traceTransport('image_failed', {generation: this.traceGeneration, code});
+        throw new RemoteRpcError(code);
       } finally {
         this.imageTasks.delete(taskId);
         if (handle) await PinnedGateway.releaseImage(this.connectionId, handle).catch(() => undefined);
@@ -269,7 +281,7 @@ export class RemoteClient {
     const deferTimeout = configRead || uploadRequest;
     let startTimeout: (() => void) | undefined;
     const response = new Promise<T>((resolve, reject) => {
-      const expire = () => {this.pending.delete(requestId); reject(new RemoteRpcError('remote_request_timeout'));};
+      const expire = () => {traceTransport('rpc_timeout', {generation: this.traceGeneration, code: 'remote_request_timeout'});this.pending.delete(requestId); reject(new RemoteRpcError('remote_request_timeout'));};
       const timer = deferTimeout ? undefined : setTimeout(expire, timeoutMs);
       if (deferTimeout) startTimeout = () => {
         const pending = this.pending.get(requestId);
@@ -367,7 +379,10 @@ export class RemoteClient {
       if (event.type === 'uploadProgress') {
         const progress = JSON.parse(event.message || '{}');
         const task = this.imageTasks.get(progress.taskId);
-        if (task && !task.cancelled && ['hashing', 'creating', 'waiting_first_ack', 'uploading', 'completing'].includes(progress.stage) && Number.isSafeInteger(progress.bytes) && Number.isSafeInteger(progress.total) && progress.total > 0 && progress.total <= 25 * 1024 * 1024 && progress.bytes >= 0 && progress.bytes <= progress.total) task.progress?.(progress);
+        if (task && !task.cancelled && ['hashing', 'creating', 'waiting_first_ack', 'uploading', 'completing'].includes(progress.stage) && Number.isSafeInteger(progress.bytes) && Number.isSafeInteger(progress.total) && progress.total > 0 && progress.total <= 25 * 1024 * 1024 && progress.bytes >= 0 && progress.bytes <= progress.total) {
+          traceTransport('image_stage', {generation: this.traceGeneration, state: progress.stage, bytes: progress.bytes, total: progress.total});
+          try {task.progress?.(progress);} catch { /* A UI callback cannot close WSS. */ }
+        }
         return;
       }
 
@@ -636,6 +651,8 @@ export class RemoteClient {
 
   private setStatus(status: RemoteClientStatus, detail?: string): void {
     this.status = status;
+
+    traceTransport('connection', {generation: this.traceGeneration, state: status, code: detail?.includes('pong_timeout') ? 'remote_pong_timeout' : detail?.includes('write_timeout') ? 'remote_write_timeout' : undefined});
     this.onStatus?.(status, detail);
   }
 }

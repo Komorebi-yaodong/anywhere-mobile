@@ -97,6 +97,8 @@ final class GatewayNativeUploads {
       }
       do {
         try self.check(); self.progress(task, "hashing", 0, file.size)
+
+        self.session.trace("upload_start", bytes: file.size)
         let input = try FileHandle(forReadingFrom: file.url); defer { try? input.close() }
         var hash = SHA256(); var total = 0
         while true { try self.check(); let bytes = try input.read(upToCount: 65536) ?? Data(); if bytes.isEmpty { break }; hash.update(data: bytes); total += bytes.count }
@@ -123,16 +125,25 @@ final class GatewayNativeUploads {
         try self.check(); self.progress(task, "completing", file.size, file.size)
         let response = try self.rpc("attachment.complete", ["uploadId": id], wrapped: wrapped)
         guard let result = response["upload"] as? [String: Any], result["uploadId"] as? String == id, result["state"] as? String == "completed", result["size"] as? Int == file.size, result["receivedBytes"] as? Int == file.size, result["sha256"] as? String == sha else { throw NativeGatewayFailure(code: "remote_upload_response_invalid") }
+        self.session.trace("upload_done", bytes: file.size)
+
         try self.check(); completion(.success(try GatewayNativeCrypto.json(result)))
       } catch {
         self.lock.lock(); let mayAbort = !self.closed; self.lock.unlock()
+        self.session.trace("upload_failed", code: (error as? NativeGatewayFailure)?.code, bytes: file.size)
+
         if mayAbort && !uploadId.isEmpty { self.abort(uploadId, wrapped: wrapped) }
         completion(.failure(error))
       }
     }
   }
   private func rpc(_ method: String, _ params: [String: Any], wrapped: Bool) throws -> [String: Any] {
-    try check(); let id = prefix + UUID().uuidString; let waiter = Waiter(); let submission = Waiter(); let permit = Permit()
+    try check(); let id = prefix + UUID().uuidString
+    let waiter = Waiter(); let submission = Waiter(); let permit = Permit()
+    let began = ProcessInfo.processInfo.systemUptime
+    var acknowledged = false
+    session.trace("rpc_" + method.replacingOccurrences(of: "attachment.", with: ""), bytes: (params["data"] as? String)?.utf8.count ?? 0)
+    defer { if !acknowledged { session.trace("ack_failed", elapsed: (ProcessInfo.processInfo.systemUptime - began) * 1000) } }
     lock.lock(); replies[id] = waiter; lock.unlock()
     defer { permit.invalidate(); lock.lock(); replies.removeValue(forKey: id); lock.unlock() }
     let payload: [String: Any] = ["kind": "request", "requestId": id, "method": wrapped ? "transfer.request" : method, "params": wrapped ? ["method": method, "params": params] : params]
@@ -150,6 +161,8 @@ final class GatewayNativeUploads {
     let response = try waiter.wait(90); try check()
     guard response["ok"] as? Bool == true else { let error = response["error"] as? [String: Any]; throw NativeGatewayFailure(code: error?["code"] as? String ?? "remote_request_failed") }
     guard let result = response["result"] as? [String: Any] else { throw NativeGatewayFailure(code: "remote_upload_response_invalid") }
+    acknowledged = true
+    session.trace("ack", elapsed: (ProcessInfo.processInfo.systemUptime - began) * 1000)
     return result
   }
   private func abort(_ uploadId: String, wrapped: Bool) {

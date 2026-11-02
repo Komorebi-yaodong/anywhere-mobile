@@ -26,6 +26,12 @@ final class GatewaySocketWriter {
 
   private int queuedBytes;
 
+  interface Observer {void record(String event, String code, long bytes, long elapsedMs);}
+  private Observer observer = (event, code, bytes, elapsed) -> {};
+  synchronized void observe(Observer value) {observer = value;}
+  synchronized long queuedSize() {return Math.max(queuedBytes, socket.queueSize());}
+
+
   private static final class Pending {
 
     java.util.concurrent.Callable<String> prepare;
@@ -37,6 +43,9 @@ final class GatewaySocketWriter {
     int weight;
 
     Runnable submitted = () -> {};
+
+    long enqueued = System.nanoTime();
+    int frameBytes;
     Pending(String text, Runnable resolve, Consumer<String> reject) {
       this.text = text; this.resolve = resolve; this.reject = reject;
     }
@@ -61,6 +70,7 @@ final class GatewaySocketWriter {
     if (queuedBytes + weight > 32 * 1024 * 1024) {reject.accept("remote_send_capacity");return;}
     Pending pending = new Pending(text, resolve, reject);pending.weight = weight;queuedBytes += weight;
     queue.add(pending);
+    observer.record("queued",null,queuedBytes,0);
     if (queue.size() == 1) executor.execute(() -> start(pending));
   }
 
@@ -72,6 +82,7 @@ final class GatewaySocketWriter {
     if (queue.size() >= 32) {reject.accept("remote_send_capacity");return;}
     if (weight < 1 || queuedBytes + weight > 32 * 1024 * 1024) {reject.accept("remote_send_capacity");return;}
     Pending pending = new Pending(null, resolve, reject);pending.prepare = prepare;pending.submitted = submitted;pending.weight = weight;queuedBytes += weight;queue.add(pending);
+    observer.record("queued",null,queuedBytes,0);
     if (queue.size() == 1) executor.execute(() -> start(pending));
   }
 
@@ -88,10 +99,14 @@ final class GatewaySocketWriter {
     }
 
     pending.started = System.nanoTime();
+
+    pending.frameBytes = pending.text.getBytes(StandardCharsets.UTF_8).length;
     try {
       if (!socket.send(pending.text)) {close(); return;}
 
       pending.submitted.run();
+
+      observer.record("submitted",null,pending.frameBytes,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pending.enqueued));
       pending.text = null;
       poll(pending);
     } catch (Exception error) {close();}
@@ -102,6 +117,8 @@ final class GatewaySocketWriter {
     if (!current.getAsBoolean()) {close(); return;}
     if (socket.queueSize() == 0) {
       queue.remove();queuedBytes -= pending.weight;
+      observer.record("drained",null,pending.frameBytes,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-pending.started));
+
       pending.resolve.run();
       Pending next = queue.peek();
       if (next != null) executor.execute(() -> start(next));
@@ -118,6 +135,8 @@ final class GatewaySocketWriter {
   private void closeWith(String code) {
     if (closed) return;
     closed = true;
+
+    observer.record("failure",code,queuedSize(),queue.peek()==null?0:TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-queue.peek().enqueued));
     for (Pending pending : queue) {pending.text = null; pending.prepare = null; pending.reject.accept(code);}
     queue.clear();queuedBytes = 0;
     executor.shutdownNow();

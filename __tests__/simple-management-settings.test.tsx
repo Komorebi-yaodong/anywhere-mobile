@@ -9,6 +9,16 @@ function hasText(root: TestRenderer.ReactTestRenderer, label: string) {
   return root.root.findAllByType(Text).some(node => node.props.children === label);
 }
 
+test('keeps local diagnostics export available even when the remote settings read fails', async () => {
+  let root!: TestRenderer.ReactTestRenderer;
+  const request = jest.fn(async () => {throw Error('remote_client_closed');});
+  await act(async () => {root = TestRenderer.create(<SimpleManagementSettings section="general" desktopId="offline-fixture" request={request as RemoteRequest} onChanged={() => {}} refreshSignal={0} />);});
+  const action = root.root.findAll(node => node.props.accessibilityLabel === '导出连接诊断' && typeof node.props.onPress === 'function')[0];
+  expect(action).toBeTruthy();expect(action.props.disabled).not.toBe(true);
+  await act(async () => root.unmount());
+});
+
+
 test.each(['mcp', 'skills'] as const)('sorts global %s by name regardless of enabled state', async section => {
  const request = jest.fn(async () => ({ok: true, section, items: [{id: 'z', name: 'Zebra', enabled: true}, {id: 'a10', name: 'Alpha10', enabled: true}, {id: 'a2', name: 'Alpha2', enabled: false}]}));
  let root!: TestRenderer.ReactTestRenderer;
