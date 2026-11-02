@@ -81,7 +81,6 @@ final class GatewayUploads implements AutoCloseable {
         check();rpc("remote.image.binary.negotiate",new JSONObject(),false);
         progress.report(task,"hashing",0,file.size);
 
-        session.trace("upload_start",null,file.size,0);
         MessageDigest hash=MessageDigest.getInstance("SHA-256");byte[] buffer=new byte[65536];long hashed=0;
         try(InputStream input=new FileInputStream(file.file)){for(int n;(n=input.read(buffer))!=-1;){check();hash.update(buffer,0,n);hashed+=n;}}finally{Arrays.fill(buffer,(byte)0);}
         if(hashed!=file.size)throw new IllegalStateException("remote_upload_source_changed");
@@ -107,12 +106,10 @@ final class GatewayUploads implements AutoCloseable {
         check();progress.report(task,"completing",file.size,file.size);
         JSONObject result=rpc("attachment.complete",new JSONObject().put("uploadId",uploadId),wrapped).getJSONObject("upload");
         if(!uploadId.equals(result.getString("uploadId")) || !"completed".equals(result.getString("state")) || result.getLong("size")!=file.size || result.getLong("receivedBytes")!=file.size || !sha.equals(result.getString("sha256")))throw new IllegalStateException("remote_upload_response_invalid");
-        session.trace("upload_done",null,file.size,0);
 
         check();resolve.accept(result);
       }catch(Exception error){
         if(!closed && !uploadId.isEmpty())sendAbort(uploadId,wrapped);
-        session.trace("upload_failed",code(error),file.size,0);
 
         reject.accept(code(error));
       }finally{file.file.delete();synchronized(this){activeTask="";activeBytes=0;cancelled=false;} }
@@ -125,8 +122,6 @@ final class GatewayUploads implements AutoCloseable {
     java.util.concurrent.atomic.AtomicBoolean valid = new java.util.concurrent.atomic.AtomicBoolean(true);
     replies.put(id,reply);
 
-    long began=System.nanoTime();
-    session.trace(method.startsWith("attachment.")?"rpc_"+method.substring("attachment.".length()):"queued",null,bytes==null?0:bytes.length,0);
     reply.whenComplete((value,error)->{if(error!=null)submitted.completeExceptionally(error);});
     JSONObject request=new JSONObject().put("kind","request").put("requestId",id).put("method",wrapped?"transfer.request":method).put("params",wrapped?new JSONObject().put("method",method).put("params",params):params);
     Runnable permit=()->{if(!valid.get())throw new IllegalStateException("remote_upload_cancelled");check();};
@@ -139,10 +134,8 @@ final class GatewayUploads implements AutoCloseable {
       submitted.get(65,TimeUnit.SECONDS);check();JSONObject response=reply.get(90,TimeUnit.SECONDS);check();
       if(!response.optBoolean("ok")){String failure=response.optJSONObject("error")==null?"remote_request_failed":response.getJSONObject("error").optString("code","remote_request_failed");throw new IllegalStateException(failure);}
       JSONObject result=response.getJSONObject("result");
-      session.trace("ack",null,0,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-began));
       return result;
-    }catch(Exception error){session.trace("ack_failed",code(error),0,TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-began));throw error;}
-    finally{valid.set(false);replies.remove(id);}
+    } finally{valid.set(false);replies.remove(id);}
   }
   private void sendAbort(String uploadId, boolean wrapped) {
     try {JSONObject params=new JSONObject().put("uploadId",uploadId);session.send(new JSONObject().put("kind","request").put("requestId",prefix+UUID.randomUUID()).put("method",wrapped?"transfer.request":"attachment.abort").put("params",wrapped?new JSONObject().put("method","attachment.abort").put("params",params):params).toString(),()->{},code->{});}catch(Exception ignored){/* best effort only */}

@@ -243,3 +243,10 @@ export function buildFrameAad({
     direction,
   });
 }
+
+/** Never surface native paths or arbitrary error text from upload failures. */
+export function controlledErrorCode(error: unknown): string {
+  const source = error && typeof error === 'object' ? error as {code?: unknown; message?: unknown} : {};
+  const candidate = typeof source.code === 'string' ? source.code : source.message;
+  return typeof candidate === 'string' && /^remote_[a-z0-9_]{1,80}$/.test(candidate) ? candidate : 'remote_upload_failed';
+}

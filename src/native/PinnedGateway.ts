@@ -36,7 +36,6 @@ export type GatewayEvent = {
 
 type PinnedGatewayModule = {
 
-  connectionDiagnostics(): Promise<string>;
   postJson(options: HttpsPostOptions): Promise<NativeHttpResponse>;
   connectSocket(options: SocketConnectOptions): Promise<void>;
   sendText(connectionId: string, text: string): Promise<void>;
@@ -90,7 +89,6 @@ function normalizeTls(options: TransportTlsOptions): TransportTlsOptions {
 
 export const PinnedGateway = {
 
-  connectionDiagnostics: () => nativeModule.connectionDiagnostics(),
 
   registerImage: (connectionId: string, path: string, name: string, type: string) => nativeModule.registerImage(connectionId, path, name, type),
   uploadImage: (connectionId: string, handle: string, task: string, wrapped: boolean) => nativeModule.uploadImage(connectionId, handle, task, wrapped),

@@ -12,22 +12,6 @@ import org.json.JSONObject;
 
 /** All receive/install work shares one lane, independent of OkHttp's pong reader. */
 final class GatewaySession implements AutoCloseable {
-  // Process lifetime only. Rows cannot contain caller-supplied paths or payloads.
-  private static final ArrayDeque<JSONObject> TRACE = new ArrayDeque<>();
-  private static final long TRACE_START = System.nanoTime();
-  private static final java.util.concurrent.atomic.AtomicLong GENERATIONS = new java.util.concurrent.atomic.AtomicLong();
-  private final long generation = GENERATIONS.incrementAndGet();
-  static synchronized String diagnostics() {return new org.json.JSONArray(TRACE).toString();}
-  void trace(String event, String code, long bytes, long elapsedMs) {
-    if (!event.matches("connection|closed|failure|queued|submitted|drained|rejected|upload_start|upload_done|upload_failed|rpc_begin|rpc_chunk|rpc_complete|rpc_abort|ack|ack_failed")) return;
-    try {
-      JSONObject row = new JSONObject().put("atMs", TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-TRACE_START)).put("generation",generation).put("event",event);
-      if (code != null) row.put("code", code.matches("remote_(pong_timeout|write_timeout|request_timeout|client_closed|upload_cancelled|upload_response_invalid|upload_failed|send_capacity|transport_error)|SOCKET_(WRITE_TIMEOUT|PONG_TIMEOUT|UNAVAILABLE)") ? code : "other");
-      row.put("bytes",Math.max(0,bytes)).put("elapsedMs",Math.max(0,elapsedMs));
-      synchronized(GatewaySession.class) {TRACE.add(row);while(TRACE.size()>256)TRACE.remove();}
-    } catch (org.json.JSONException ignored) { /* diagnostics never affect transport */ }
-  }
-
   private final GatewaySocketWriter writer;
   private final Consumer<String> plaintext, failure;
   private final ThreadPoolExecutor receiver = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(32), task -> {Thread thread = new Thread(task, "gateway-crypto-reader");thread.setDaemon(true);return thread;});
@@ -36,7 +20,7 @@ final class GatewaySession implements AutoCloseable {
   private final AtomicBoolean closed = new AtomicBoolean();
   private volatile GatewayCrypto crypto;
   private volatile Predicate<JSONObject> responses = payload -> false;
-  GatewaySession(GatewaySocketWriter writer, Consumer<String> plaintext, Consumer<String> failure) {this.writer = writer; this.plaintext = plaintext; this.failure = failure;writer.observe(this::trace);trace("connection",null,0,0);}
+  GatewaySession(GatewaySocketWriter writer, Consumer<String> plaintext, Consumer<String> failure) {this.writer = writer; this.plaintext = plaintext; this.failure = failure;}
   void responseHandler(Predicate<JSONObject> handler) {responses = handler;}
   boolean active() {return !closed.get() && crypto != null;}
   void install(String id, String send, String receive, Runnable success, Consumer<String> reject) {
@@ -115,13 +99,12 @@ final class GatewaySession implements AutoCloseable {
     writer.sendBinary(()->{try{if(closed.get())throw new IllegalStateException("remote_client_closed");check.run();return current.encryptBinary(id,uploadId,index,owned);}finally{java.util.Arrays.fill(owned,(byte)0);}},bytes.length*2+2048,submitted,()->{},code->{java.util.Arrays.fill(owned,(byte)0);reject.accept(code);if(code.startsWith("SOCKET_"))java.util.concurrent.ForkJoinPool.commonPool().execute(()->fail("remote_transport_error"));});
   }
 
-  private void fail(String code) {if (closed.get()) return;trace("failure",code,writer.queuedSize(),0);close();failure.accept(code);}
+  private void fail(String code) {if (closed.get()) return;close();failure.accept(code);}
   public void close() {
     GatewayCrypto current;
     synchronized (this) {if (!closed.compareAndSet(false, true)) return;current = crypto;}
     if (current != null) current.close();
 
-    trace("closed",null,writer.queuedSize(),0);
     // Drain callbacks (not ciphertext) so queued key imports settle and zeroize.
     try {receiver.execute(() -> {beforeKeys.clear();queuedBytes.set(0);});} catch (java.util.concurrent.RejectedExecutionException ignored) { /* closing */ }
     receiver.shutdown();

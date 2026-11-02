@@ -79,12 +79,16 @@ export function GlobalSettings({
   onChanged,
   onSectionChange,
   refreshSignal,
+  profileName,
+  profileAvatar,
 }: {
   desktopId: string;
   request: RemoteRequest;
   onChanged: () => void;
   onSectionChange: (section: SettingsSection) => void;
   refreshSignal: number;
+  profileName?: string;
+  profileAvatar?: string;
 }) {
   const s = useThemedStyles(styles);
   const [section, setSection] = useState<SettingsSection>('agents');
@@ -139,6 +143,8 @@ export function GlobalSettings({
       ) : ['mcp', 'skills', 'general'].includes(section) ? (
         <SimpleManagementSettings
           section={section as 'mcp' | 'skills' | 'general'}
+          profileName={profileName}
+          profileAvatar={profileAvatar}
           desktopId={desktopId}
           request={request}
           onChanged={onChanged}

@@ -6,7 +6,7 @@ import {createBusinessRouter} from './businessRouter';
 
 import {createSharedReads} from './sharedReads';
 
-import {controlledErrorCode, traceTransport} from './transportTrace';
+import {controlledErrorCode} from './protocol';
 import {createResultTransferReader, RESULT_TRANSFER_CAPABILITY} from './resultTransfer';
 import {ADAPTIVE_TRANSFER_CAPABILITY} from './adaptiveTransfer';
 import {
@@ -74,8 +74,6 @@ type ClientOptions = {
 };
 
 export class RemoteClient {
-  private static nextTraceGeneration = 0;
-  private readonly traceGeneration = ++RemoteClient.nextTraceGeneration;
   readonly connectionId = `connection-${randomBase64Url(18)}`;
 
   private readonly desktop: PairedDesktop;
@@ -227,7 +225,7 @@ export class RemoteClient {
       this.imageTasks.set(taskId, task);
       const generation = this.eventGeneration;
 
-      traceTransport('image_start', {generation: this.traceGeneration});
+
       let handle = '';
       try {
         const wrapped = await this.business.prepareNativeTransfer();
@@ -236,11 +234,11 @@ export class RemoteClient {
         if (generation !== this.eventGeneration || this.status !== 'online') throw remoteError('remote_client_closed');
         if (task.cancelled) throw remoteError('remote_upload_cancelled');
         const result = JSON.parse(await PinnedGateway.uploadImage(this.connectionId, handle, taskId, wrapped)) as T;
-        traceTransport('image_done', {generation: this.traceGeneration});
+
         return result;
       } catch (error) {
         const code = controlledErrorCode(error);
-        traceTransport('image_failed', {generation: this.traceGeneration, code});
+
         throw new RemoteRpcError(code);
       } finally {
         this.imageTasks.delete(taskId);
@@ -281,7 +279,7 @@ export class RemoteClient {
     const deferTimeout = configRead || uploadRequest;
     let startTimeout: (() => void) | undefined;
     const response = new Promise<T>((resolve, reject) => {
-      const expire = () => {traceTransport('rpc_timeout', {generation: this.traceGeneration, code: 'remote_request_timeout'});this.pending.delete(requestId); reject(new RemoteRpcError('remote_request_timeout'));};
+      const expire = () => {this.pending.delete(requestId); reject(new RemoteRpcError('remote_request_timeout'));};
       const timer = deferTimeout ? undefined : setTimeout(expire, timeoutMs);
       if (deferTimeout) startTimeout = () => {
         const pending = this.pending.get(requestId);
@@ -380,7 +378,7 @@ export class RemoteClient {
         const progress = JSON.parse(event.message || '{}');
         const task = this.imageTasks.get(progress.taskId);
         if (task && !task.cancelled && ['hashing', 'creating', 'waiting_first_ack', 'uploading', 'completing'].includes(progress.stage) && Number.isSafeInteger(progress.bytes) && Number.isSafeInteger(progress.total) && progress.total > 0 && progress.total <= 25 * 1024 * 1024 && progress.bytes >= 0 && progress.bytes <= progress.total) {
-          traceTransport('image_stage', {generation: this.traceGeneration, state: progress.stage, bytes: progress.bytes, total: progress.total});
+
           try {task.progress?.(progress);} catch { /* A UI callback cannot close WSS. */ }
         }
         return;
@@ -652,7 +650,7 @@ export class RemoteClient {
   private setStatus(status: RemoteClientStatus, detail?: string): void {
     this.status = status;
 
-    traceTransport('connection', {generation: this.traceGeneration, state: status, code: detail?.includes('pong_timeout') ? 'remote_pong_timeout' : detail?.includes('write_timeout') ? 'remote_write_timeout' : undefined});
+
     this.onStatus?.(status, detail);
   }
 }

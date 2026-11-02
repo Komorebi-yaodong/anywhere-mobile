@@ -5,7 +5,7 @@ import type {RemoteRequest} from '../remote/api';
 import {randomBase64Url} from '../remote/crypto';
 import {RemoteUpload, uploadAttachment, validateAttachment} from '../remote/attachments';
 import {uploadNativeImage, type ImageProgress} from './nativeImageUpload';
-import {controlledErrorCode} from '../remote/transportTrace';
+import {controlledErrorCode} from '../remote/protocol';
 
 /** Reads only a document explicitly selected by the user. Never forwards its URI. */
 export async function pickAndUploadAttachment({desktopId, request, signal, onProgress}: {

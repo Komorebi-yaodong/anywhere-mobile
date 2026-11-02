@@ -1,6 +1,9 @@
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
 import React, {useCallback, useEffect, useState} from 'react';
 import {
+  Image,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,7 +19,6 @@ import {mcpTransportLabel, mcpTransportSearchTerms} from './mcpPresentation';
 import {useThemedStyles} from './theme';
 import {AppearanceSettings} from './AppearanceSettings';
 
-import {shareConnectionDiagnostics} from '../remote/transportTrace';
 
 import {sortByName} from './nameSort';
 
@@ -53,16 +55,23 @@ export function SimpleManagementSettings({
   request,
   onChanged,
   refreshSignal,
+  profileName,
+  profileAvatar,
 }: {
   section: ToggleSection | 'general';
   desktopId: string;
   request: RemoteRequest;
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
   refreshSignal: number;
+  profileName?: string;
+  profileAvatar?: string;
 }) {
   const s = useThemedStyles(styles);
 
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  useEffect(() => setAvatarFailed(false), [profileAvatar]);
   const [items, setItems] = useState<ToggleItem[]>([]);
   const [general, setGeneral] = useState<GeneralReply | null>(null);
   const [nickname, setNickname] = useState('');
@@ -73,6 +82,7 @@ export function SimpleManagementSettings({
   const load = useCallback(async () => {
     setBusy(true);
     setError('');
+    setSaved(false);
     try {
       const result = await request<DetailsReply | GeneralReply>(
         desktopId,
@@ -86,8 +96,10 @@ export function SimpleManagementSettings({
       } else {
         setItems((result as DetailsReply).items || []);
       }
+      return true;
     } catch (cause) {
       setError(message(cause, '读取设置失败，请在顶部刷新后重试。'));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -103,6 +115,7 @@ export function SimpleManagementSettings({
     setItems(current => current.map(value => value.id === item.id ? {...value, enabled: nextEnabled} : value));
     setBusy(true);
     setError('');
+    setSaved(false);
     try {
       await request(
         desktopId,
@@ -121,7 +134,7 @@ export function SimpleManagementSettings({
   };
 
   const saveNickname = async () => {
-    if (!general || busy) return;
+    if (!general || busy || nickname.trim() === general.value.displayName) return;
     const displayName = nickname.trim();
     if (!displayName) {
       setError('请输入昵称。');
@@ -141,8 +154,9 @@ export function SimpleManagementSettings({
         },
         60_000,
       );
-      await load();
-      onChanged();
+      const refreshed = await load();
+      await onChanged();
+      setSaved(refreshed);
     } catch (cause) {
       setError(message(cause, '保存昵称失败，请刷新后重试。'));
     } finally {
@@ -151,29 +165,32 @@ export function SimpleManagementSettings({
   };
 
   if (section === 'general') {
+    const displayName = general?.value.displayName || profileName || 'User';
+    const saveDisabled = busy || !general || !nickname.trim() || nickname.trim() === general.value.displayName;
     return (
-      <View style={s.root}>
-        {error ? <Text style={s.error}>{error}</Text> : null}
+      <KeyboardAvoidingView style={s.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <AppearanceSettings visible={appearanceOpen} onClose={() => setAppearanceOpen(false)} />
-        <Pressable accessibilityLabel="外观设置" style={s.itemCard} onPress={() => setAppearanceOpen(true)}><AppIcon name="sun" size={20} /><View style={s.itemCopy}><Text style={s.itemName}>外观</Text></View><AppIcon name="›" size={18} /></Pressable>
-
-        <Pressable accessibilityLabel="导出连接诊断" style={s.itemCard} onPress={() => {shareConnectionDiagnostics().catch(() => setError('诊断导出失败，请稍后重试。'));}}><AppIcon name="copy" size={20} /><View style={s.itemCopy}><Text style={s.itemName}>导出连接诊断</Text></View></Pressable>
-
-
-        {!general && busy ? <ActivityIndicator color={C.primary} /> : null}
-        {general ? (
-          <View style={s.generalPage}>
-            <View style={s.profileCard}>
-              <View style={s.avatar}><Text style={s.avatarText}>{(nickname || 'U').slice(0, 1).toUpperCase()}</Text></View>
-              <View style={s.profileCopy}><Text style={s.profileTitle}>昵称</Text></View>
+        <ScrollView style={s.scroll} contentContainerStyle={s.generalPage} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" accessibilityLabel="通用设置内容">
+          <Pressable accessibilityRole="button" accessibilityLabel="外观设置" style={s.itemCard} onPress={() => setAppearanceOpen(true)}>
+            <View style={s.itemIcon}><AppIcon name="sun" size={20} /></View><Text style={[s.itemName, s.itemCopy]}>外观</Text><AppIcon name="›" size={18} />
+          </Pressable>
+          <View style={s.profileCard}>
+            <View style={s.profileHeader}>
+              {profileAvatar && !avatarFailed ? <Image accessibilityLabel="个人头像" source={{uri: profileAvatar}} style={s.avatar} onError={() => setAvatarFailed(true)} /> : <View style={s.avatar}><Text style={s.avatarText}>{Array.from(displayName)[0].toUpperCase()}</Text></View>}
+              <View style={s.profileCopy}><Text style={s.profileMeta}>个人资料</Text><Text numberOfLines={1} style={s.profileTitle}>{displayName}</Text></View>
             </View>
-            <View style={s.field}><Text style={s.fieldLabel}>昵称</Text><TextInput value={nickname} onChangeText={setNickname} maxLength={12} placeholder="输入昵称" placeholderTextColor={C.muted} style={s.input} /></View>
-            <Pressable disabled={busy || !nickname.trim()} style={[s.save, (busy || !nickname.trim()) && s.disabled]} onPress={saveNickname}>
-              <Text style={s.saveText}>{busy ? '正在保存…' : '保存昵称'}</Text>
-            </Pressable>
+            {error ? <Text accessibilityRole="alert" style={s.generalError}>{error}</Text> : null}
+            {!general && busy ? <ActivityIndicator color={C.primary} /> : null}
+            {general ? <>
+              <View style={s.field}><Text style={s.fieldLabel}>昵称</Text><TextInput accessibilityLabel="昵称" value={nickname} onChangeText={value => {setNickname(value);setSaved(false);}} editable={!busy} maxLength={12} placeholder="输入昵称" placeholderTextColor={C.muted} style={s.input} /></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="保存昵称" disabled={saveDisabled} style={[s.save, saveDisabled && s.disabled]} onPress={saveNickname}>
+                <Text style={s.saveText}>{busy ? '正在保存…' : '保存昵称'}</Text>
+              </Pressable>
+              {saved ? <Text accessibilityLiveRegion="polite" style={s.saved}>已保存</Text> : null}
+            </> : null}
           </View>
-        ) : null}
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     );
   }
 
@@ -233,9 +250,12 @@ const styles = StyleSheet.create({
   itemTagText: {color: C.muted, fontSize: 10, fontWeight: '600'},
   empty: {marginTop: 8, padding: 22, alignItems: 'center', borderRadius: 18, backgroundColor: C.surfaceMuted},
   emptyTitle: {color: C.muted, fontSize: 14},
-  generalPage: {padding: 18, gap: 16},
-  profileCard: {flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 20, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
-  avatar: {width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: C.primarySoft},
+  generalPage: {padding: 16, paddingTop: 12, paddingBottom: 28, gap: 16},
+  profileCard: {gap: 16, padding: 16, borderRadius: 18, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface},
+  profileHeader: {flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: C.line},
+  generalError: {color: C.danger, fontSize: 13},
+  saved: {color: C.success, fontSize: 13, textAlign: 'center'},
+  avatar: {width: 48, height: 48, borderRadius: 24, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: C.primarySoft},
   avatarText: {fontSize: 18, fontWeight: '600', color: C.primary},
   profileCopy: {flex: 1, gap: 3}, profileTitle: {fontSize: 16, fontWeight: '600', color: C.text}, profileMeta: {fontSize: 12, color: C.muted},
   field: {gap: 7}, fieldLabel: {color: C.text, fontSize: 14, fontWeight: '600'},

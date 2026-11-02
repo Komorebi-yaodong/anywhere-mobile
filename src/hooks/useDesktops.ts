@@ -28,7 +28,6 @@ export type DesktopRuntime = PairedDesktop & {
   connectionGeneration?: number;
 };
 
-import {traceTransport} from '../remote/transportTrace';
 
 
 const pingEveryMs = 20_000;
@@ -276,7 +275,7 @@ export function useDesktops() {
       if (previousState === nextState) return;
       appState.current = nextState;
 
-      traceTransport('foreground', {state: nextState});
+
       const epoch = ++resumeEpoch.current;
       if (nextState !== 'active') {
         // Do not close a healthy native socket just because JS is backgrounded.

@@ -98,22 +98,7 @@ final class GatewayNativeCrypto {
 final class GatewayNativeSession {
   typealias Reply = (Result<String, Error>) -> Void
 
-  private static let traceLock = NSLock()
-  private static var rows: [[String: Any]] = []
-  private static var nextGeneration = 0
-  private static let started = ProcessInfo.processInfo.systemUptime
-  private static func newGeneration() -> Int {traceLock.lock(); defer {traceLock.unlock()}; nextGeneration += 1; return nextGeneration}
-  private let generation = GatewayNativeSession.newGeneration()
-  static func diagnostics() -> String { traceLock.lock(); defer { traceLock.unlock() }; return String(data: (try? JSONSerialization.data(withJSONObject: rows)) ?? Data("[]".utf8), encoding: .utf8) ?? "[]" }
-  func trace(_ event: String, code: String? = nil, bytes: Int = 0, elapsed: Double = 0) {
-    let allowed = ["connection", "closed", "failure", "queued", "submitted", "drained", "upload_start", "upload_done", "upload_failed", "rpc_begin", "rpc_chunk", "rpc_complete", "rpc_abort", "ack", "ack_failed"]
-    guard allowed.contains(event) else { return }
-    var row: [String: Any] = ["atMs": Int((ProcessInfo.processInfo.systemUptime - Self.started) * 1000), "generation": generation, "event": event, "bytes": max(0, bytes), "elapsedMs": max(0, Int(elapsed))]
-    if let code { row["code"] = ["remote_pong_timeout", "remote_write_timeout", "remote_request_timeout", "remote_client_closed", "remote_upload_cancelled", "remote_upload_response_invalid", "remote_upload_failed", "remote_send_capacity", "remote_transport_error"].contains(code) ? code : "other" }
-    Self.traceLock.lock(); Self.rows.append(row); if Self.rows.count > 256 { Self.rows.removeFirst() }; Self.traceLock.unlock()
-  }
-
-  private struct Write { let value: String; let encrypted: Bool; let check: () throws -> Void; let submitted: () -> Void; let reply: Reply; let raw: Data?; let enqueued = ProcessInfo.processInfo.systemUptime }
+  private struct Write { let value: String; let encrypted: Bool; let check: () throws -> Void; let submitted: () -> Void; let reply: Reply; let raw: Data? }
   private let queue = DispatchQueue(label: "gateway.native-session")
   private let lock = NSLock()
   private var closed = false
@@ -128,7 +113,7 @@ final class GatewayNativeSession {
   private let deliver: (String) -> Void
   private let failure: (String) -> Void
   var consumeResponse: ([String: Any]) -> Bool = { _ in false }
-  init(send: @escaping (String, @escaping (Error?) -> Void) -> Void, binary: @escaping (Data, @escaping (Error?) -> Void) -> Void, deliver: @escaping (String) -> Void, failure: @escaping (String) -> Void) { sendText = send; sendData = binary; self.deliver = deliver; self.failure = failure; trace("connection") }
+  init(send: @escaping (String, @escaping (Error?) -> Void) -> Void, binary: @escaping (Data, @escaping (Error?) -> Void) -> Void, deliver: @escaping (String) -> Void, failure: @escaping (String) -> Void) { sendText = send; sendData = binary; self.deliver = deliver; self.failure = failure }
   private func isClosed() -> Bool { lock.lock(); defer { lock.unlock() }; return closed }
   func install(id: String, send: String, receive: String, completion: @escaping Reply) {
     queue.async {
@@ -178,7 +163,6 @@ final class GatewayNativeSession {
       guard self.writes.count < 32, self.bytes + (value.utf8.count * 2 + (raw?.count ?? 0)) <= 32 * 1024 * 1024 else { completion(.failure(NativeGatewayFailure(code: "remote_send_capacity"))); return }
       self.writes.append(Write(value: value, encrypted: encrypted, check: check, submitted: submitted, reply: completion, raw: raw))
       self.bytes += (value.utf8.count * 2 + (raw?.count ?? 0))
-      self.trace("queued", bytes: self.bytes)
       self.pump()
     }
   }
@@ -194,8 +178,6 @@ final class GatewayNativeSession {
     } catch { writes.removeFirst(); bytes -= (item.value.utf8.count * 2 + (item.raw?.count ?? 0)); item.reply(.failure(error)); pump(); return }
     writing = true; item.submitted()
 
-    let began = ProcessInfo.processInfo.systemUptime
-    trace("submitted", bytes: binaryFrame?.count ?? text.utf8.count, elapsed: (began - item.enqueued) * 1000)
     let timeout = DispatchWorkItem { [weak self] in self?.fail(NativeGatewayFailure(code: "remote_write_timeout")) }
     queue.asyncAfter(deadline: .now() + 65, execute: timeout)
     let send: (@escaping (Error?) -> Void) -> Void = { completion in
@@ -206,14 +188,12 @@ final class GatewayNativeSession {
       if let error { self.fail(error); return }
       guard !self.writes.isEmpty else { return }
 
-      self.trace("drained", bytes: binaryFrame?.count ?? text.utf8.count, elapsed: (ProcessInfo.processInfo.systemUptime - began) * 1000)
       self.writes.removeFirst(); self.bytes -= (item.value.utf8.count * 2 + (item.raw?.count ?? 0)); self.writing = false; item.reply(.success("")); self.pump()
     } }
   }
-  private func fail(_ error: Error) { let code = (error as? NativeGatewayFailure)?.code ?? "remote_transport_error"; trace("failure", code: code); close(code: code); failure(code) }
+  private func fail(_ error: Error) { let code = (error as? NativeGatewayFailure)?.code ?? "remote_transport_error"; close(code: code); failure(code) }
   func close(code: String = "remote_client_closed") {
 
-    trace("closed", code: code)
     lock.lock(); if closed { lock.unlock(); return }; closed = true; lock.unlock()
     queue.async {
       self.crypto?.close(); self.crypto = nil; self.beforeKeys.removeAll()

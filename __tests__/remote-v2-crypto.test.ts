@@ -14,6 +14,8 @@ import {
   SessionAccept,
 } from '../src/remote/session';
 import {
+  controlledErrorCode,
+
   decodeBase64Url,
   REMOTE_MAX_FRAME_BYTES,
   RemoteProtocolError,
@@ -21,6 +23,13 @@ import {
 } from '../src/remote/protocol';
 
 import {utf8ToBytes} from '../src/remote/utf8';
+
+
+it('filters upload errors by controlled code without exposing local paths or arbitrary native text', () => {
+  expect(controlledErrorCode({code: 'remote_pong_timeout', message: '/private/photo'})).toBe('remote_pong_timeout');
+  expect(controlledErrorCode(new Error('remote_request_timeout'))).toBe('remote_request_timeout');
+  expect(controlledErrorCode({code: 'https://private', message: 'secret'})).toBe('remote_upload_failed');
+});
 
 
 const privateKeys = {

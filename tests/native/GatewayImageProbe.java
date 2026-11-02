@@ -92,7 +92,6 @@ public final class GatewayImageProbe {
               sessions.get().send(new JSONObject().put("kind","request").put("requestId",id).put("method","transfer.request").put("params",new JSONObject().put("method","attachment.chunk").put("params",new JSONObject().put("uploadId",command.getString("uploadId")).put("index",0).put("data",GatewayCrypto.base64(legacy)))).toString(),()->ok.accept(""),fail);
               java.util.Arrays.fill(legacy,(byte)0);break;
 
-            case "diagnostics":ok.accept(GatewaySession.diagnostics());break;
 
             case "adaptive":sessions.get().adaptive();ok.accept("");break;
             case "register":uploads.get().register(command.getString("path"),command.optString("name","synthetic.jpg"),"image/jpeg",ok,fail);break;

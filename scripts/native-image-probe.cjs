@@ -137,11 +137,6 @@ const compile=spawnSync(java('javac'),['-cp',jars.join(path.delimiter),'-d',out,
  mode='hold';chunkCount=0;entered=new Promise(resolve=>{firstChunk=resolve;});handle=await register(820*1024);
  const disconnected=rpc('upload',{handle,task:'native-image-disconnect-task'});await entered;
  await rpc('close');assert.equal((await disconnected).code,'remote_client_closed');releaseAck();
- const trace=JSON.parse((await rpc('diagnostics')).value);
- assert.ok(trace.length<=256);assert.ok(trace.some(row=>row.event==='submitted'));assert.ok(trace.some(row=>row.event==='drained'));assert.ok(trace.some(row=>row.event==='ack_failed'));
- for(const row of trace)assert.ok(Object.keys(row).every(key=>['atMs','generation','event','bytes','elapsedMs','code'].includes(key)));
- assert.ok(!JSON.stringify(trace).includes(temp));assert.ok(!JSON.stringify(trace).includes('native-image-'));
-
  child.stdin.end();await processExit;assert.equal(networkFailure,undefined);const snapshots=await fsp.readdir(path.join(selected,'snapshots'));assert.equal(snapshots.length,0);
  console.log(JSON.stringify({ok:true,suite:'production-java-image-tls-wss',coverage:'820KiB/5MiB/immutable snapshot/SHA/first ACK gate/mixed ping/native pong/cancel/bad ACK/private path/no replay/cleanup',pongCount}));
  }finally{

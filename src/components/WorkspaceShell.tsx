@@ -28,7 +28,6 @@ import type {AvatarCache} from '../domain/pairing';
 
 import {imageProgressText} from '../services/nativeImageUpload';
 
-import {controlledErrorCode, traceTransport} from '../remote/transportTrace';
 import { useConversationWorkspace } from '../hooks/useConversationWorkspace';
 import { useAttachmentQueue } from '../hooks/useAttachmentQueue';
 import type {
@@ -407,11 +406,11 @@ export function WorkspaceShell({
   const workspaceFlight = useRef<{key: string; promise: Promise<void>} | null>(null);
   const workspaceReady = useRef(false);
 
-  const refreshWorkspace = useCallback((reason: 'connection' | 'manual' | 'mutation' = 'mutation'): Promise<void> => {
+  const refreshWorkspace = useCallback((): Promise<void> => {
     if (desktop.status !== '在线') return Promise.resolve();
     const key = `${desktop.id}:${desktop.connectionGeneration || 0}`;
     if (workspaceFlight.current?.key === key) {
-      traceTransport('refresh_join', {state: reason, generation: desktop.connectionGeneration});
+
       return workspaceFlight.current.promise;
     }
     const epoch = ++workspaceRead.current;
@@ -420,7 +419,7 @@ export function WorkspaceShell({
     const promise = Promise.resolve().then(async () => {
     if (!isCurrent()) return;
     setLoadingWorkspace(!workspaceReady.current);
-    traceTransport('refresh_start', {state: reason, generation: connectionGeneration});
+
     const {agentAvatarCaches: cachedAgents, agentAvatarSources: cachedSources} = avatarState.current;
     try {
       const [value, routes, assistantMetadata] = await Promise.all([
@@ -428,7 +427,7 @@ export function WorkspaceShell({
         request<{ok: true; assistants: RemoteAssistant[]}>(desktop.id, 'conversation.assistants.list'),
         request<{ok: true; assistants: WorkspaceBootstrap['assistants']}>(desktop.id, 'workspace.assistants.list'),
       ]);
-      if (!isCurrent()) {traceTransport('refresh_stale', {generation: connectionGeneration});return;}
+      if (!isCurrent()) {return;}
       workspaceReady.current = true;
       // Metadata is sufficient for first paint; optional avatar downloads must
       // not leave the entire workspace blank behind a slow resource.
@@ -538,9 +537,9 @@ export function WorkspaceShell({
       setAgentAvatarSources(current => sameStringRecords(current, nextAgentSources) ? current : nextAgentSources);
       setBootstrap(value);
       setRouteAssistants(mergedRoutes);
-      traceTransport('refresh_done', {generation: connectionGeneration});
+
     } catch (error) {
-      if (isCurrent()) {traceTransport('refresh_failed', {generation: connectionGeneration, code: controlledErrorCode(error)});setNotice(workspaceNotice(error, '无法读取 Desktop 工作区。'));}
+      if (isCurrent()) {setNotice(workspaceNotice(error, '无法读取 Desktop 工作区。'));}
     } finally {
       if (isCurrent()) setLoadingWorkspace(false);
     }
@@ -558,7 +557,7 @@ export function WorkspaceShell({
 
   useEffect(() => {
     if (desktop.status !== '在线') setLoadingWorkspace(false);
-    refreshWorkspace('connection').catch(() => undefined);
+    refreshWorkspace().catch(() => undefined);
     const invalidate = () => {workspaceRead.current++;workspaceFlight.current = null;};
     return invalidate;
   }, [desktop.status, refreshWorkspace]);
@@ -1109,7 +1108,7 @@ export function WorkspaceShell({
             }
             if (mode === 'chat') workspace.refreshMessages();
             else if (mode === 'settings') setSettingsRefreshSignal(current => current + 1);
-            else {refreshWorkspace('manual'); workspace.refreshOpenedSessions().catch(() => undefined);}
+            else {refreshWorkspace(); workspace.refreshOpenedSessions().catch(() => undefined);}
           }}
         />
         {mode === 'chat' ? (
@@ -1166,6 +1165,8 @@ export function WorkspaceShell({
         </ChatStartSwipe>
       ) : mode === 'settings' ? (
         <GlobalSettings
+          profileName={bootstrap?.profile.displayName || desktop.profileName}
+          profileAvatar={desktop.avatarCache && isAvatarCacheValid(desktop.avatarCache) ? desktop.avatarCache.uri : bootstrap?.profile.avatarUrl}
           desktopId={desktop.id}
           request={request}
           onChanged={refreshWorkspace}

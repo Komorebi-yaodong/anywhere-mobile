@@ -5,6 +5,8 @@ import {Text, TextInput} from 'react-native';
 import {GlobalSettings, settingsTitle} from '../src/components/GlobalSettings';
 import type {RemoteRequest} from '../src/remote/api';
 
+import {SimpleManagementSettings} from '../src/components/SimpleManagementSettings';
+
 function press(root: TestRenderer.ReactTestRenderer, label: string) {
   const text = root.root.findAllByType(Text).find(node => node.props.children === label);
   let node = text?.parent;
@@ -12,6 +14,17 @@ function press(root: TestRenderer.ReactTestRenderer, label: string) {
   if (!node) throw new Error(`Missing pressable ${label}`);
   return node;
 }
+
+test('passes the shared workspace identity through general settings without another avatar fetch', async () => {
+  const request = jest.fn(async (_id: string, method: string) => method === 'workspace.agent.catalog' ? catalog : ({ok: true, section: 'general', revision: 'profile-revision', value: {displayName: 'Komorebi'}}));
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<GlobalSettings desktopId="shared-profile-fixture" request={request as RemoteRequest} profileName="Komorebi" profileAvatar="file:///shared-avatar.png" onChanged={() => {}} onSectionChange={() => {}} refreshSignal={0} />);});
+  await act(async () => root.root.findAll(node => node.props.accessibilityLabel === '通用设置' && typeof node.props.onPress === 'function')[0].props.onPress());
+  expect(root.root.findByType(SimpleManagementSettings).props).toMatchObject({profileName: 'Komorebi', profileAvatar: 'file:///shared-avatar.png'});
+  expect(request.mock.calls.some(([, method]) => method.includes('avatar'))).toBe(false);
+  await act(async () => root.unmount());
+});
+
 
 const catalog = {
   ok: true as const,
