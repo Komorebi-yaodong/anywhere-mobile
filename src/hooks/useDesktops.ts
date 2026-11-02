@@ -293,6 +293,10 @@ export function useDesktops() {
           desktopsRef.current.some(item => item.id === desktop.id) &&
           connectGenerations.current.get(desktop.id) === generation;
         const restore = async () => {
+
+          // The in-flight attempt owns its handshake deadline. Foreground return
+          // must not mistake handshaking for a dead established native socket.
+          if (connecting.current.has(desktop.id)) return;
           if (desktop.status === '在线' && client) {
             // A system picker also backgrounds the Activity. Keep a working
             // socket online during the probe so returning uploads are not blocked.

@@ -143,6 +143,26 @@ describe('Desktop reconnect lifecycle', () => {
     await act(async () => root.unmount());
   });
 
+  it.each(['initial', 'retry'] as const)('foreground return preserves the %s in-flight handshake and its deadline owner', async phase => {
+    let root!: TestRenderer.ReactTestRenderer;
+    let finish!: () => void;
+    const hold = () => new Promise<undefined>(resolve => {finish = () => resolve(undefined);});
+    if (phase === 'initial') mockConnectAttempt.mockImplementationOnce(hold);
+    await act(async () => {root = TestRenderer.create(<Harness />);});
+    if (phase === 'retry') {
+      mockConnectAttempt.mockImplementationOnce(hold);
+      await act(async () => {mockClients[0].onStatus('closed', 'transport:network_io');jest.advanceTimersByTime(1000);});
+    }
+    const count = mockClients.length;
+    expect(latest.desktops[0].status).toBe('连接中');
+    await act(async () => {mockAppStateListener('background');mockAppStateListener('active');});
+    expect(mockClients).toHaveLength(count);expect(mockNativeState).not.toHaveBeenCalled();expect(mockProbe).not.toHaveBeenCalled();
+    await act(async () => {finish();});
+    expect(latest.desktops[0].status).toBe('在线');expect(mockClients).toHaveLength(count);
+    await act(async () => root.unmount());
+  });
+
+
   it('keeps the healthy socket online while the foreground probe is pending, including photo-picker return', async () => {
     let finish!: (value: {}) => void;
     mockProbe.mockImplementationOnce(() => new Promise<{}>(resolve => {finish = resolve;}));
