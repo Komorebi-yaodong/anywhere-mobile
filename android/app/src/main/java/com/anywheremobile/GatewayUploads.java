@@ -145,16 +145,24 @@ final class GatewayUploads implements AutoCloseable {
     if(closed)return closeCode;if(cancelled)return "remote_upload_cancelled";if(cause instanceof TimeoutException)return "remote_request_timeout";
     String code=cause.getMessage();return code!=null&&code.matches("remote_[a-z0-9_]+")?code:"remote_upload_failed";
   }
-  /** Same single-ACK image slow-start policy as the existing JS controller. */
-  private static final class Sizer {
-    int size,ceiling,maximum,samples,stable;double baseline;boolean probing;
-    Sizer(int max){maximum=max;ceiling=max;size=Math.min(512*1024,max);}
-    void observe(int bytes,long elapsed,long processing){if(bytes!=size)return;double rate=(double)bytes/Math.max(1,elapsed);
-      if(elapsed>1500||processing>160||baseline>0&&rate<baseline*.75){ceiling=Math.max(512*1024,size/2);size=Math.max(Math.min(512*1024,maximum),size/2);stable=0;samples=0;probing=false;baseline=rate;return;}
-      samples++;if(baseline==0)baseline=rate;if(probing){if(rate<baseline*1.08){size/=2;ceiling=size;stable=0;}else{baseline=rate;stable=1;}probing=false;samples=stable;return;}
-      if(rate>=baseline*.9)stable++;else stable=0;baseline=baseline*.75+rate*.25;
-      if(ceiling<maximum&&stable>=6&&samples>=6){ceiling=Math.min(maximum,size*2);stable=0;samples=0;}
-      if(stable>=2&&samples>=2&&size*2<=ceiling){size*=2;probing=true;stable=0;samples=0;}
+  /** End-to-end ACK timing, not socket queue drain, bounds image frame growth. */
+  static final class Sizer {
+    static final int INITIAL = 128 * 1024, MINIMUM = 64 * 1024;
+    final int maximum, minimum;
+    int size, stable;
+    double rate;
+    Sizer(int max) {maximum=max;minimum=Math.min(MINIMUM,max);size=Math.min(INITIAL,max);}
+    void observe(int bytes,long elapsed,long processing) {
+      if(bytes!=size)return; // A partial tail must not train the next full chunk.
+      double sample=(double)bytes/Math.max(1,elapsed);
+      rate=rate==0?sample:Math.min(sample,rate*.75+sample*.25);
+      // Aim for <=6s ACKs with 25% headroom; no claim of a hard network deadline.
+      double budget=rate*6000*.75;
+      int safe=minimum;
+      while(safe<=maximum/2 && safe*2<=budget)safe*=2;
+      if(elapsed>8000 || size>safe) {size=Math.max(minimum,Math.min(safe,size/2));stable=0;return;}
+      if(processing>160) {stable=0;return;}
+      if(++stable>=2 && size<=maximum/2 && size*2<=safe) {size*=2;stable=0;}
     }
   }
 }

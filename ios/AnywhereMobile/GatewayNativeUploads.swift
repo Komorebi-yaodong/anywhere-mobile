@@ -183,16 +183,20 @@ final class GatewayNativeUploads {
     if idle { worker.addOperation { try? FileManager.default.removeItem(at: self.directory) } }
   }
   private final class Sizer {
-    var size: Int; var ceiling: Int; let maximum: Int; var samples = 0; var stable = 0; var baseline = 0.0; var probing = false
-    init(maximum: Int) { self.maximum = maximum; ceiling = maximum; size = min(512 * 1024, maximum) }
+    var size: Int; let maximum: Int; let minimum: Int
+    var stable = 0; var rate = 0.0
+    init(maximum: Int) { self.maximum = maximum; minimum = min(64 * 1024, maximum); size = min(128 * 1024, maximum) }
     func observe(bytes: Int, elapsed: Double, processing: Double) {
-      guard bytes == size else { return }; let rate = Double(bytes) / max(1, elapsed)
-      if elapsed > 1500 || processing > 160 || baseline > 0 && rate < baseline * 0.75 { ceiling = max(512 * 1024, size / 2); size = max(min(512 * 1024, maximum), size / 2); stable = 0; samples = 0; probing = false; baseline = rate; return }
-      samples += 1; if baseline == 0 { baseline = rate }
-      if probing { if rate < baseline * 1.08 { size /= 2; ceiling = size; stable = 0 } else { baseline = rate; stable = 1 }; probing = false; samples = stable; return }
-      if rate >= baseline * 0.9 { stable += 1 } else { stable = 0 }; baseline = baseline * 0.75 + rate * 0.25
-      if ceiling < maximum && stable >= 6 && samples >= 6 { ceiling = min(maximum, size * 2); stable = 0; samples = 0 }
-      if stable >= 2 && samples >= 2 && size * 2 <= ceiling { size *= 2; probing = true; stable = 0; samples = 0 }
+      guard bytes == size else { return }
+      let sample = Double(bytes) / max(1, elapsed)
+      rate = rate == 0 ? sample : min(sample, rate * 0.75 + sample * 0.25)
+      let budget = rate * 6000 * 0.75
+      var safe = minimum
+      while safe <= maximum / 2 && Double(safe * 2) <= budget { safe *= 2 }
+      if elapsed > 8000 || size > safe { size = max(minimum, min(safe, size / 2)); stable = 0; return }
+      if processing > 160 { stable = 0; return }
+      stable += 1
+      if stable >= 2 && size <= maximum / 2 && size * 2 <= safe { size *= 2; stable = 0 }
     }
   }
 }

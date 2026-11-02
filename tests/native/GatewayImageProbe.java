@@ -38,6 +38,22 @@ public final class GatewayImageProbe {
   public static void main(String[] args) throws Exception {
     queuedCancellation();
 
+    GatewayUploads.Sizer fast = new GatewayUploads.Sizer(2*1024*1024);
+    if(fast.size!=128*1024)throw new AssertionError("128KiB initial");
+    for(int i=0;i<8;i++)fast.observe(fast.size,100,10);
+    if(fast.size!=2*1024*1024)throw new AssertionError("fast growth");
+    GatewayUploads.Sizer slow = new GatewayUploads.Sizer(2*1024*1024);
+    for(int i=0;i<12;i++)slow.observe(slow.size,9500,10);
+    if(slow.size!=64*1024)throw new AssertionError("slow backoff");
+    GatewayUploads.Sizer recovering = new GatewayUploads.Sizer(2*1024*1024);
+    recovering.observe(recovering.size,10000,10);
+    for(int i=0;i<50;i++)recovering.observe(recovering.size,20,10);
+    if(recovering.size!=2*1024*1024)throw new AssertionError("growth after recovery");
+    GatewayUploads.Sizer limited = new GatewayUploads.Sizer(32768);
+    limited.observe(limited.size,10000,10);
+    if(limited.size!=32768)throw new AssertionError("peer limit");
+
+
     // Trust exactly the generated fixture certificate; retain hostname checking.
     CertificateFactory certificates = CertificateFactory.getInstance("X.509");
     KeyStore trust = KeyStore.getInstance(KeyStore.getDefaultType());trust.load(null,null);
@@ -45,7 +61,7 @@ public final class GatewayImageProbe {
     TrustManagerFactory managers=TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());managers.init(trust);
     X509TrustManager manager=(X509TrustManager)managers.getTrustManagers()[0];
     SSLContext tls=SSLContext.getInstance("TLS");tls.init(null,new TrustManager[]{manager},null);
-    OkHttpClient client=new OkHttpClient.Builder().sslSocketFactory(tls.getSocketFactory(),manager).pingInterval(1,TimeUnit.SECONDS).readTimeout(0,TimeUnit.SECONDS).writeTimeout(60,TimeUnit.SECONDS).build();
+    OkHttpClient client=new OkHttpClient.Builder().sslSocketFactory(tls.getSocketFactory(),manager).pingInterval(args.length>3?15:1,TimeUnit.SECONDS).readTimeout(0,TimeUnit.SECONDS).writeTimeout(60,TimeUnit.SECONDS).build();
     CountDownLatch opened=new CountDownLatch(1);
     AtomicReference<GatewaySession> sessions=new AtomicReference<>();
     AtomicReference<GatewayUploads> uploads=new AtomicReference<>();
@@ -71,6 +87,11 @@ public final class GatewayImageProbe {
           java.util.function.Consumer<String> fail=code->{try{output(new JSONObject().put("id",id).put("ok",false).put("code",code));}catch(Exception e){throw new RuntimeException(e);}};
           switch(op){
             case "install":sessions.get().install(command.getString("session"),command.getString("send"),command.getString("receive"),()->ok.accept(""),fail);break;
+            case "legacy":
+              byte[] legacy = new byte[512*1024];java.util.Arrays.fill(legacy,(byte)0x6c);
+              sessions.get().send(new JSONObject().put("kind","request").put("requestId",id).put("method","transfer.request").put("params",new JSONObject().put("method","attachment.chunk").put("params",new JSONObject().put("uploadId",command.getString("uploadId")).put("index",0).put("data",GatewayCrypto.base64(legacy)))).toString(),()->ok.accept(""),fail);
+              java.util.Arrays.fill(legacy,(byte)0);break;
+
             case "diagnostics":ok.accept(GatewaySession.diagnostics());break;
 
             case "adaptive":sessions.get().adaptive();ok.accept("");break;
