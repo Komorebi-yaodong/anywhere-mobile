@@ -29,7 +29,7 @@ import {AppearanceSettings} from '../src/components/AppearanceSettings';
 
 import {ChatStartSwipe} from '../src/components/ChatStartSwipe';
 
-const mockCreate = jest.fn(async () => undefined);
+const mockCreate = jest.fn(async (_code: string, _onCreated?: (id: string) => void) => undefined);
 const mockCancel = jest.fn(async () => undefined);
 const mockSend = jest.fn(async () => undefined);
 
@@ -1374,7 +1374,10 @@ test('opens the assistant router without creation; explicit assistant selection 
   await act(async () => {
     await button(root, 'Test Assistant').props.onPress();
   });
-  expect(mockCreate).toHaveBeenCalledWith('Code');
+  expect(mockCreate).toHaveBeenCalledWith('Code', expect.any(Function));
+  // Durable admission must not navigate into the still-selected old chat.
+  expect(button(root, 'Test Assistant')).toBeTruthy();
+  await act(async () => {mockCreate.mock.calls[mockCreate.mock.calls.length - 1][1]?.('conversation-created-shell');});
   await act(async () => {
     root.root
       .findAll(

@@ -527,6 +527,34 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it.each(['select', 'leave'] as const)('never overrides explicit %s navigation when a creation finishes', async action => {
+    const f = fixture(), completed = deferred<unknown>(), onCreated = jest.fn();
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? completed.promise : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {f.response.resolve({accepted: true}); await f.state.createConversation('Code', onCreated);});
+    await act(async () => {if (action === 'select') f.state.selectConversation(B); else f.state.releaseSelectedConversation();});
+    const cid = 'conversation-created-late-fixture';
+    await act(async () => {completed.resolve({terminal: true, event: 'conversation.operation.completed', result: {conversationId: cid, title: 'New'}});});
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(f.state.selectedConversationId).toBe(action === 'select' ? B : '');
+    expect(f.state.catalog.some(item => item.conversationId === cid)).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it('does not select closed or other history after closing and refreshing', async () => {
+    const f = fixture(), base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.close' ? Promise.resolve({closed: true}) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {await f.state.closeConversation(A); await f.state.refreshCatalog();});
+    expect(f.state.selectedConversationId).toBe('');
+    expect(f.state.messages).toEqual([]);
+    await act(async () => root.unmount());
+  });
+
+
   it('creates with the selected assistant after accepted admission resolves through the same operation ID', async () => {
     const f = fixture();
     const completed = deferred<unknown>();
@@ -540,6 +568,11 @@ describe('conversation workspace state boundaries', () => {
     await expect(f.state.createConversation('Code')).rejects.toThrow('重复');
     await act(async () => {f.response.resolve({operationId: 'request-workspace-fixture-0001'}); await admitted;});
     expect(f.state.creatingConversation).toBe(true);
+    expect(f.state.selectedConversationId).toBe('');
+    expect(f.state.messages).toEqual([]);
+    await act(async () => {await f.state.refreshCatalog();});
+    expect(f.state.selectedConversationId).toBe('');
+
     expect(f.state.selectedConversationId).not.toBe('conversation-created-fixture-0001');
     const cid = 'conversation-created-fixture-0001';
     await act(async () => {completed.resolve({requestId: 'request-workspace-fixture-0001', conversationId: cid, windowId: 'window-created', event: 'conversation.operation.completed', eventSequence: 1, terminal: true, text: '', reasoning: '', truncated: false, updatedAt: '', result: {conversationId: cid, title: 'Code - 新会话', promptCode: 'Code'}}); await Promise.resolve();});

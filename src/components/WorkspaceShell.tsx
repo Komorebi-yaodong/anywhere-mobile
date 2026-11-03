@@ -576,10 +576,12 @@ export function WorkspaceShell({
   const openAssistant = async (assistant: RemoteAssistant) => {
     audio.cancel();
     try {
-      await workspace.createConversation(assistant.code);
-      refreshWorkspace().catch(() => undefined);
-      setMode('chat');
+      setMode('router');
       setDrawerOpen(false);
+      await workspace.createConversation(assistant.code, () => {
+        setMode('chat');
+        refreshWorkspace().catch(() => undefined);
+      });
     } catch (error) {
       Alert.alert(
         '无法新建会话',
@@ -1257,6 +1259,8 @@ export function WorkspaceShell({
 
       {conversationMenu ? <ConversationMenu key={conversationMenu.conversationId} desktopId={desktop.id} conversation={conversationMenu} projects={bootstrap?.projects || []} request={request} requestTracked={requestTracked} onClose={() => setConversationMenu(null)} onCompleted={deleted => {
         if (deleted) workspace.removeConversationFromView(conversationMenu.conversationId);
+        workspace.refreshCatalog().catch(() => undefined);
+
         setConversationMenu(null);
         refreshWorkspace();
         if (!deleted || conversationMenu.conversationId !== workspace.selectedConversationId) workspace.refreshMessages();

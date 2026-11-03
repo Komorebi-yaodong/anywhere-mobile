@@ -168,6 +168,9 @@ export function useConversationWorkspace({
   const settledSendReceipts = useRef(new Set<string>());
   const [creatingConversation, setCreatingConversation] = useState(false);
   const creatingRef = useRef(false);
+  const navigationVersion = useRef(0);
+  const preserveEmptySelection = useRef(false);
+
   const creationController = useRef<AbortController | null>(null);
   const closingConversations = useRef(new Set<string>());
   const [operationNotice, setOperationNotice] = useState('');
@@ -232,6 +235,8 @@ export function useConversationWorkspace({
       scopeRef.current.selectedConversationId = '';
       selectedOpenedTitleRef.current = '';
       messagesRef.current = [];
+      navigationVersion.current += 1; preserveEmptySelection.current = true;
+
       setSelectedConversationId(''); setMessages([]); setMessagesLoading(false);
       setTasks([]); setConversationModel(''); setConversationAssistant({code: '', name: '', avatarUrl: ''});
       setPendingChoices({}); setAuthoritativeRuntime(null);
@@ -256,6 +261,8 @@ export function useConversationWorkspace({
       setCatalog(result.conversations);
       setCatalogPage(result.page);
       setSelectedConversationId(current => {
+        if (!current && preserveEmptySelection.current) return '';
+
         if (
           current &&
           (result.conversations.some(item => item.conversationId === current) ||
@@ -512,6 +519,9 @@ export function useConversationWorkspace({
   }, [api]);
 
   const selectConversation = useCallback((conversationId: string, openedTitle = '') => {
+    navigationVersion.current += 1;
+    preserveEmptySelection.current = true;
+
     selectedOpenedTitleRef.current = openedTitle;
     const previousConversationId = scopeRef.current.selectedConversationId;
     if (previousConversationId && previousConversationId !== conversationId) {
@@ -549,14 +559,22 @@ export function useConversationWorkspace({
   }, [api, desktopId, desktopStatus, forgetMissingConversation, messageRefresh, refreshOpenedSessions, releaseConversation, snapshots]);
 
   const createConversation = useCallback(
-    async (promptCode: string) => {
+    async (promptCode: string, onCreated?: (conversationId: string) => void) => {
       if (creatingRef.current) throw new Error('正在创建会话，请勿重复点击。');
       if (desktopStatus !== '在线')
         throw new Error('请等待 Desktop 在线后新建会话。');
       creatingRef.current = true;
       setCreatingConversation(true);
       const controller = new AbortController(); creationController.current = controller;
-      const initialSelection = scopeRef.current.selectedConversationId;
+      const version = ++navigationVersion.current;
+      preserveEmptySelection.current = true;
+      releaseConversation(scopeRef.current.selectedConversationId);
+      messageEpoch.current += 1; messageRefresh.cancel();
+      scopeRef.current.selectedConversationId = ''; selectedOpenedTitleRef.current = '';
+      messagesRef.current = []; setMessages([]); setTasks([]); setSelectedConversationId('');
+      setConversationModel(''); setConversationAssistant({code: '', name: '', avatarUrl: ''});
+      setAuthoritativeRuntime(null); setPendingChoices({});
+      setMessagePage({pageSize: 50, nextBeforeUiOrder: null, hasMore: false});
       try {
         const admitted = api.createConversation(promptCode);
         // Return after the Desktop has durably accepted this write. Do not wait
@@ -576,7 +594,10 @@ export function useConversationWorkspace({
           setCatalog(current => mergeById([created], current.filter(item => item.conversationId !== result.conversationId), 'conversationId'));
           setControlledConversationIds(current => [...new Set([...current, result.conversationId])]);
           setConfigured(true);
-          if (scopeRef.current.selectedConversationId === initialSelection) selectConversation(result.conversationId);
+          if (navigationVersion.current === version) {
+            selectConversation(result.conversationId);
+            onCreated?.(result.conversationId);
+          }
         }).catch(cause => {
           if (!controller.signal.aborted && scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));
         }).finally(() => {
@@ -591,7 +612,7 @@ export function useConversationWorkspace({
         throw cause;
       }
     },
-    [api, desktopId, desktopStatus, request, selectConversation],
+    [api, desktopId, desktopStatus, messageRefresh, releaseConversation, request, selectConversation],
   );
 
   const applyRequestState = useCallback(
@@ -903,6 +924,8 @@ export function useConversationWorkspace({
 
     selectedOpenedTitleRef.current = '';
     missingConversationIds.current.clear();
+    navigationVersion.current += 1; preserveEmptySelection.current = false;
+
 
     deletedUiMessageIdsRef.current.clear();
     setMessages([]);
@@ -1198,6 +1221,8 @@ export function useConversationWorkspace({
 
 
   const releaseSelectedConversation = useCallback(() => {
+    navigationVersion.current += 1;
+
     releaseConversation(scopeRef.current.selectedConversationId);
   }, [releaseConversation]);
 
@@ -1232,6 +1257,10 @@ export function useConversationWorkspace({
       }).catch(cause => {if (scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));})
         .finally(() => {closingConversations.current.delete(conversationId);if (scopeRef.current.desktopId === desktopId) setOperationNotice('');});
     } else closingConversations.current.delete(conversationId);
+    if (scopeRef.current.selectedConversationId === conversationId) {
+      navigationVersion.current += 1; preserveEmptySelection.current = true;
+    }
+
     if (scopeRef.current.selectedConversationId === conversationId) {
       messageEpoch.current += 1;
       scopeRef.current.selectedConversationId = '';
