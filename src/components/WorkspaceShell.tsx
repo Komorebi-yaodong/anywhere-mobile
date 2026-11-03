@@ -1554,7 +1554,7 @@ function AssistantRouter({
   }, [assistants, query]);
   return (
     <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-      <View style={styles.routerSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput value={query} onChangeText={setQuery} placeholder="搜索 Agent、模型或项目" placeholderTextColor={C.muted} style={styles.routerSearchInput} /></View>
+      <View style={styles.routerSearch}><AppIcon name="search" size={17} color={C.muted} /><TextInput value={query} onChangeText={setQuery} placeholder="搜索智能体（Agent）、模型或项目" placeholderTextColor={C.muted} style={styles.routerSearchInput} /></View>
       {loading ? <ActivityIndicator color={C.primary} /> : null}
       <View style={styles.assistantGrid}>
         {visible.map(item => (
@@ -1568,7 +1568,7 @@ function AssistantRouter({
           </Pressable>
         ))}
       </View>
-      {!loading && !visible.length ? <Empty title={query.trim() ? '没有匹配的助手' : '没有可用助手'} text={query.trim() ? '换一个关键词试试。' : '请在 Desktop 启用至少一个窗口模式的快捷助手。'} /> : null}
+      {!loading && !visible.length ? <Empty title={query.trim() ? '没有匹配的智能体' : '没有可用智能体'} text={query.trim() ? '换一个关键词试试。' : '请在 Desktop 启用至少一个独立窗口模式的智能体。'} /> : null}
     </ScrollView>
   );
 }

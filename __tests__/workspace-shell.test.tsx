@@ -204,7 +204,7 @@ test('defaults to new chat with no opened sessions and keeps only the top refres
  const props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
  expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
- expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(true);
+ expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索智能体（Agent）、模型或项目')).toBe(true);
  expect(root.root.findAll(node => node.props.accessibilityLabel === '刷新助手路由')).toHaveLength(0);
  expect(root.root.findAllByType(Text).some(node => node.props.children === '开始新的聊天')).toBe(false);
  const refresh = root.root.findAll(node => node.props.accessibilityLabel === '刷新' && typeof node.props.onPress === 'function');
@@ -220,7 +220,7 @@ test('defaults to opened sessions and preserves a manual new-chat selection duri
  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
  expect(startTab(root, '已打开会话').props.accessibilityState.selected).toBe(true);
  expect(root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)).toHaveLength(1);
- expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(false);
+ expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索智能体（Agent）、模型或项目')).toBe(false);
  await act(async () => startTab(root, '新的聊天').props.onPress());
  mockOpenedSessions = [...mockOpenedSessions, {conversationId: 'second-fixture', title: 'Second'}];
  await act(async () => root.update(<WorkspaceShell {...props} />));
@@ -275,7 +275,7 @@ test('swiping and pressing bookmarks share one selection and show the correspond
  expect(swipe().props.selected).toBe('opened');
  await act(async () => swipe().props.onSelect('new'));
  expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
- expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索 Agent、模型或项目')).toBe(true);
+ expect(root.root.findAllByType(TextInput).some(node => node.props.placeholder === '搜索智能体（Agent）、模型或项目')).toBe(true);
  await act(async () => startTab(root, '已打开会话').props.onPress());
  expect(swipe().props.selected).toBe('opened');
  expect(root.root.findAll(node => node.props.accessibilityLabel === '打开会话 Config Fixture' && node.props.onPress)).toHaveLength(1);

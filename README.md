@@ -1,6 +1,6 @@
 # Anywhere Mobile
 
-> Anywhere Desktop 的移动端伴侣。把你已配对的 Anywhere 工作空间带到 Android 或 iPhone / iPad：查看和继续会话、使用 Agent、管理常用配置，并在需要时明确接管或交还 Desktop 会话。
+> Anywhere Desktop 的移动端伴侣。把你已配对的 Anywhere 工作空间带到 Android 或 iPhone / iPad：查看和继续会话、使用智能体（Agent）、管理常用配置，并在需要时明确接管或交还 Desktop 会话。
 
 <p align="center">
   <a href="https://github.com/Komorebi-yaodong/anywhere-mobile">
@@ -22,7 +22,7 @@ Anywhere Mobile 不是独立的云端聊天服务。它与用户主动开启并�
 
 - 在外出时查看 Desktop 已保存或已打开的会话；
 - 继续已授权接管的对话，或把控制权交还给 Desktop；
-- 使用 Agent、新建聊天、管理项目与常用业务配置；
+- 使用智能体（Agent）、新建聊天、管理项目与常用业务配置；
 - 在手机上发送文本、图片、文件或语音附件，并追踪生成、工具交互和任务状态。
 
 ## 核心体验
@@ -35,9 +35,9 @@ Anywhere Mobile 不是独立的云端聊天服务。它与用户主动开启并�
 - 支持流式回复、思考内容、工具调用卡、交互式选择、任务面板、会话配置、重答、编辑和删除；
 - Desktop Renderer 仍是唯一 SQLite 写入者，Mobile 不直接读写 Desktop 数据库或本地文件系统。
 
-### Agent 与配置
+### 智能体（Agent）与配置
 
-- Agent 路由、搜索、标签、启停和受限编辑；
+- 智能体（Agent）路由、搜索、标签、启停和受限编辑；
 - 服务商、MCP、Skill、定时任务、通用设置与关于页的移动端界面；
 - Provider、MCP、Skill 等配置采用受限 DTO 和字段级更新：Mobile 不会收到本地路径、进程命令、Remote 根密钥或 TLS 私钥；
 - 破坏性操作保留本地确认与版本冲突保护。
@@ -65,7 +65,7 @@ Anywhere Mobile 不是独立的云端聊天服务。它与用户主动开启并�
 2. 在 Android 或 iOS 上安装 Anywhere Mobile。
 3. 在 Mobile 中扫描 Desktop 显示的二维码，或粘贴二维码内容。
 4. 在两端核对六位验证码后确认配对。
-5. 从首页进入已配对的 Desktop；首次使用请从侧边栏检查会话、已打开会话和 Agent 路由。
+5. 从首页进入智能体（Agent）路由。
 
 如果 Mobile 显示连接错误，请先确认 Desktop 仍在运行、网络可达且未撤销该设备。不要通过关闭证书验证或重新使用旧二维码来绕过安全检查。
 

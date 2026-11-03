@@ -68,7 +68,7 @@ export function RemoteWorkspace({
     setAssistantError('');
     setAssistantsLoading(true);
     try { setAssistants((await workspace.listAssistants()).assistants); }
-    catch { setAssistantError('无法读取快捷助手，请确认 Desktop 已更新且在线。'); }
+    catch { setAssistantError('无法读取智能体，请确认 Desktop 已更新且在线。'); }
     finally { setAssistantsLoading(false); }
   };
   const createWithAssistant = async (code: string) => {
@@ -113,10 +113,10 @@ export function RemoteWorkspace({
       <Modal visible={showAssistantPicker} animationType="slide" onRequestClose={() => { if (!workspace.creatingConversation) setShowAssistantPicker(false); }}>
         <SafeAreaView style={styles.safe}>
           <View style={styles.topbar}>
-            <Text style={styles.chatTitle}>选择快捷助手</Text>
+            <Text style={styles.chatTitle}>选择智能体</Text>
             <Pressable disabled={workspace.creatingConversation} style={styles.smallButton} onPress={() => setShowAssistantPicker(false)}><Text style={styles.smallButtonText}>取消</Text></Pressable>
           </View>
-          <TextInput style={styles.assistantSearch} value={assistantQuery} onChangeText={setAssistantQuery} placeholder="搜索 Desktop 快捷助手" placeholderTextColor="#72839f" />
+          <TextInput style={styles.assistantSearch} value={assistantQuery} onChangeText={setAssistantQuery} placeholder="搜索 Desktop 智能体" placeholderTextColor="#72839f" />
           {assistantsLoading || workspace.creatingConversation ? <ActivityIndicator color="#70a7ff" /> : null}
           {workspace.creatingConversation ? <Text style={styles.chatSubtitle}>正在创建…</Text> : null}
           {assistantError ? <Text style={styles.errorBanner}>{assistantError}</Text> : null}
@@ -126,7 +126,7 @@ export function RemoteWorkspace({
                 <Text style={styles.conversationTitle}>{item.name}</Text>
               </Pressable>
             ))}
-            {!assistantsLoading && assistants.length === 0 && !assistantError ? <Text style={styles.chatSubtitle}>Desktop 没有启用的快捷助手。</Text> : null}
+            {!assistantsLoading && assistants.length === 0 && !assistantError ? <Text style={styles.chatSubtitle}>Desktop 没有启用的智能体。</Text> : null}
           </ScrollView>
         </SafeAreaView>
       </Modal>

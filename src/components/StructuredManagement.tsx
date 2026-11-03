@@ -35,7 +35,7 @@ type Catalog = {
   localOnly?: boolean;
 };
 const names: Record<string, string> = {
-  assistants: '快捷助手',
+  assistants: '智能体',
   providers: '服务商',
   mcp: 'MCP',
   skills: 'Skill',
@@ -421,7 +421,7 @@ export function StructuredManagement({
                 style={s.input}
                 value={newId}
                 onChangeText={setNewId}
-                placeholder="唯一 ID / 助手代码"
+                placeholder="唯一 ID / 智能体代码"
               />
             ) : null}
             {editing?.localOnly ? (
