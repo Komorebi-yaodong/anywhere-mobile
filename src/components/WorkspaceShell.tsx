@@ -959,6 +959,8 @@ export function WorkspaceShell({
           onPress: () => {
             workspace.closeConversation(item.conversationId)
               .then(result => {
+                if (result?.closing) return;
+
                 if (workspace.selectedConversationId === item.conversationId) setMode('router');
                 setSheet(null);
                 setNotice(result?.closing ? '' : `已关闭“${title}”的 Desktop 会话窗口，历史已保留。`);

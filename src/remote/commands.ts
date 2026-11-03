@@ -23,7 +23,7 @@ export function commandFailed(state: ConversationRequestState): boolean {
 
 export async function waitForCommand({
   desktopId, requestId, request, signal, timeoutMs = 90_000,
-  intervalMs = 400, onProgress,
+  intervalMs = 400, onProgress, keepTracking = false,
 }: {
   desktopId: string;
   requestId: string;
@@ -32,6 +32,7 @@ export async function waitForCommand({
   timeoutMs?: number;
   intervalMs?: number;
   onProgress?: (state: ConversationRequestState) => void;
+  keepTracking?: boolean;
 }): Promise<ConversationRequestState> {
   const deadline = Date.now() + timeoutMs;
   do {
@@ -41,9 +42,15 @@ export async function waitForCommand({
       state = await request<ConversationRequestState>(
         desktopId, 'conversation.request.get', {requestId},
       );
-    } catch {
-      throw new RemoteCommandPendingError(requestId);
+    } catch (cause) {
+      const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+      if (['remote_operation_not_found', 'remote_request_not_found'].includes(code) && Date.now() >= deadline) throw new RemoteCommandPendingError(requestId);
+      // Reads may be retried; the original mutation is never submitted again.
+      if (signal?.aborted) throw new RemoteCommandPendingError(requestId);
+      await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
+      continue;
     }
+    if (signal?.aborted) throw new RemoteCommandPendingError(requestId);
     onProgress?.(state);
     if (state.terminal) {
       if (commandFailed(state)) {
@@ -55,9 +62,37 @@ export async function waitForCommand({
       return state;
     }
     await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
-  } while (Date.now() < deadline);
+  } while (keepTracking || Date.now() < deadline);
   throw new RemoteCommandPendingError(requestId);
 }
+
+export function trackCommand({desktopId, tracked, request, signal, keepTracking = false, timeoutMs, onAccepted}: {
+  desktopId: string;
+  tracked: {requestId: string; response: Promise<unknown>};
+  request: RemoteRequest;
+  signal?: AbortSignal;
+  keepTracking?: boolean;
+  timeoutMs?: number;
+  onAccepted?: () => void;
+}) {
+  const admitted = tracked.response.then(() => {
+    try {onAccepted?.();} catch { /* UI feedback cannot change execution. */ }
+    return true;
+  }, cause => {
+    const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+    if (code.startsWith('remote_') && ![
+      'remote_client_closed', 'remote_request_timeout', 'remote_client_offline',
+      'remote_transport_error', 'remote_transport_closed', 'remote_operation_storage_failed',
+    ].includes(code)) throw cause;
+    return false;
+  });
+  const completion = admitted.then(() => waitForCommand({desktopId, requestId: tracked.requestId, request, signal, timeoutMs, keepTracking}));
+  // Callers may first await admission. Keep a terminal rejection handled until
+  // their completion observer is attached in the same click lifecycle.
+  completion.catch(() => undefined);
+  return {requestId: tracked.requestId, admitted, completion};
+}
+
 
 export function startCommand({
   desktopId, method, params, request, requestTracked, signal, timeoutMs, onAccepted,
@@ -71,25 +106,7 @@ export function startCommand({
   timeoutMs?: number;
   onAccepted?: () => void;
 }): CommandReceipt {
-  const tracked = requestTracked(desktopId, method, params, 30_000);
-  const completion = (async () => {
-    try {
-      await tracked.response;
-      try {onAccepted?.();} catch { /* UI feedback cannot change execution. */ }
-    } catch (error) {
-      // A lost ACK is not proof of failure. Never dispatch the command again.
-      const code = error && typeof error === 'object' && 'code' in error
-        ? String(error.code) : '';
-      if (code.startsWith('remote_') && ![
-        'remote_client_closed', 'remote_request_timeout', 'remote_client_offline',
-        'remote_transport_error', 'remote_transport_closed', 'remote_operation_storage_failed',
-      ].includes(code)) throw error;
-    }
-    return waitForCommand({
-      desktopId, requestId: tracked.requestId, request, signal, timeoutMs,
-    });
-  })();
-  return {requestId: tracked.requestId, completion};
+  return trackCommand({desktopId, tracked: requestTracked(desktopId, method, params, 30_000), request, signal, timeoutMs, onAccepted});
 }
 
 export type CompactConfig = {

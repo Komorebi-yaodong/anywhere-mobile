@@ -96,7 +96,7 @@ describe('Remote destructive confirmation and business revision UI', () => {
     const completed = jest.fn();
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={completed} />); });
-    await act(async () => button(root, '确认').props.onPress());
+    await act(async () => {button(root, '确认').props.onPress();});
     expect(JSON.stringify(root.toJSON())).not.toContain('request-pending-delete-internal');
     expect(button(root, '已提交，正在删除').props.disabled).toBe(true);
     await act(async () => {jest.advanceTimersByTime(2500);});
@@ -112,7 +112,7 @@ describe('Remote destructive confirmation and business revision UI', () => {
     const request = jest.fn().mockResolvedValue({terminal: true, event: 'conversation.operation.failed', result: {code: 'remote_message_state_changed'}});
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={jest.fn()} />); });
-    await act(async () => button(root, '确认').props.onPress());
+    await act(async () => {button(root, '确认').props.onPress();});
     expect(button(root, '请关闭后刷新').props.disabled).toBe(true);
     await act(async () => button(root, '请关闭后刷新').props.onPress());
     expect(tracked).toHaveBeenCalledTimes(1);

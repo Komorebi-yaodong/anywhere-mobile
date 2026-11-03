@@ -107,7 +107,7 @@ it('keeps an uncertain operation recoverable and never dispatches it twice', asy
   await act(async () => button(root, '选择所属项目').props.onPress());
 
   await act(async () => button(root, '项目 新项目').props.onPress());
-  await act(async () => button(root, '保存到项目').props.onPress());
+  await act(async () => {button(root, '保存到项目').props.onPress();});
   expect(f.completed).not.toHaveBeenCalled();
   expect(button(root, '保存到项目').props.disabled).toBe(true);
   expect(JSON.stringify(root.toJSON())).not.toContain('检查原操作结果');

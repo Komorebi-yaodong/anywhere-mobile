@@ -402,6 +402,24 @@ describe('conversation workspace state boundaries', () => {
   });
 
 
+  it('does not promote an accepted queued input over its running parent during recovery', async () => {
+    jest.useFakeTimers();
+    const f = fixture(), base = f.rpc.getMockImplementation()!;
+    let index = 0;
+    (f.tracked as jest.Mock).mockImplementation(() => ({requestId: `accepted-queue-${index++}`, response: Promise.resolve({accepted: true})}));
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get'
+      ? Promise.resolve({requestId: params?.requestId, conversationId: A, terminal: false, event: params?.requestId === 'accepted-queue-1' ? 'conversation.command.accepted' : 'assistant.delta', eventSequence: 1, text: 'parent'}) : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => {await f.state.sendMessage('parent'); await f.state.sendMessage('queued');});
+      await act(async () => {jest.advanceTimersByTime(2500);});
+      expect(f.state.activeTurn?.requestId).toBe('accepted-queue-0');
+      expect(f.state.queuedSends.map(item => item.requestId)).toEqual(['accepted-queue-1']);
+    } finally {await act(async () => root?.unmount()); jest.useRealTimers();}
+  });
+
+
   it('promotes queued early stream events before ACK and never overwrites its text', async () => {
     const f=fixture();
     let sequence=0;
@@ -545,12 +563,67 @@ describe('conversation workspace state boundaries', () => {
 
   it('does not select closed or other history after closing and refreshing', async () => {
     const f = fixture(), base = f.rpc.getMockImplementation()!;
-    f.rpc.mockImplementation((id, method, params) => method === 'conversation.close' ? Promise.resolve({closed: true}) : base(id, method, params));
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? Promise.resolve({terminal: true, event: 'conversation.operation.completed', result: {closed: true}}) : base(id, method, params));
+    f.response.resolve({accepted: true});
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
     await act(async () => {await f.state.closeConversation(A); await f.state.refreshCatalog();});
     expect(f.state.selectedConversationId).toBe('');
     expect(f.state.messages).toEqual([]);
+    await act(async () => root.unmount());
+  });
+
+
+  it('ignores a stale creation rejection after changing Desktop while a new creation is pending', async () => {
+    const f = fixture(), oldAck = deferred<unknown>(), newAck = deferred<unknown>(), result = deferred<unknown>();
+    const tracked = jest.fn((id: string) => ({requestId: `create-${id}`, response: id === 'desktop-old-fixture' ? oldAck.promise : newAck.promise}));
+    const base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? result.promise : base(id, method, params));
+    const subscribeEvents = () => () => undefined;
+    let state!: ReturnType<typeof useConversationWorkspace>;
+    function Scope({id}: {id: string}) {
+      state = useConversationWorkspace({desktopId: id, desktopStatus: '在线', request: f.rpc as RemoteRequest, requestTracked: tracked as RemoteTrackedRequest, subscribeEvents});
+      return null;
+    }
+    let root!: TestRenderer.ReactTestRenderer, oldCreate!: Promise<void>, newCreate!: Promise<void>;
+    await act(async () => {root = TestRenderer.create(<Scope id="desktop-old-fixture" />);});
+    await act(async () => {oldCreate = state.createConversation('Code');});
+    await act(async () => {root.update(<Scope id="desktop-new-fixture" />);});
+    await act(async () => {newCreate = state.createConversation('Code');});
+    await act(async () => {oldAck.reject(Object.assign(new Error('stale rejection'), {code: 'remote_assistant_invalid'})); await oldCreate;});
+    expect(state.creatingConversation).toBe(true);
+    await act(async () => {newAck.resolve({accepted: true}); await newCreate;});
+    await act(async () => {result.resolve({terminal: true, event: 'conversation.operation.completed', result: {conversationId: 'created-new-scope-fixture', title: 'New'}});});
+    expect(state.selectedConversationId).toBe('created-new-scope-fixture');
+    expect(state.creatingConversation).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+
+  it('keeps creation locked after a lost ACK and enters only the recovered original result', async () => {
+    const f = fixture(), result = deferred<unknown>(), base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? result.promise : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {f.response.reject(Object.assign(new Error('lost ACK'), {code: 'remote_request_timeout'})); await f.state.createConversation('Code');});
+    expect(f.state.creatingConversation).toBe(true);
+    await expect(f.state.createConversation('Code')).rejects.toThrow('重复');
+    await act(async () => {result.resolve({terminal: true, event: 'conversation.operation.completed', result: {conversationId: 'created-recovered-fixture', title: 'Recovered'}});});
+    expect(f.state.selectedConversationId).toBe('created-recovered-fixture');
+    expect(f.tracked).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+  });
+
+  it('keeps the selected view after close admission until terminal success, and on failure', async () => {
+    const f = fixture(), result = deferred<unknown>(), base = f.rpc.getMockImplementation()!;
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? result.promise : base(id, method, params));
+    let root!: TestRenderer.ReactTestRenderer, closing!: Promise<unknown>;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {f.response.resolve({accepted: true}); closing = f.state.closeConversation(A).catch(error => error);});
+    expect(f.state.selectedConversationId).toBe(A);
+    await act(async () => {result.resolve({terminal: true, event: 'conversation.operation.failed', result: {code: 'remote_conversation_save_failed'}}); await closing;});
+    expect(f.state.selectedConversationId).toBe(A);
+    expect(f.state.messages.length).toBeGreaterThan(0);
     await act(async () => root.unmount());
   });
 

@@ -14,29 +14,13 @@ export function createBusinessRouter(transport: Raw, persistence?: {remember: (i
   let generation = 0;
 
   const readReceipts = new Map<string, {conversationId: string; result: unknown; expiresAt: number}>();
-  const controlEpochs = new Map<string, string>();
-  const controlVersions = new Map<string, number>();
-  function invalidateControl(conversationId: string) {
-    controlEpochs.delete(conversationId);
-    controlVersions.set(conversationId, (controlVersions.get(conversationId) || 0) + 1);
-  }
   const raw: Raw = async (...args) => {
-    const [method, params] = args;
-    const started = generation, id = typeof params?.conversationId === 'string' ? params.conversationId : '';
-    const version = controlVersions.get(id) || 0;
-    const value: any = await transport(...args);
+    const started = generation;
+    const value = await transport(...args);
     if (started !== generation) throw error('remote_client_closed');
-    if (id && ['conversation.control.get', 'conversation.view.get'].includes(method) && version === (controlVersions.get(id) || 0)) {
-      const runtime = method === 'conversation.view.get' ? value?.runtime : value;
-      if (runtime?.conversationId === id && typeof runtime?.control?.epoch === 'string' && runtime.control.epoch &&
-          (runtime.control.canWrite === true && runtime.control.owner === 'this_device' || runtime.control.epoch === 'window-none')) {
-        if (controlEpochs.size >= 128 && !controlEpochs.has(id)) invalidateControl(controlEpochs.keys().next().value!);
-        controlEpochs.set(id, runtime.control.epoch);
-      } else invalidateControl(id);
-    }
     return value;
   };
-  function welcome(capabilities: unknown) {generation++; advertised = Array.isArray(capabilities) ? capabilities : []; negotiation = null; pending = undefined; readReceipts.clear(); controlEpochs.clear(); controlVersions.clear();}
+  function welcome(capabilities: unknown) {generation++; advertised = Array.isArray(capabilities) ? capabilities : []; negotiation = null; pending = undefined; readReceipts.clear();}
   async function negotiate() {
     if (!advertised.includes('remote.contract.negotiate')) return;
     const started = generation;
@@ -96,17 +80,12 @@ export function createBusinessRouter(transport: Raw, persistence?: {remember: (i
       let preconditions;
       const conversationId = typeof params.conversationId === 'string' ? params.conversationId : '';
       if (routes.controlRequired.includes(method) && conversationId) {
-        let epoch = controlEpochs.get(conversationId);
-        if (!epoch) {
-          const runtime = advertised.includes('conversation.control.get')
-            ? await raw('conversation.control.get', {conversationId}) as any
-            : (await raw('conversation.view.get', {conversationId, pageSize: 1}) as any)?.runtime;
-          const receivedEpoch = runtime?.control?.epoch;
-          if (runtime?.conversationId !== conversationId || (runtime?.control?.canWrite !== true && receivedEpoch !== 'window-none') || typeof receivedEpoch !== 'string' || !receivedEpoch) throw error('remote_contract_invalid');
-          epoch = receivedEpoch;
-          controlEpochs.set(conversationId, receivedEpoch);
-        }
-        preconditions = {controlEpoch: epoch!};
+        const runtime = advertised.includes('conversation.control.get')
+          ? await raw('conversation.control.get', {conversationId}) as any
+          : (await raw('conversation.view.get', {conversationId, pageSize: 1}) as any)?.runtime;
+        const epoch = runtime?.control?.epoch;
+        if (runtime?.conversationId !== conversationId || (runtime?.control?.canWrite !== true && epoch !== 'window-none') || typeof epoch !== 'string' || !epoch) throw error('remote_contract_invalid');
+        preconditions = {controlEpoch: epoch};
       }
       await persistence?.remember(commandId, params, issuedAt);
 
@@ -114,11 +93,6 @@ export function createBusinessRouter(transport: Raw, persistence?: {remember: (i
       try {
         operation = validateDurableOperation(await raw('command.submit', {commandId, issuedAt, method, params, ...(preconditions ? {preconditions} : {})}, timeout));
       } catch (cause) {
-        if ((cause as {code?: string})?.code === 'remote_control_epoch_conflict' && conversationId) {
-          invalidateControl(conversationId);
-          // Refresh advisory control only. The rejected write is never replayed.
-          if (advertised.includes('conversation.control.get')) raw('conversation.control.get', {conversationId}).catch(() => undefined);
-        }
         // Only errors proven to reject admission before dispatch are safe to retire.
         // Transport/storage/conflict failures remain queryable, never replayed.
         if (['remote_method_unavailable', 'remote_command_unsupported', 'remote_command_id_invalid', 'remote_command_expired', 'remote_contract_negotiation_required', 'remote_control_precondition_required', 'remote_control_epoch_conflict'].includes((cause as {code?: string})?.code || '')) await persistence?.settle(commandId);
@@ -127,7 +101,6 @@ export function createBusinessRouter(transport: Raw, persistence?: {remember: (i
       if (operation.terminal) await persistence?.settle(operation.operationId);
 
       if (operation.state === 'failed' || operation.state === 'interrupted') throw error(operation.code || 'remote_command_failed');
-      if (conversationId && ['conversation.open', 'conversation.takeover', 'conversation.handoff', 'conversation.release', 'conversation.close', 'conversation.delete'].includes(method)) invalidateControl(conversationId);
       return operation.receipt || {ok: true, operationId: operation.operationId, accepted: true, state: operation.state};
     }
     throw error('remote_method_unavailable');

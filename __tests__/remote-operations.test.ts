@@ -250,6 +250,8 @@ describe('Renderer command completion boundary', () => {
     const tracked = jest.fn(() => ({requestId: 'request-operation-0002', response: Promise.reject(Object.assign(new Error(), {code: 'remote_request_timeout'}))}));
     const receipt = startCommand({desktopId, method: 'conversation.delete', params: {conversationId: 'conversation-fixture-0001', confirmed: true},
       requestTracked: tracked as RemoteTrackedRequest,
+      timeoutMs: 10,
+
       request: jest.fn().mockRejectedValue(new Error('offline')) as RemoteRequest,
     });
     await expect(receipt.completion).rejects.toMatchObject({requestId: 'request-operation-0002'});

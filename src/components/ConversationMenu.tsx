@@ -68,7 +68,7 @@ export function ConversationMenu({desktopId, conversation, projects, request, re
         // destructive retries inside the same confirmation.
         if (deleted) setFinished(true);
         const code = cause instanceof Error ? cause.message : '';
-        setNotice(code === 'remote_project_not_found' ? '目标项目已不存在，请关闭后刷新。' : code === 'remote_conversation_busy' ? '会话处理中，请稍后重试' : code === 'remote_control_epoch_conflict' || code === 'remote_conversation_takeover_required' || code === 'remote_conversation_controlled_by_other_device' ? '控制权已变化，请先打开会话并接管。' : '未能确认操作完成，请关闭后刷新检查。');
+        setNotice(code === 'remote_project_not_found' ? '目标项目已不存在，请关闭后刷新。' : code === 'remote_conversation_busy' ? '会话处理中，请稍后重试' : code === 'remote_control_epoch_conflict' || code === 'remote_conversation_takeover_required' || code === 'remote_conversation_controlled_by_other_device' ? '会话控制状态已变化，请关闭后刷新重试。' : '未能确认操作完成，请关闭后刷新检查。');
       }
     } finally {submitting.current = false; if (!controller.current.signal.aborted) setBusy(false);}
   };

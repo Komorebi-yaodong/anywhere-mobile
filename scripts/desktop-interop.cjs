@@ -114,6 +114,8 @@ source = source.replace("    assert.equal(createdWindowCount, 2, 'duplicate neve
     assert.equal(mobileCompleted.result.conversationId, 'conversation-created-gateway-fixture-1');
     assert.equal(createdWindowCount, 2, 'duplicate never creates a second writer')`);
 
+source += `\nconst {runMetadataLifecycle} = await import('${pathToFileURL(path.join(desktopRoot, 'tests/remote-metadata-lifecycle.test.mjs')).href}');\nawait runMetadataLifecycle(createBusinessRouter);\n`;
+
 source = source.replace("suite: 'remote-gateway'", "suite: 'desktop-mobile-interop'");
 fs.mkdirSync(path.dirname(output), {recursive: true});
 fs.writeFileSync(output, source);

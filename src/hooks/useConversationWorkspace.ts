@@ -22,7 +22,7 @@ import {createConversationMessageRefresh} from './conversationMessageRefresh';
 
 import {createBusinessSession} from '../remote/businessSession';
 
-import {waitForCommand} from '../remote/commands';
+import {trackCommand} from '../remote/commands';
 
 import {completeHistory, readSized} from '../remote/historyRead';
 import type {Runtime} from '../../packages/remote-contract';
@@ -172,11 +172,16 @@ export function useConversationWorkspace({
   const preserveEmptySelection = useRef(false);
 
   const creationController = useRef<AbortController | null>(null);
-  const closingConversations = useRef(new Set<string>());
+  const closingConversations = useRef(new Map<string, AbortController>());
   const [operationNotice, setOperationNotice] = useState('');
   useEffect(() => {
     creatingRef.current = false;setCreatingConversation(false);setOperationNotice('');
-    return () => {creationController.current?.abort();};
+    const closing = closingConversations.current;
+    return () => {
+      creationController.current?.abort();
+      for (const controller of closing.values()) controller.abort();
+      closing.clear();
+    };
   }, [desktopId]);
 
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -576,14 +581,14 @@ export function useConversationWorkspace({
       setAuthoritativeRuntime(null); setPendingChoices({});
       setMessagePage({pageSize: 50, nextBeforeUiOrder: null, hasMore: false});
       try {
-        const admitted = api.createConversation(promptCode);
+        const admitted = trackCommand({desktopId, tracked: api.createConversation(promptCode), request, signal: controller.signal, keepTracking: true});
         // Return after the Desktop has durably accepted this write. Do not wait
         // for hidden-window/Renderer readiness on the click path.
-        await admitted.response;
+        await admitted.admitted;
         if (controller.signal.aborted || scopeRef.current.desktopId !== desktopId) return;
         setError('');
         setOperationNotice('正在创建会话…');
-        waitForCommand({desktopId, requestId: admitted.requestId, request, timeoutMs: 60_000, signal: controller.signal}).then(state => {
+        admitted.completion.then(state => {
           const result = state.result as {conversationId: string; title: string; promptCode: string};
           if (!result?.conversationId || typeof result.title !== 'string') throw new Error('创建会话结果无效。');
           if (controller.signal.aborted || scopeRef.current.desktopId !== desktopId) return;
@@ -606,6 +611,8 @@ export function useConversationWorkspace({
           if (!controller.signal.aborted) {setCreatingConversation(false);setOperationNotice('');}
         });
       } catch (cause) {
+        if (controller.signal.aborted || creationController.current !== controller) return;
+        creationController.current = null;
         creatingRef.current = false;
         setCreatingConversation(false);
         if (scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));
@@ -738,7 +745,8 @@ export function useConversationWorkspace({
             loadMessages(queued.conversationId);
         } else if (
           state.event !== 'conversation.queue.pending' &&
-          state.event !== 'conversation.command.pending'
+          state.event !== 'conversation.command.pending' &&
+          state.event !== 'conversation.command.accepted'
         ) {
           commitQueue(current =>
             current.filter(item => item.requestId !== queued.requestId),
@@ -1246,17 +1254,22 @@ export function useConversationWorkspace({
     if (!conversationId) return;
     assertControl(conversationId);
     if (closingConversations.current.has(conversationId)) return {closing: true};
-    closingConversations.current.add(conversationId);
-    let result: {accepted?: boolean; operationId?: string; closed?: boolean};
-    try {result = await api.closeConversation(conversationId);} catch (cause) {closingConversations.current.delete(conversationId);throw cause;}
-    if (result.accepted && result.operationId) {
-      setOperationNotice('正在关闭会话…');
-      waitForCommand({desktopId, requestId: result.operationId, request, timeoutMs: 60_000}).then(() => {
-        if (scopeRef.current.desktopId !== desktopId) return;
-        refreshOpenedSessions().catch(() => undefined); refreshCatalog().catch(() => undefined);
-      }).catch(cause => {if (scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));})
-        .finally(() => {closingConversations.current.delete(conversationId);if (scopeRef.current.desktopId === desktopId) setOperationNotice('');});
-    } else closingConversations.current.delete(conversationId);
+    const controller = new AbortController();
+    closingConversations.current.set(conversationId, controller);
+    const operation = trackCommand({desktopId, tracked: requestTracked(desktopId, 'conversation.close', {conversationId}, 45_000), request, signal: controller.signal, keepTracking: true});
+    setOperationNotice('正在关闭会话…');
+    try {
+      await operation.admitted;
+      await operation.completion;
+      if (controller.signal.aborted || scopeRef.current.desktopId !== desktopId) return {closing: true};
+    } catch (cause) {
+      if (controller.signal.aborted || scopeRef.current.desktopId !== desktopId) return {closing: true};
+      setError(errorMessage(cause));
+      throw cause;
+    } finally {
+      if (closingConversations.current.get(conversationId) === controller) closingConversations.current.delete(conversationId);
+      if (!controller.signal.aborted && scopeRef.current.desktopId === desktopId) setOperationNotice('');
+    }
     if (scopeRef.current.selectedConversationId === conversationId) {
       navigationVersion.current += 1; preserveEmptySelection.current = true;
     }
@@ -1277,9 +1290,9 @@ export function useConversationWorkspace({
         current?.conversationId === conversationId ? null : current,
       );
     }
-    if (!result.accepted) await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
-    return {closing: result.accepted === true};
-  }, [api, assertControl, commitTurn, desktopId, request, refreshCatalog, refreshOpenedSessions, snapshots]);
+    await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
+    return {closing: false};
+  }, [assertControl, commitTurn, desktopId, request, requestTracked, refreshCatalog, refreshOpenedSessions, snapshots]);
 
 
 
