@@ -37,6 +37,13 @@ Existing service parameter allowlists, permission/revision checks, quotas and fi
 
 `conversation.config.get` is a read resource that waits for the independent Renderer snapshot result. SDK provides a short-lived read receipt to existing UI callers; reads do not consume durable mutation capacity. No current generation/controller is replaced by a settings read.
 
+## Optional aggregate usage read
+
+`workspace.usage.get` is an independently advertised encrypted read extension, not a durable command or a modification of the frozen 1.1 route package. Mobile requires its authenticated welcome capability and sends only `range` (`24h|today|yesterday|7d|30d`), `providerId`, `agentName` and `model` filters. The validated `schemaVersion:'1.0'` DTO includes Desktop timezone, generation time/range, summary metrics, at most 64 time buckets, 366 daily activity counts and bounded filter options (200 entries per category, 96 KiB total server DTO).
+
+Desktop uses its existing Main-owned usage store and returns aggregate-only field projections, never raw journal records, content, secrets, config or paths. No conversation open/takeover/lease is needed. Polls are serial and restricted to the visible statistics tab, online connection and foreground app; scope changes discard late callbacks. Failed reads keep only a same-scope previous result. Unsupported Desktop versions display an update prompt rather than reading legacy config partitions.
+
+
 ## Conversation view, content and runtime
 
 

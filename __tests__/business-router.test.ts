@@ -15,6 +15,17 @@ function fixture(minor = 1) {
  router.welcome(['remote.contract.negotiate']);
  return {raw, router, operation, persistence};
 }
+it('reads only the advertised statistics endpoint without commands or control', async () => {
+ const f = fixture();
+ await expect(f.router.route('workspace.usage.get', {}, 20000, 'usage-id', 100)).rejects.toMatchObject({code: 'remote_method_unavailable'});
+ f.router.welcome(['remote.contract.negotiate', 'workspace.usage.get']);
+ await f.router.route('workspace.usage.get', {range: '7d'}, 20000, 'usage-id', 100);
+ expect(f.raw).toHaveBeenCalledWith('workspace.usage.get', {range: '7d'}, 20000, 'usage-id');
+ expect(f.persistence.remember).not.toHaveBeenCalled();
+ expect(f.raw.mock.calls.some(call => call[0] === 'command.submit' || call[0] === 'conversation.control.get')).toBe(false);
+});
+
+
 it('routes resource reads, durable commands and attachment transfer through independent endpoints', async () => {
  const f = fixture();
  await f.router.route('workspace.bootstrap.get', {}, 20000, 'read-id-fixture', 100);

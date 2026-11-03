@@ -9,7 +9,7 @@ let callbacks: PanResponderCallbacks;
 beforeEach(() => {jest.spyOn(PanResponder, 'create').mockImplementation(config => {callbacks = config; return {panHandlers: {}};});});
 afterEach(() => jest.restoreAllMocks());
 
-it.each([['new', -90, 'opened'], ['opened', 90, 'new']] as const)('swipes from %s to its adjacent tab', async (selected, dx, target) => {
+it.each([['usage', -90, 'new'], ['new', 90, 'usage'], ['new', -90, 'opened'], ['opened', 90, 'new']] as const)('swipes from %s to its adjacent tab', async (selected, dx, target) => {
  const select = jest.fn(); let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<ChatStartSwipe selected={selected} onSelect={select}><Text>page</Text></ChatStartSwipe>);});
  expect(callbacks.onStartShouldSetPanResponder).toBeUndefined();
@@ -22,11 +22,14 @@ it.each([['new', -90, 'opened'], ['opened', 90, 'new']] as const)('swipes from %
 it('leaves taps, vertical/diagonal scrolling, multitouch and outward boundary movement alone', async () => {
  let root!: TestRenderer.ReactTestRenderer;
  await act(async () => {root = TestRenderer.create(<ChatStartSwipe selected="new" onSelect={jest.fn()}><Text>page</Text></ChatStartSwipe>);});
- for (const state of [gesture(0), gesture(-10), gesture(-50, 80), gesture(-40, 35), gesture(-80, 0, 0, 2), gesture(90)]) {
+ for (const state of [gesture(0), gesture(-10), gesture(-50, 80), gesture(-40, 35), gesture(-80, 0, 0, 2)]) {
   expect(callbacks.onMoveShouldSetPanResponderCapture!(event, state)).toBe(false);
  }
  await act(async () => root.update(<ChatStartSwipe selected="opened" onSelect={jest.fn()}><Text>page</Text></ChatStartSwipe>));
  expect(callbacks.onMoveShouldSetPanResponderCapture!(event, gesture(-90))).toBe(false);
+ await act(async () => root.update(<ChatStartSwipe selected="usage" onSelect={jest.fn()}><Text>page</Text></ChatStartSwipe>));
+ expect(callbacks.onMoveShouldSetPanResponderCapture!(event, gesture(90))).toBe(false);
+
  await act(async () => root.unmount());
 });
 

@@ -28,6 +28,8 @@ import {ThemeProvider, palettes, themePreferenceStore} from '../src/components/t
 import {AppearanceSettings} from '../src/components/AppearanceSettings';
 
 import {ChatStartSwipe} from '../src/components/ChatStartSwipe';
+import {usageFixture} from '../test-fixtures/usage';
+
 
 const mockCreate = jest.fn(async (_code: string, _onCreated?: (id: string) => void) => undefined);
 const mockCancel = jest.fn(async () => undefined);
@@ -170,7 +172,7 @@ function workspaceProps() {
 }
 
 function startTab(root: TestRenderer.ReactTestRenderer, label: string) {
-  return root.root.findAll(node => node.props.accessibilityRole === 'tab' && node.props.accessibilityLabel === label && typeof node.props.onPress === 'function')[0];
+  return root.root.findAll(node => node.props.accessibilityRole === 'tab' && node.props.accessibilityLabel === (label === '已打开会话' ? '已打开的会话' : label) && typeof node.props.onPress === 'function')[0];
 }
 
 test('coalesces concurrent manual refreshes and does not show first-load UI for an already populated workspace', async () => {
@@ -264,6 +266,28 @@ test('reselects the appropriate default when returning from a chat or reopening 
  await act(async () => root.update(<WorkspaceShell {...props} visible={false} />));
  await act(async () => root.update(<WorkspaceShell {...props} visible />));
  expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ await act(async () => root.unmount());
+});
+
+
+test('adds statistics to the left without changing default navigation or acquiring conversation control', async () => {
+ const props = workspaceProps(), request = props.request as jest.Mock;
+ const base = request.getMockImplementation()!;
+ request.mockImplementation((id, method, params) => method === 'workspace.usage.get' ? Promise.resolve(usageFixture()) : base(id, method, params));
+ let root!: TestRenderer.ReactTestRenderer;
+ await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+ const tabs = root.root.findAll(node => node.props.accessibilityRole === 'tab' && node.props.onPress);
+ expect(tabs.map(tab => tab.props.accessibilityLabel)).toEqual(['数据统计', '新的聊天', '已打开的会话']);
+ expect(startTab(root, '新的聊天').props.accessibilityState.selected).toBe(true);
+ expect(request.mock.calls.some(call => call[1] === 'workspace.usage.get')).toBe(false);
+ mockCreate.mockClear(); mockTakeoverConversation.mockClear(); request.mockClear();
+ await act(async () => startTab(root, '数据统计').props.onPress());
+ expect(request.mock.calls.map(call => call[1])).toEqual(['workspace.usage.get']);
+ expect(mockCreate).not.toHaveBeenCalled(); expect(mockTakeoverConversation).not.toHaveBeenCalled();
+ await act(async () => button(root, '最近7天').props.onPress());
+ await act(async () => startTab(root, '新的聊天').props.onPress());
+ await act(async () => startTab(root, '数据统计').props.onPress());
+ expect(request).toHaveBeenLastCalledWith(props.desktop.id, 'workspace.usage.get', expect.objectContaining({range: '7d'}), 20000);
  await act(async () => root.unmount());
 });
 

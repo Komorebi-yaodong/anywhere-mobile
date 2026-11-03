@@ -33,6 +33,11 @@ export function createBusinessRouter(transport: Raw, persistence?: {remember: (i
   }
   async function route(method: string, params: Record<string, unknown>, timeout: number, commandId: string, issuedAt: number) {
     if (method === 'conversation.config.get') timeout = 120000;
+    if (method === 'workspace.usage.get') {
+      if (!advertised.includes(method)) throw error('remote_method_unavailable');
+      return raw(method, params, timeout, commandId);
+    }
+
     if (['remote.ping', 'remote.status.get', 'remote.device.self.get', 'remote.contract.negotiate', 'resource.get', 'command.submit', 'transfer.request', 'operation.status.get', 'conversation.control.get', 'conversation.view.get', 'conversation.history.payload.get', 'conversation.changes.get', 'operation.get'].includes(method)) return raw(method, params, timeout, commandId);
     if (!advertised.includes('remote.contract.negotiate')) return raw(method, params, timeout, commandId);
     await negotiate();

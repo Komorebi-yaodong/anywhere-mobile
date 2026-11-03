@@ -116,6 +116,21 @@ source = source.replace("    assert.equal(createdWindowCount, 2, 'duplicate neve
 
 source += `\nconst {runMetadataLifecycle} = await import('${pathToFileURL(path.join(desktopRoot, 'tests/remote-metadata-lifecycle.test.mjs')).href}');\nawait runMetadataLifecycle(createBusinessRouter);\n`;
 
+source += `\nconst {validateUsage} = mobileRequire('./src/remote/usage.ts');
+const aggregateService = createRemoteUsageService({query: async filters => aggregateUsage([], filters)});
+const statsRouter = createBusinessRouter(async (method, params) => {assert.equal(method, 'workspace.usage.get'); return aggregateService.get({params});});
+statsRouter.welcome(['workspace.usage.get']);
+for (const range of ['24h', 'today', 'yesterday', '7d', '30d']) {
+  const dto = validateUsage(await statsRouter.route('workspace.usage.get', {range}, 20000, 'stats-interop-fixture', Date.now()));
+  assert.equal(dto.summary.requests, 0); assert.equal(dto.buckets.length, aggregateUsage([], {range}).buckets.length);
+}
+console.log(JSON.stringify({ok:true,suite:'mobile-statistics-interop',ranges:5}));\n`;
+
+source = source.replace("    assert.equal(usageRead.result.summary.requests, 7)", `
+    assert.equal(usageRead.result.summary.requests, 7)
+    mobileRequire('./src/remote/usage.ts').validateUsage(usageRead.result)
+`);
+
 source = source.replace("suite: 'remote-gateway'", "suite: 'desktop-mobile-interop'");
 fs.mkdirSync(path.dirname(output), {recursive: true});
 fs.writeFileSync(output, source);

@@ -10,7 +10,7 @@ test('schema management creates and deletes only after local confirmation',async
  const alert=jest.spyOn(Alert,'alert').mockImplementation(()=>undefined);let root!:TestRenderer.ReactTestRenderer;
  await act(async()=>{root=TestRenderer.create(<StructuredManagement desktopId="desktop-management-fixture" request={rpc as RemoteRequest} onChanged={()=>undefined}/>)});
  await act(async()=>button(root,'＋ 新建').props.onPress());
- const id=root.root.findAllByType(TextInput).find(n=>n.props.placeholder==='唯一 ID / 助手代码')!;
+ const id=root.root.findAllByType(TextInput).find(n=>n.props.placeholder==='唯一 ID / 智能体代码')!;
  await act(async()=>id.props.onChangeText('new-fixture'));
  await act(async()=>button(root,'保存').props.onPress());
  expect(rpc.mock.calls.some(([,m,p])=>m==='management.mutate'&&p?.operation==='create'&&p?.id==='new-fixture')).toBe(true);

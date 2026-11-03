@@ -63,6 +63,8 @@ import {ModelLogo} from './ModelLogo';
 import {ChatStartTabs, type ChatStartTab} from './ChatStartTabs';
 
 import {ChatStartSwipe} from './ChatStartSwipe';
+import {UsageStatistics} from './UsageStatistics';
+
 import {KeyboardDock} from './KeyboardDock';
 
 
@@ -272,6 +274,8 @@ export function WorkspaceShell({
 
   const [startTab, setStartTab] = useState<ChatStartTab | null>(null);
   const selectedStartTab = startTab ?? (workspace.openedSessions.length ? 'opened' : 'new');
+  const [usageRefreshSignal, setUsageRefreshSignal] = useState(0);
+
   useEffect(() => {setStartTab(null);}, [desktop.id]);
   useEffect(() => {if (mode !== 'router' || !visible) setStartTab(null);}, [mode, visible]);
   useEffect(() => {
@@ -1113,6 +1117,7 @@ export function WorkspaceShell({
             }
             if (mode === 'chat') workspace.refreshMessages();
             else if (mode === 'settings') setSettingsRefreshSignal(current => current + 1);
+            else if (selectedStartTab === 'usage') setUsageRefreshSignal(current => current + 1);
             else {refreshWorkspace(); workspace.refreshOpenedSessions().catch(() => undefined);}
           }}
         />
@@ -1155,7 +1160,7 @@ export function WorkspaceShell({
           title="正在连接 Desktop"
           text={desktop.detail || '请确认远程服务仍在运行。'}
         />
-      ) : !workspace.configured && mode !== 'settings' ? (
+      ) : !workspace.configured && mode !== 'settings' && mode !== 'router' ? (
         <Empty
           title="Desktop 尚未配置会话目录"
           text="请先在 Desktop 完成会话保存位置配置。"
@@ -1163,7 +1168,10 @@ export function WorkspaceShell({
       ) : mode === 'router' ? (
         <ChatStartSwipe selected={selectedStartTab} onSelect={setStartTab}>
           <ChatStartTabs selected={selectedStartTab} onSelect={setStartTab} />
-          {selectedStartTab === 'new' ? <AssistantRouter assistants={routeAssistants} avatarSources={agentAvatarSources} loading={loadingWorkspace} onSelect={openAssistant} /> :
+          <View style={selectedStartTab === 'usage' ? styles.usageVisible : styles.usageHidden}>
+            <UsageStatistics key={desktop.id} desktopId={desktop.id} request={request} active={visible && connected && selectedStartTab === 'usage'} refreshSignal={usageRefreshSignal} />
+          </View>
+          {selectedStartTab === 'usage' ? null : !workspace.configured ? <Empty title="Desktop 尚未配置会话目录" text="请先在 Desktop 完成会话保存位置配置。" /> : selectedStartTab === 'new' ? <AssistantRouter assistants={routeAssistants} avatarSources={agentAvatarSources} loading={loadingWorkspace} onSelect={openAssistant} /> :
             <ScrollView accessibilityLabel="已打开会话列表" contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
               <OpenedSessionList sessions={workspace.openedSessions} onOpen={enterOpenedSession} onClose={closeOpenedSession} onHandoff={handoffOpenedSession} onTakeover={takeoverOpenedSession} />
             </ScrollView>}
@@ -3037,6 +3045,9 @@ const baseStyles = StyleSheet.create({
   openedSessionSegmentText: {color: C.primary, fontSize: 12, fontWeight: '600'},
   openedSessionCloseText: {color: C.danger, fontSize: 12, fontWeight: '600'},
   retainedWorkspace: {flex: 1, minHeight: 0},
+  usageVisible: {flex: 1, minHeight: 0},
+  usageHidden: {display: 'none'},
+
   connectionBanner: {paddingHorizontal: 16, paddingVertical: 10, backgroundColor: C.surfaceMuted},
   connectionBannerText: {color: C.muted, fontSize: 12, lineHeight: 18},
 
