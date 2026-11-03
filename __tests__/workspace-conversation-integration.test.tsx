@@ -4,6 +4,8 @@ import {AppState, Text} from 'react-native';
 import {WorkspaceShell} from '../src/components/WorkspaceShell';
 import {ConversationMessageList} from '../src/components/ConversationMessageList';
 import {ConversationMenu} from '../src/components/ConversationMenu';
+import {createBusinessRouter} from '../src/remote/businessRouter';
+
 import type {DesktopRuntime} from '../src/hooks/useDesktops';
 import type {RemoteRequest, RemoteTrackedRequest, ConversationSummary} from '../src/remote/api';
 
@@ -23,6 +25,19 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
 function fixture(opened: boolean) {
   const admitted = deferred(), completed = deferred();
   let created = false, moved = false;
+  let pendingQueries = 0;
+  const queryRouter = createBusinessRouter(async method => {
+    if (method === 'remote.contract.negotiate') return {selected: {major: 1, minor: 1}, capabilities: ['command.durable.v1'], serverEpoch: 'integration', limits: {eventRetention: 512, operationRetentionMs: 1800000}};
+    if (method !== 'operation.status.get') throw new Error('Unexpected query');
+    const base = {operationId: 'create-integration-command', code: null, acceptedAt: 100, expiresAt: 10000, receipt: null};
+    if (pendingQueries++ === 0) return {...base, conversationId: null, state: 'running', terminal: false,
+      progress: {requestId: base.operationId, conversationId: null, terminal: false, event: 'conversation.command.pending', eventSequence: 0}};
+    const final = await completed.promise as {result: Record<string, unknown>};
+    return {...base, conversationId: C, state: 'succeeded', terminal: true,
+      progress: {requestId: base.operationId, conversationId: C, terminal: true, event: 'conversation.operation.completed', result: final.result}};
+  });
+  queryRouter.welcome(['remote.contract.negotiate']);
+
   const summary = (id: string) => ({conversationId: id, title: id === A ? 'Old chat' : 'New chat', readable: true, project: moved && id === A ? {projectId: 'target-project', name: 'Target'} : null});
   const session = {conversationId: A, title: 'Old chat', windowId: 'window-integration-old', hidden: true, controlledByThisDevice: true, mobileControlled: true, busy: false};
   const rpc = jest.fn(async (_id: string, method: string, params?: Record<string, unknown>): Promise<unknown> => {
@@ -34,7 +49,7 @@ function fixture(opened: boolean) {
     if (method === 'conversation.messages.list') return {conversation: {conversationId: params?.conversationId}, messages: params?.conversationId === A ? [{uiMessageId: 'old-message', role: 'user', order: 1, payload: {content: 'OLD CONTENT MUST NOT BE NEW CHAT'}}] : [], page: {hasMore: false, nextBeforeUiOrder: null, pageSize: 50}};
     if (method === 'conversation.open') return {mobileControlled: true};
     if (method === 'remote.status.get') return {capabilities: ['conversation.project.set', 'conversation.delete']};
-    if (method === 'conversation.request.get') return params?.requestId === 'create-integration-command' ? completed.promise : {terminal: true, event: 'conversation.operation.completed', result: {}};
+    if (method === 'conversation.request.get') return params?.requestId === 'create-integration-command' ? queryRouter.route(method, params!, 20000, 'poll-create-fixture', Date.now()) : {terminal: true, event: 'conversation.operation.completed', result: {}};
     return {};
   });
   const tracked = jest.fn((_id: string, method: string) => {
@@ -59,9 +74,12 @@ it.each([false, true])('never renders old chat on accepted create with opened=%s
   await act(async () => {f.admitted.resolve({accepted: true});});
   await act(async () => {f.windowsChanged();});
   expect(root.root.findAllByType(ConversationMessageList)).toHaveLength(0);
-  await act(async () => {f.complete();});
+  await act(async () => {f.complete(); await new Promise<void>(resolve => setTimeout(resolve, 450));});
   const list = root.root.findByType(ConversationMessageList);
   expect(list.props.messages).toEqual([]);
+  expect(f.rpc.mock.calls.filter(call => call[1] === 'conversation.request.get')).toHaveLength(2);
+  expect(JSON.stringify(root.toJSON())).not.toContain('Desktop 执行状态尚待确认');
+
   expect(f.rpc.mock.calls.some(call => call[1] === 'conversation.open' && call[2]?.conversationId === C)).toBe(true);
   expect(f.tracked.mock.calls.filter(call => call[1] === 'conversation.create')).toHaveLength(1);
   await act(async () => root.unmount());

@@ -39,6 +39,8 @@ const {completeSessionHello, createSessionHello} = mobileRequire('./src/remote/s
 const {createResultTransferReader} = mobileRequire('./src/remote/resultTransfer.ts');
 
 const {uploadAttachment} = mobileRequire('./src/remote/attachments.ts');
+const {createBusinessRouter} = mobileRequire('./src/remote/businessRouter.ts');
+
 ` + source.slice(cryptoEnd + "} from '../main/core/remote/cryptoSession.js'".length);
 source = source.replace(/from '\.\.\/main\/([^']+)'/g, (_, relative) =>
   `from '${pathToFileURL(path.join(desktopRoot, 'main', relative)).href}'`);
@@ -92,6 +94,25 @@ source = source.replace(uploadAnchor, `
     console.log(JSON.stringify({ok: true, suite: 'sequential-mobile-upload-wss', bytes: uploadBytes.length, peakInFlight: uploadPeak, chunkBytes: uploadLengths}));
 ` + uploadAnchor);
 
+
+// Poll the held create through the actual Mobile protocol adapter, including
+// its strict durable operation validator, before and after the ID exists.
+source = source.replace("import contract from '../packages/remote-contract/index.cjs'", `import contract from '${pathToFileURL(path.join(desktopRoot, 'packages/remote-contract/index.cjs')).href}'`);
+source = source.replace('    contract.validateDurableOperation(pendingCreation.result)', `
+    const mobileRouter = createBusinessRouter(async (method, params) => {
+      const reply = await sendEncryptedRequest({socket, session, requestId: 'mobile-query-' + crypto.randomUUID(), method, params});
+      if (!reply.ok) throw Object.assign(new Error(reply.error.code), {code: reply.error.code});
+      return reply.result;
+    });
+    mobileRouter.welcome(welcome.payload.capabilities);
+    const mobilePending = await mobileRouter.route('conversation.request.get', {requestId: fastId}, 20000, 'mobile-poll-fixture', Date.now());
+    assert.equal(mobilePending.terminal, false);
+    contract.validateDurableOperation(pendingCreation.result)`);
+source = source.replace("    assert.equal(createdWindowCount, 2, 'duplicate never creates a second writer')", `
+    const mobileCompleted = await mobileRouter.route('conversation.request.get', {requestId: fastId}, 20000, 'mobile-complete-fixture', Date.now());
+    assert.equal(mobileCompleted.terminal, true);
+    assert.equal(mobileCompleted.result.conversationId, 'conversation-created-gateway-fixture-1');
+    assert.equal(createdWindowCount, 2, 'duplicate never creates a second writer')`);
 
 source = source.replace("suite: 'remote-gateway'", "suite: 'desktop-mobile-interop'");
 fs.mkdirSync(path.dirname(output), {recursive: true});
