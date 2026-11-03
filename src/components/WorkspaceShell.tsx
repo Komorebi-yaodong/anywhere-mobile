@@ -172,6 +172,9 @@ function workspaceNotice(error: unknown, fallback: string): string {
     remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
     remote_control_epoch_conflict: '会话控制状态已变化，请刷新后重新操作。',
     remote_conversation_busy: '此操作需要会话空闲，请等待本轮结束后再操作；普通配置可在生成中保存。',
+    remote_control_transfer_timeout: '尚未确认控制权交接，请刷新会话后检查。',
+    remote_control_transfer_failed: '控制权交接未完成，请刷新后重试。',
+
     remote_mobile_takeover_timeout: 'Desktop 尚未确认接管，控制权未变更；请稍后重试。',
     remote_mobile_takeover_failed: 'Desktop 未完成接管，控制权未变更；请刷新后重试。',
     remote_desktop_takeover_in_progress: 'Desktop 正在接管该会话，Mobile 即将切为只读。',
@@ -934,7 +937,6 @@ export function WorkspaceShell({
   };
   const handoffSelectedConversation = async () => {
     if (!workspace.selectedConversationId || !connected) return;
-    if (executionBusy) { setNotice('本轮仍在生成或执行工具，结束后可交还；也可以先停止生成。'); return; }
     if (recording || attachments.busy) {
       setNotice('请先完成或取消录音、附件上传，再交还 Desktop。');
       return;
@@ -943,7 +945,7 @@ export function WorkspaceShell({
       await workspace.handoffConversation(workspace.selectedConversationId);
       setNotice('');
     } catch (error) {
-      setNotice(workspaceNotice(error, '当前会话仍在执行，暂时无法交还。'));
+      setNotice(workspaceNotice(error, '暂时无法交还，请刷新会话后重试。'));
     }
   };
 
@@ -993,7 +995,7 @@ export function WorkspaceShell({
       await workspace.handoffConversation(item.conversationId);
       setNotice(`已将“${item.title || '未命名会话'}”交还 Desktop。`);
     } catch (error) {
-      setNotice(workspaceNotice(error, '当前会话仍在执行，暂时无法交还。'));
+      setNotice(workspaceNotice(error, '暂时无法交还，请刷新会话后重试。'));
     }
   };
 

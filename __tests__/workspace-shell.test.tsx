@@ -853,6 +853,23 @@ test.each(['this_device', 'unknown', 'desktop', 'other_device'])('shows Desktop 
 });
 
 
+test('hands a running conversation back without stopping generation or replacing its draft', async () => {
+  openConfigSession();
+  mockActiveTurn = {conversationId: 'conversation-shell-fixture', requestId: 'running-transfer-fixture', terminal: false};
+  const original = mockActiveTurn, props = workspaceProps(); let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  await enterFixtureChat(root);
+  const input = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入消息与 AI 聊天')!;
+  await act(async () => input.props.onChangeText('unsent draft'));
+  const handoff = root.root.findAll(node => node.props.accessibilityLabel === '交还 Desktop' && node.props.onPress)[0];
+  expect(handoff.props.disabled).not.toBe(true);
+  await act(async () => handoff.props.onPress());
+  expect(mockHandoffConversation).toHaveBeenCalledWith('conversation-shell-fixture');
+  expect(mockCancel).not.toHaveBeenCalled(); expect(mockActiveTurn).toBe(original);
+  expect(root.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入消息与 AI 聊天')!.props.value).toBe('unsent draft');
+  await act(async () => root.unmount());
+});
+
 test('asks Desktop to arbitrate takeover even when Mobile still caches an old busy turn', async () => {
   openConfigSession();
   mockOpenedSessions = [{conversationId: 'conversation-shell-fixture', title: 'Config Fixture', busy: true, mobileControlled: false, controlledByThisDevice: false}];

@@ -228,6 +228,32 @@ describe('conversation workspace state boundaries', () => {
   });
 
 
+  it('adopts the existing Desktop run ID after takeover without sending or clearing it on handoff', async () => {
+    const f = fixture(), base = f.rpc.getMockImplementation()!;
+    const frozen = require('../packages/remote-contract/fixtures/v1.0-view.json');
+    const operationId = 'desktop-turn-11111111-1111-4111-8111-111111111111';
+    let controlled = false;
+    f.rpc.mockImplementation((id, method, params) => {
+      if (method === 'remote.status.get') return Promise.resolve({capabilities: ['remote.contract.negotiate']});
+      if (method === 'remote.contract.negotiate') return Promise.resolve({selected: {major: 1, minor: 1}, capabilities: ['conversation.view.v1', 'conversation.runtime.v1', 'conversation.invalidation.v1', 'command.durable.v1'], serverEpoch: frozen.serverEpoch, limits: {eventRetention: 512, operationRetentionMs: 1800000}});
+      if (method === 'conversation.takeover') {controlled = true; return Promise.resolve({ok: true});}
+      if (method === 'conversation.handoff') {controlled = false; return Promise.resolve({ok: true});}
+      if (method === 'conversation.view.get') return Promise.resolve({...frozen, page: {...frozen.page, conversation: {...frozen.page.conversation, conversationId: A}}, runtime: {...frozen.runtime, conversationId: A, execution: {state: 'running', operationId, phase: null}, control: {owner: controlled ? 'this_device' : 'desktop', canWrite: controlled, epoch: controlled ? 'mobile-epoch' : 'desktop-epoch'}}});
+      if (method === 'conversation.request.get') return Promise.resolve({requestId: operationId, conversationId: A, text: 'same running reply', reasoning: '', terminal: false, event: 'assistant.delta', eventSequence: 4, truncated: false});
+      return base(id, method, params);
+    });
+    let root!: TestRenderer.ReactTestRenderer;
+    await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {await f.state.takeoverConversation(A);});
+    expect(f.state.activeTurn?.requestId).toBe(operationId); expect(f.state.activeTurn?.terminal).toBe(false);
+    await act(async () => {await f.state.cancelActiveTurn();});
+    expect(f.rpc).toHaveBeenCalledWith(desktopId, 'conversation.cancel', {conversationId: A});
+    await act(async () => {await f.state.handoffConversation(A);});
+    expect(f.state.activeTurn?.requestId).toBe(operationId); expect(f.state.canControlConversation(A)).toBe(false);
+    expect(f.tracked).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it('uses negotiated runtime rather than stale windows, preserves history on sync failure and recovers writability', async () => {
     jest.useFakeTimers();
     const f = fixture();
@@ -343,7 +369,7 @@ describe('conversation workspace state boundaries', () => {
   });
 
 
-  it('only retires stale progress after a successful authoritative takeover', async () => {
+  it('preserves the original running request across failed and successful takeover', async () => {
     const f = fixture();
     const base = f.rpc.getMockImplementation()!;
     let rejectTakeover = true;
@@ -357,7 +383,7 @@ describe('conversation workspace state boundaries', () => {
     expect(f.state.activeTurn?.terminal).toBe(false);
     rejectTakeover = false;
     await act(async () => {await f.state.takeoverConversation(A);});
-    expect(f.state.activeTurn).toBeNull();
+    expect(f.state.activeTurn).toMatchObject({terminal: false, requestId: 'request-workspace-fixture-0001'});
     expect(f.tracked).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   });

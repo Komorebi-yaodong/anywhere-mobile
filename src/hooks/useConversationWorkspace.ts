@@ -341,6 +341,10 @@ export function useConversationWorkspace({
         const result = view?.page || await completeHistory(await readSized(size => api.listMessages(conversationId, {pageSize: size}), 50), params => request(desktopId, 'conversation.history.payload.get', params), options);
         if (!isCurrent()) return;
         setAuthoritativeRuntime(view?.runtime || null);
+        const operationId = view?.runtime.execution.operationId;
+        if (operationId && view?.runtime.control.canWrite && activeTurnRef.current?.requestId !== operationId) {
+          commitTurn({requestId: operationId, conversationId, submittedText: '', text: '', reasoning: '', event: 'conversation.command.accepted', eventSequence: 0, terminal: false, truncated: false});
+        }
 
 
         if (view) setPendingChoices(Object.fromEntries(view.runtime.pendingChoices.map(choice => [choice.toolCallId, {
@@ -497,14 +501,10 @@ export function useConversationWorkspace({
 
   const takeoverConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
-    const previous = activeTurnRef.current;
     await api.takeover(conversationId);
-    // Successful Desktop takeover confirms the writer is idle. Never retire a
-    // newer request submitted while this RPC was in flight.
-    commitTurn(current => current?.requestId === previous?.requestId && current?.conversationId === conversationId ? null : current);
     await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
     if (scopeRef.current.selectedConversationId === conversationId) await loadMessages(conversationId);
-  }, [api, commitTurn, loadMessages, refreshCatalog, refreshOpenedSessions]);
+  }, [api, loadMessages, refreshCatalog, refreshOpenedSessions]);
 
   const handoffConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
@@ -790,6 +790,9 @@ export function useConversationWorkspace({
       if (event.event === 'conversation.tasks.updated' && conversationId === scopeRef.current.selectedConversationId && Array.isArray(payload.tasks)) {
         setTasks(payload.tasks as ConversationTask[]);
       }
+      if (event.event === 'conversation.choice.resolved' && typeof payload.toolCallId === 'string') {
+        setPendingChoices(current => {const next = {...current}; delete next[payload.toolCallId as string]; return next;});
+      }
       if (event.event === 'conversation.choice.required' && conversationId && typeof payload.toolCallId === 'string' && Array.isArray(payload.questions)) {
         setPendingChoices(current => ({
           ...current,
@@ -1013,9 +1016,7 @@ export function useConversationWorkspace({
         return;
       assertControl(selectedConversationId);
       const shouldQueue = Boolean(
-        activeTurnRef.current &&
-          !activeTurnRef.current.terminal &&
-          !reaskUiMessageId,
+        !reaskUiMessageId && ((activeTurnRef.current && !activeTurnRef.current.terminal) || (authoritativeRuntime?.conversationId === selectedConversationId && authoritativeRuntime.execution.state !== 'idle')),
       );
       // Invalidate history reads started for the previous turn before replacing it.
       messageEpoch.current += 1;
@@ -1162,6 +1163,8 @@ export function useConversationWorkspace({
     [
       api,
       assertControl,
+      authoritativeRuntime?.conversationId,
+      authoritativeRuntime?.execution.state,
       commitQueue,
       commitTurn,
       desktopId,

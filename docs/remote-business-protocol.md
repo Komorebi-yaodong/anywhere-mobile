@@ -77,6 +77,11 @@ An opaque per-device control epoch reflects Writer/control changes. Command chec
 
 Mobile rejects superseded reads, restores missed choices from snapshots, retains history but disables stale write permission on synchronization failure, and retries until a successful view. Selected runtime does not incorrectly govern other opened conversations.
 
+## Live control transfer
+
+Takeover/handoff can run during generation and tools. Desktop keeps the same Renderer/SQLite lease, execution request ID, stream, tool stack and accepted input queue; a transfer never replays a send/tool or implicitly cancels it. A Renderer-confirmed, window/request/deadline/previous-control-version-bound receipt changes admission authority only. New operations, cancels and choices require the current controller; prior request receipts remain read-only recovery state. Mobile adopts the current local execution ID from runtime, keeps progress on successful takeover/handoff and does not discard drafts. Unsupported/unknown mutation outcomes are queried, never automatically resent. Local choices/approvals can be completed by the new controller; current model/config snapshots keep their existing next-request application boundary.
+
+
 ## Synchronization
 
 Existing encrypted push events are low-latency hints. A 512-entry in-memory invalidation journal and 2.5-second cursor pull repair missed hints. Journal stores only resource names and conversation IDs; private operation invalidations are device-scoped.
