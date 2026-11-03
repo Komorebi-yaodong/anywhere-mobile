@@ -527,21 +527,25 @@ describe('conversation workspace state boundaries', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('creates with the selected assistant, selects the saved conversation and rejects double clicks', async () => {
+  it('creates with the selected assistant after accepted admission resolves through the same operation ID', async () => {
     const f = fixture();
-    const created = deferred<unknown>();
+    const completed = deferred<unknown>();
     const base = f.rpc.getMockImplementation()!;
-    f.rpc.mockImplementation((id, method, params) => method === 'conversation.create' ? created.promise : base(id, method, params));
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.request.get' ? completed.promise : base(id, method, params));
     let root!: TestRenderer.ReactTestRenderer;
     await act(async () => { root = TestRenderer.create(<f.Harness status="在线" />); });
-    let pending!: Promise<void>;
-    await act(async () => { pending = f.state.createConversation('Code'); });
+    let admitted!: Promise<void>;
+    await act(async () => { admitted = f.state.createConversation('Code'); });
+    expect(f.tracked).toHaveBeenCalledWith(desktopId, 'conversation.create', {promptCode: 'Code'}, 30_000);
     await expect(f.state.createConversation('Code')).rejects.toThrow('重复');
+    await act(async () => {f.response.resolve({operationId: 'request-workspace-fixture-0001'}); await admitted;});
+    expect(f.state.creatingConversation).toBe(true);
+    expect(f.state.selectedConversationId).not.toBe('conversation-created-fixture-0001');
     const cid = 'conversation-created-fixture-0001';
-    await act(async () => { created.resolve({ok: true, conversationId: cid, title: 'Code - 新会话', promptCode: 'Code'}); await pending; });
-    expect(f.rpc).toHaveBeenCalledWith(desktopId, 'conversation.create', {promptCode: 'Code'}, 60_000);
+    await act(async () => {completed.resolve({requestId: 'request-workspace-fixture-0001', conversationId: cid, windowId: 'window-created', event: 'conversation.operation.completed', eventSequence: 1, terminal: true, text: '', reasoning: '', truncated: false, updatedAt: '', result: {conversationId: cid, title: 'Code - 新会话', promptCode: 'Code'}}); await Promise.resolve();});
     expect(f.state.selectedConversationId).toBe(cid);
     expect(f.state.selectedConversation?.title).toBe('Code - 新会话');
+    expect(f.state.creatingConversation).toBe(false);
     await act(async () => { root.unmount(); });
   });
 

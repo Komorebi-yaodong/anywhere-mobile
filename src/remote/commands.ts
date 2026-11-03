@@ -60,7 +60,7 @@ export async function waitForCommand({
 }
 
 export function startCommand({
-  desktopId, method, params, request, requestTracked, signal, timeoutMs,
+  desktopId, method, params, request, requestTracked, signal, timeoutMs, onAccepted,
 }: {
   desktopId: string;
   method: string;
@@ -69,11 +69,13 @@ export function startCommand({
   requestTracked: RemoteTrackedRequest;
   signal?: AbortSignal;
   timeoutMs?: number;
+  onAccepted?: () => void;
 }): CommandReceipt {
   const tracked = requestTracked(desktopId, method, params, 30_000);
   const completion = (async () => {
     try {
       await tracked.response;
+      try {onAccepted?.();} catch { /* UI feedback cannot change execution. */ }
     } catch (error) {
       // A lost ACK is not proof of failure. Never dispatch the command again.
       const code = error && typeof error === 'object' && 'code' in error

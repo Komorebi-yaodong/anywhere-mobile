@@ -24,6 +24,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
   const [draft, setDraft] = useState(action.method === 'conversation.rename' ? action.title : action.method === 'conversation.message.edit' ? action.content : '');
   const [pendingId, setPendingId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [accepted, setAccepted] = useState(false);
   const [notice, setNotice] = useState('');
   const [finished, setFinished] = useState<'' | 'success' | 'failed'>('');
   const settled = useRef(false);
@@ -49,7 +50,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
         if (action.method === 'conversation.rename') params.title = draft.trim();
         if (action.method === 'conversation.message.edit') params.content = draft;
         if (action.method === 'conversation.delete') params.confirmed = true;
-        const receipt = startCommand({desktopId, method: action.method, params, request, requestTracked, signal: controller.current.signal});
+        const receipt = startCommand({desktopId, method: action.method, params, request, requestTracked, signal: controller.current.signal, onAccepted: () => {if (!controller.current.signal.aborted) setAccepted(true);}});
         setPendingId(receipt.requestId);
         completion = receipt.completion;
       }
@@ -75,6 +76,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
           remote_message_state_changed: '消息已变化，请刷新',
           remote_message_not_found: '消息已不存在',
           remote_conversation_save_failed: '保存失败，请刷新检查',
+          remote_control_epoch_conflict: '会话控制状态已变化，请刷新后重新操作',
           remote_conversation_busy: '会话处理中',
         };
         setNotice(messages[code] || '操作失败，请刷新检查');
@@ -112,7 +114,7 @@ export function ConversationActions({desktopId, conversationId, action, request,
             style={[styles.button, styles.primaryButton, (busy || pendingId || finished || (!destructive && !draft.trim())) && styles.disabled]}
             onPress={pendingId ? () => submit(true) : isMessageDelete ? () => submit() : confirm}
           >
-            <Text style={styles.primaryText}>{busy || pendingId ? (destructive ? '正在删除' : '正在更新') : finished ? finished === 'success' ? '已完成' : '请关闭后刷新' : '确认'}</Text>
+            <Text style={styles.primaryText}>{busy || pendingId ? (accepted ? (destructive ? '已提交，正在删除' : '已提交，正在更新') : (destructive ? '正在删除' : '正在更新')) : finished ? finished === 'success' ? '已完成' : '请关闭后刷新' : '确认'}</Text>
           </Pressable>
           <Pressable style={[styles.button, styles.secondaryButton]} onPress={onClose}>
             <Text style={styles.secondaryText}>{pendingId || finished ? '关闭' : '取消'}</Text>

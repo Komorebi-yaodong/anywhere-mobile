@@ -168,6 +168,7 @@ function workspaceNotice(error: unknown, fallback: string): string {
 
     remote_response_too_large: 'Desktop 返回的数据过大，当前请求未完成；连接仍保留。',
     remote_response_invalid: 'Desktop 返回的数据格式异常，当前请求未完成；连接仍保留。',
+    remote_control_epoch_conflict: '会话控制状态已变化，请刷新后重新操作。',
     remote_conversation_busy: '此操作需要会话空闲，请等待本轮结束后再操作；普通配置可在生成中保存。',
     remote_mobile_takeover_timeout: 'Desktop 尚未确认接管，控制权未变更；请稍后重试。',
     remote_mobile_takeover_failed: 'Desktop 未完成接管，控制权未变更；请刷新后重试。',
@@ -809,7 +810,7 @@ export function WorkspaceShell({
       setContextLengthEdited(false);
       if ('model' in patch) setSavedComposerModel({conversationId, model: result.config.model});
 
-      if (result.deferred) setNotice('已保存，下轮生效');
+      if (result.deferred) setNotice('已保存，下一次请求生效');
       if (closeAfterSave) setSheet(null);
     } catch (error) {
       setSessionNotice(workspaceNotice(error, '保存会话设置失败。'));
@@ -955,10 +956,10 @@ export function WorkspaceShell({
           style: 'destructive',
           onPress: () => {
             workspace.closeConversation(item.conversationId)
-              .then(() => {
+              .then(result => {
                 if (workspace.selectedConversationId === item.conversationId) setMode('router');
                 setSheet(null);
-                setNotice(`已关闭“${title}”的 Desktop 会话窗口，历史已保留。`);
+                setNotice(result?.closing ? '' : `已关闭“${title}”的 Desktop 会话窗口，历史已保留。`);
               })
               .catch(error => setNotice(workspaceNotice(error, '会话未关闭；请稍后重试。')));
           },
@@ -1130,10 +1131,10 @@ export function WorkspaceShell({
         ) : null}
       </View>
 
-      {workspace.error || attachments.error || audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || attachments.progress ? (
+      {workspace.operationNotice || workspace.error || attachments.error || audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || attachments.progress ? (
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            {audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || workspace.error || (attachments.error ? workspaceNotice(new Error(attachments.error), '附件上传失败。') : attachments.progress)}
+            {audioProgress || (audio.processing ? '正在处理录音，请稍候…' : '') || workspace.error || workspace.operationNotice || (attachments.error ? workspaceNotice(new Error(attachments.error), '附件上传失败。') : attachments.progress)}
           </Text>
         </View>
       ) : null}

@@ -98,7 +98,7 @@ describe('Remote destructive confirmation and business revision UI', () => {
     await act(async () => { root = TestRenderer.create(<ConversationActions desktopId="desktop-fixture" conversationId="conversation-fixture" action={{method: 'conversation.message.delete', uiMessageId: 'ui-fixture'}} request={request as RemoteRequest} requestTracked={tracked as RemoteTrackedRequest} onClose={() => undefined} onCompleted={completed} />); });
     await act(async () => button(root, '确认').props.onPress());
     expect(JSON.stringify(root.toJSON())).not.toContain('request-pending-delete-internal');
-    expect(button(root, '正在删除').props.disabled).toBe(true);
+    expect(button(root, '已提交，正在删除').props.disabled).toBe(true);
     await act(async () => {jest.advanceTimersByTime(2500);});
     expect(request).toHaveBeenLastCalledWith('desktop-fixture', 'conversation.request.get', {requestId: 'request-pending-delete-internal'});
     expect(tracked).toHaveBeenCalledTimes(1);

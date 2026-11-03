@@ -413,7 +413,7 @@ export function createRemoteApi({
       return request<{ok: true; assistants: RemoteAssistant[]}>(desktopId, 'conversation.assistants.list');
     },
     createConversation(promptCode: string) {
-      return request<ConversationCreateResult>(desktopId, 'conversation.create', {promptCode}, 60_000);
+      return requestTracked<{operationId: string}>(desktopId, 'conversation.create', {promptCode}, 30_000);
     },
 
     listConversations(limit = 100, cursor?: string) {
@@ -497,7 +497,7 @@ export function createRemoteApi({
       );
     },
     closeConversation(conversationId: string) {
-      return request<{ok: true; conversationId: string; windowId: string; closed?: boolean; closing?: boolean}>(
+      return request<{ok: true; conversationId: string; windowId: string; closed?: boolean; closing?: boolean; accepted?: boolean; operationId?: string}>(
         desktopId,
         'conversation.close',
         {conversationId},

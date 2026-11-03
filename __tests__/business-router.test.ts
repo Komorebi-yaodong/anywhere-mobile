@@ -40,6 +40,22 @@ it('uses advertised lightweight control without reading history; old Desktop fal
  await old.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId, uiMessageId: 'ui-fixture'}, 30000, 'command-router-fixture', 100);
  expect(old.raw).toHaveBeenCalledWith('conversation.view.get', {conversationId: frozen.runtime.conversationId, pageSize: 1});
 });
+
+it('reuses a validated control epoch for the next same-conversation command and drops it on conflict without replay', async () => {
+ const f = fixture(); const base = f.raw.getMockImplementation()!; let controlReads = 0;
+ f.router.welcome(['remote.contract.negotiate', 'conversation.control.get']);
+ f.raw.mockImplementation((method, params) => method === 'conversation.control.get'
+  ? (++controlReads, Promise.resolve({...frozen.runtime, control: {epoch: 'cached-epoch', owner: 'this_device', canWrite: true}}))
+  : base(method, params));
+ await f.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId, uiMessageId: 'one'}, 30000, 'command-cache-one', 100);
+ await f.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId, uiMessageId: 'two'}, 30000, 'command-cache-two', 101);
+ expect(controlReads).toBe(1);
+ f.raw.mockImplementation((method, params) => method === 'command.submit' ? Promise.reject(Object.assign(new Error('conflict'), {code: 'remote_control_epoch_conflict'})) : base(method, params));
+ await expect(f.router.route('conversation.message.delete', {conversationId: frozen.runtime.conversationId, uiMessageId: 'three'}, 30000, 'command-cache-three', 102)).rejects.toMatchObject({code: 'remote_control_epoch_conflict'});
+ expect(f.persistence.settle).toHaveBeenCalledWith('command-cache-three');
+ expect(f.raw.mock.calls.filter(call => call[0] === 'command.submit' && (call[1] as {commandId?: string} | undefined)?.commandId === 'command-cache-three')).toHaveLength(1);
+});
+
 it('does not downgrade or submit when advertised control fails or belongs to another conversation', async () => {
  for (const failed of [false, true]) {
   const f = fixture(); const base = f.raw.getMockImplementation()!;

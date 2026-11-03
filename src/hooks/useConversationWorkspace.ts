@@ -22,6 +22,8 @@ import {createConversationMessageRefresh} from './conversationMessageRefresh';
 
 import {createBusinessSession} from '../remote/businessSession';
 
+import {waitForCommand} from '../remote/commands';
+
 import {completeHistory, readSized} from '../remote/historyRead';
 import type {Runtime} from '../../packages/remote-contract';
 
@@ -166,6 +168,13 @@ export function useConversationWorkspace({
   const settledSendReceipts = useRef(new Set<string>());
   const [creatingConversation, setCreatingConversation] = useState(false);
   const creatingRef = useRef(false);
+  const creationController = useRef<AbortController | null>(null);
+  const closingConversations = useRef(new Set<string>());
+  const [operationNotice, setOperationNotice] = useState('');
+  useEffect(() => {
+    creatingRef.current = false;setCreatingConversation(false);setOperationNotice('');
+    return () => {creationController.current?.abort();};
+  }, [desktopId]);
 
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -546,48 +555,43 @@ export function useConversationWorkspace({
         throw new Error('请等待 Desktop 在线后新建会话。');
       creatingRef.current = true;
       setCreatingConversation(true);
+      const controller = new AbortController(); creationController.current = controller;
+      const initialSelection = scopeRef.current.selectedConversationId;
       try {
-        const result = await api.createConversation(promptCode);
-        if (scopeRef.current.desktopId !== desktopId) return;
-        catalogEpoch.current += 1;
-        setCatalogLoading(false);
-        const now = new Date().toISOString();
-        const created: ConversationSummary = {
-          conversationId: result.conversationId,
-          title: result.title,
-          format: 'sqlite',
-          revision: 0,
-          createdAt: now,
-          updatedAt: now,
-          byteSize: 0,
-          project: null,
-          readable: true,
-          migrationRequired: false,
-          window: null,
-        };
-        setCatalog(current =>
-          mergeById(
-            [created],
-            current.filter(
-              item => item.conversationId !== result.conversationId,
-            ),
-            'conversationId',
-          ),
-        );
-        setControlledConversationIds(current => [...new Set([...current, result.conversationId])]);
-        setConfigured(true);
-        selectConversation(result.conversationId);
+        const admitted = api.createConversation(promptCode);
+        // Return after the Desktop has durably accepted this write. Do not wait
+        // for hidden-window/Renderer readiness on the click path.
+        await admitted.response;
+        if (controller.signal.aborted || scopeRef.current.desktopId !== desktopId) return;
         setError('');
+        setOperationNotice('正在创建会话…');
+        waitForCommand({desktopId, requestId: admitted.requestId, request, timeoutMs: 60_000, signal: controller.signal}).then(state => {
+          const result = state.result as {conversationId: string; title: string; promptCode: string};
+          if (!result?.conversationId || typeof result.title !== 'string') throw new Error('创建会话结果无效。');
+          if (controller.signal.aborted || scopeRef.current.desktopId !== desktopId) return;
+          catalogEpoch.current += 1; setCatalogLoading(false);
+          const now = new Date().toISOString();
+          const created: ConversationSummary = {conversationId: result.conversationId, title: result.title, format: 'sqlite', revision: 0,
+            createdAt: now, updatedAt: now, byteSize: 0, project: null, readable: true, migrationRequired: false, window: null};
+          setCatalog(current => mergeById([created], current.filter(item => item.conversationId !== result.conversationId), 'conversationId'));
+          setControlledConversationIds(current => [...new Set([...current, result.conversationId])]);
+          setConfigured(true);
+          if (scopeRef.current.selectedConversationId === initialSelection) selectConversation(result.conversationId);
+        }).catch(cause => {
+          if (!controller.signal.aborted && scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));
+        }).finally(() => {
+          if (creationController.current !== controller) return;
+          creationController.current = null; creatingRef.current = false;
+          if (!controller.signal.aborted) {setCreatingConversation(false);setOperationNotice('');}
+        });
       } catch (cause) {
-        if (scopeRef.current.desktopId === desktopId)
-          setError(errorMessage(cause));
-        throw cause;
-      } finally {
         creatingRef.current = false;
         setCreatingConversation(false);
+        if (scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));
+        throw cause;
       }
     },
-    [api, desktopId, desktopStatus, selectConversation],
+    [api, desktopId, desktopStatus, request, selectConversation],
   );
 
   const applyRequestState = useCallback(
@@ -1026,10 +1030,14 @@ export function useConversationWorkspace({
         const accepted = (await tracked.response) as {
           queued?: boolean;
           position?: number;
+          accepted?: boolean;
         };
         // A buffered input may be persisted at a tool boundary before its RPC ACK.
         // Its terminal receipt belongs to the input, not to the still-running parent.
         if (settledSendReceipts.current.has(tracked.requestId)) return;
+        // Durable admission says nothing about which turn is executing. Keep a
+        // queued input in place until its authoritative queue/started event.
+        if (accepted.accepted && shouldQueue) return;
         if (accepted.queued) {
           if (!shouldQueue)
             commitQueue(current => [
@@ -1212,7 +1220,18 @@ export function useConversationWorkspace({
     snapshots.remove(conversationId);
     if (!conversationId) return;
     assertControl(conversationId);
-    await api.closeConversation(conversationId);
+    if (closingConversations.current.has(conversationId)) return {closing: true};
+    closingConversations.current.add(conversationId);
+    let result: {accepted?: boolean; operationId?: string; closed?: boolean};
+    try {result = await api.closeConversation(conversationId);} catch (cause) {closingConversations.current.delete(conversationId);throw cause;}
+    if (result.accepted && result.operationId) {
+      setOperationNotice('正在关闭会话…');
+      waitForCommand({desktopId, requestId: result.operationId, request, timeoutMs: 60_000}).then(() => {
+        if (scopeRef.current.desktopId !== desktopId) return;
+        refreshOpenedSessions().catch(() => undefined); refreshCatalog().catch(() => undefined);
+      }).catch(cause => {if (scopeRef.current.desktopId === desktopId) setError(errorMessage(cause));})
+        .finally(() => {closingConversations.current.delete(conversationId);if (scopeRef.current.desktopId === desktopId) setOperationNotice('');});
+    } else closingConversations.current.delete(conversationId);
     if (scopeRef.current.selectedConversationId === conversationId) {
       messageEpoch.current += 1;
       scopeRef.current.selectedConversationId = '';
@@ -1229,8 +1248,9 @@ export function useConversationWorkspace({
         current?.conversationId === conversationId ? null : current,
       );
     }
-    await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
-  }, [api, assertControl, commitTurn, refreshCatalog, refreshOpenedSessions, snapshots]);
+    if (!result.accepted) await Promise.all([refreshOpenedSessions(), refreshCatalog()]);
+    return {closing: result.accepted === true};
+  }, [api, assertControl, commitTurn, desktopId, request, refreshCatalog, refreshOpenedSessions, snapshots]);
 
 
 
@@ -1272,6 +1292,7 @@ export function useConversationWorkspace({
     queuedSends,
     removeQueuedSend,
     creatingConversation,
+    operationNotice,
 
     configured,
     catalog,
@@ -1382,6 +1403,7 @@ function errorMessage(value: unknown): string {
   const code = errorCode(value);
   const messages: Record<string, string> = {
     remote_conversation_not_found: '会话已不存在',
+    remote_control_epoch_conflict: '会话控制状态已变化，请刷新后重新操作。',
 
     remote_client_closed: '连接被重置，正在恢复。',
     remote_transport_closed: '连接已关闭，正在恢复。',
