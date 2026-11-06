@@ -524,6 +524,8 @@ export function useConversationWorkspace({
   }, [api]);
 
   const selectConversation = useCallback((conversationId: string, openedTitle = '') => {
+    // Re-selecting the current conversation must preserve its live view and draft.
+    const reselecting = Boolean(conversationId && scopeRef.current.selectedConversationId === conversationId);
     navigationVersion.current += 1;
     preserveEmptySelection.current = true;
 
@@ -547,6 +549,7 @@ export function useConversationWorkspace({
           if (scopeRef.current.selectedConversationId === conversationId || !scopeRef.current.selectedConversationId) setError(errorMessage(cause));
         });
     }
+    if (reselecting) return;
     messageEpoch.current += 1;
     messageRefresh.cancel();
     deletedUiMessageIdsRef.current.clear();

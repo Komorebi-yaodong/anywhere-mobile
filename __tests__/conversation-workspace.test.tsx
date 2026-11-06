@@ -91,6 +91,19 @@ function fixture() {
 
 describe('conversation workspace state boundaries', () => {
 
+  it('reselects an opened conversation without resetting its live transcript', async () => {
+    const f = fixture();
+    let tree!: TestRenderer.ReactTestRenderer;
+    await act(async () => {tree = TestRenderer.create(<f.Harness status="在线" />);});
+    await act(async () => {f.state.selectConversation(A);});
+    const messages = f.state.messages;
+    await act(async () => {f.state.selectConversation(A);});
+    expect(f.state.messages).toBe(messages);
+    expect(f.state.selectedConversationId).toBe(A);
+    await act(async () => {tree.unmount();});
+  });
+
+
   beforeEach(() => {jest.spyOn(AppState, 'addEventListener').mockImplementation(() => ({remove: jest.fn()}));});
   afterEach(() => jest.restoreAllMocks());
 
