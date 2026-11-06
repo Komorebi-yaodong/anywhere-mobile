@@ -134,3 +134,12 @@ it('persistence failure prevents dispatch and unsafe/unknown content has a visib
  const page = decodeStructuredPage({...frozen.page, messages: [{...frozen.page.messages[0], payload: {blocks: [{kind: 'markdown', text: 'safe'}, {kind: 'file', name: 'a.txt'}, {kind: 'image', uri: 'file:///PRIVATE'}, {kind: 'future'}]}}]});
  expect(JSON.stringify(page)).toContain('safe'); expect(JSON.stringify(page)).toContain('a.txt'); expect(JSON.stringify(page)).not.toContain('PRIVATE'); expect(JSON.stringify(page)).toContain('暂不支持');
 });
+
+it('gates fork capability and preserves original request ID without replay or contract mutation', async () => {
+ const f = fixture();
+ await expect(f.router.route('conversation.message.fork', {conversationId: 'fixture', uiMessageId: 'message'}, 20000, 'fork-id', 100)).rejects.toMatchObject({code: 'remote_method_unavailable'});
+ f.router.welcome(['remote.contract.negotiate', 'conversation.message.fork']);
+ await f.router.route('conversation.message.fork', {conversationId: 'fixture', uiMessageId: 'message'}, 20000, 'fork-id', 100);
+ expect(f.raw).toHaveBeenCalledWith('conversation.message.fork', {conversationId: 'fixture', uiMessageId: 'message'}, 20000, 'fork-id');
+ expect(f.raw).toHaveBeenCalledTimes(1);
+});

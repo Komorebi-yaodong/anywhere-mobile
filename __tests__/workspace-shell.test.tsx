@@ -481,6 +481,29 @@ test('shows recorded audio upload progress before the send completes', async () 
 });
 
 
+test('forks from the message action and navigates only after confirmed completion', async () => {
+  openConfigSession();
+  const props = workspaceProps();
+  mockWorkspaceMessages = [{messageId: 'fork-message', uiMessageId: 'ui-fork-message', role: 'user', order: 1,
+    payload: {content: 'synthetic fork target', reasoningContent: '', timestamp: '', completedTimestamp: '', toolCalls: []}}];
+  (props.requestTracked as jest.Mock).mockReturnValue({requestId: 'request-fork-mobile', response: Promise.resolve({ok: true})});
+  const originalRequest = props.request;
+  props.request = jest.fn(async (id: string, method: string, params: any) => method === 'conversation.request.get'
+    ? {requestId: 'request-fork-mobile', terminal: true, event: 'conversation.operation.completed', result: {forkedConversationId: 'forked-mobile-fixture'}}
+    : originalRequest(id, method, params)) as RemoteRequest;
+  let root!: TestRenderer.ReactTestRenderer;
+  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+  await enterFixtureChat(root);
+  mockSelectConversation.mockClear();
+  const fork = root.root.findAll(node => node.props.accessibilityLabel === 'Fork会话' && typeof node.props.onPress === 'function')[0];
+  expect(fork).toBeDefined();
+  await act(async () => {await fork.props.onPress();});
+  expect(props.requestTracked).toHaveBeenCalledWith(props.desktop.id, 'conversation.message.fork', expect.objectContaining({uiMessageId: 'ui-fork-message'}), 30000);
+  expect(mockSelectConversation).toHaveBeenCalledWith('forked-mobile-fixture');
+  await act(async () => root.unmount());
+});
+
+
 test('renders document cards separately and edits only prose, never file labels or extracted content', async () => {
   openConfigSession();
   const props = workspaceProps();

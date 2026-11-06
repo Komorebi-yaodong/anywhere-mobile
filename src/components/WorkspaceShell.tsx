@@ -44,6 +44,7 @@ import type {
 import type { RemoteEventMessage } from '../remote/client';
 import {
   startCommand,
+  trackCommand,
   type ConversationConfigResult,
 } from '../remote/commands';
 import { PhotoCapture } from './PhotoCapture';
@@ -323,6 +324,13 @@ export function WorkspaceShell({
   const [agentAvatarCaches, setAgentAvatarCaches] = useState<Record<string, AvatarCache>>({});
   const [agentAvatarSources, setAgentAvatarSources] = useState<Record<string, string>>({});
 
+  const forkOperation = useRef(false);
+  const forkAbort = useRef(new AbortController());
+  useEffect(() => {
+    const controller = new AbortController();
+    forkAbort.current = controller;
+    return () => controller.abort();
+  }, [desktop.id]);
   const currentConversation = useRef(workspace.selectedConversationId);
   currentConversation.current = workspace.selectedConversationId;
 
@@ -1210,6 +1218,22 @@ export function WorkspaceShell({
           hasOlder={workspace.messagePage?.hasMore === true}
           onReask={async id => { if (!requireControl()) return; await workspace.reaskLastAssistant(id); }}
           onResendUser={async id => { if (!requireControl()) return; await workspace.resendLastUser(id); }}
+          onFork={async message => {
+            if (!requireControl() || forkOperation.current) return;
+            forkOperation.current = true;
+            const signal = forkAbort.current.signal;
+            const sourceId = workspace.selectedConversationId;
+            try {
+              const result = await trackCommand({desktopId: desktop.id,
+                tracked: requestTracked(desktop.id, 'conversation.message.fork', {conversationId: sourceId, uiMessageId: message.uiMessageId}, 30000),
+                request, signal, keepTracking: true}).completion;
+              if (signal.aborted) return;
+              const forkedId = result.result?.forkedConversationId;
+              await workspace.refreshCatalog();
+              if (typeof forkedId === 'string' && currentConversation.current === sourceId) workspace.selectConversation(forkedId);
+            } catch (cause) {if (!signal.aborted) Alert.alert('Fork失败', cause instanceof Error ? cause.message : '请刷新后检查');}
+            finally {forkOperation.current = false;}
+          }}
           onEdit={message => {
             if (!requireControl()) return;
             setMessageAction({
@@ -1605,6 +1629,7 @@ const ChatPage = React.forwardRef<
     hasOlder: boolean;
     onReask: (id: string) => Promise<void>;
     onResendUser: (id: string) => Promise<void>;
+    onFork: (message: RemoteMessage) => Promise<void>;
     onEdit: (message: RemoteMessage) => void;
     onDelete: (message: RemoteMessage) => void;
     writable: boolean;
@@ -1644,6 +1669,7 @@ const ChatPage = React.forwardRef<
       onRefresh,
       onReask,
       onResendUser,
+      onFork,
       onEdit,
       onDelete,
       writable,
@@ -1687,8 +1713,8 @@ const ChatPage = React.forwardRef<
     // Desktop already chose message boundaries. Never merge them into a live
     // request preview or reinterpret canonical IDs as duplicate UI messages.
     const rows = useMemo(() => messages.filter(shouldRenderMessage), [messages]);
-    const actions = useRef({onEdit, onDelete, onReask, onResendUser, onSubmitChoice});
-    actions.current = {onEdit, onDelete, onReask, onResendUser, onSubmitChoice};
+    const actions = useRef({onFork, onEdit, onDelete, onReask, onResendUser, onSubmitChoice});
+    actions.current = {onFork, onEdit, onDelete, onReask, onResendUser, onSubmitChoice};
     const navigate = (target: 'top' | 'previous' | 'next' | 'bottom') => {
       if (target === 'top') list.current?.top();
       else if (target === 'bottom') list.current?.bottom();
@@ -1732,6 +1758,7 @@ const ChatPage = React.forwardRef<
               assistantAvatar={assistantAvatar}
               pendingChoices={pendingChoices}
               onSubmitChoice={(...args) => actions.current.onSubmitChoice(...args)}
+              onFork={() => {actions.current.onFork(item).catch(() => undefined);}}
               onEdit={() => actions.current.onEdit(item)}
               onDelete={() => actions.current.onDelete(item)}
               writable={writable && (!activeTurn || activeTurn.terminal)}
@@ -2222,6 +2249,7 @@ const MessageCard = React.memo(function MessageCardView({
   onSubmitChoice,
   reask,
   resend,
+  onFork,
   onEdit,
   onDelete,
   writable,
@@ -2240,6 +2268,7 @@ const MessageCard = React.memo(function MessageCardView({
   reask?: () => void;
   resend?: () => void;
   choiceWritable?: boolean;
+  onFork: () => void;
   onEdit: () => void;
   onDelete: () => void;
   writable: boolean;
@@ -2275,6 +2304,7 @@ const MessageCard = React.memo(function MessageCardView({
       <View style={[styles.messageTools, isUser && styles.messageToolsRight]}>
         <Pressable accessibilityLabel="复制消息" onPress={() => Clipboard.setString(copyText)}><AppIcon name="copy" size={17} /></Pressable>
         {editableMessage ? <Pressable disabled={!writable} accessibilityLabel="编辑消息" onPress={onEdit}><AppIcon name="edit" size={17} /></Pressable> : null}
+        {editableMessage ? <Pressable disabled={!writable} accessibilityLabel="Fork会话" onPress={onFork}><AppIcon name="fork" size={17} /></Pressable> : null}
         {editableMessage ? <Pressable disabled={!writable} accessibilityLabel="删除消息" onPress={onDelete}><AppIcon name="delete" size={17} /></Pressable> : null}
         {reask ? <Pressable onPress={reask} accessibilityLabel="重答"><AppIcon name="reask" size={17} /></Pressable> : null}
         {resend ? <Pressable onPress={resend} accessibilityLabel="重发送"><AppIcon name="reask" size={17} /></Pressable> : null}
