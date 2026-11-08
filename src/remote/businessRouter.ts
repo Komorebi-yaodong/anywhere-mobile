@@ -33,7 +33,7 @@ export function createBusinessRouter(transport: Raw, persistence?: {remember: (i
   }
   async function route(method: string, params: Record<string, unknown>, timeout: number, commandId: string, issuedAt: number) {
     if (method === 'conversation.config.get') timeout = 120000;
-    if (method === 'workspace.usage.get' || method === 'conversation.message.fork') {
+    if (method === 'workspace.usage.get' || method === 'workspace.settings.revision.get' || method === 'conversation.message.fork') {
       if (!advertised.includes(method)) throw error('remote_method_unavailable');
       return raw(method, params, timeout, commandId);
     }

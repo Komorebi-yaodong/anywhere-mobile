@@ -26,6 +26,17 @@ it('reads only the advertised statistics endpoint without commands or control', 
 });
 
 
+it('reads settings revision only when explicitly advertised without frozen contract or write paths', async () => {
+ const f = fixture();
+ await expect(f.router.route('workspace.settings.revision.get', {}, 20000, 'revision-id', 100)).rejects.toMatchObject({code: 'remote_method_unavailable'});
+ f.router.welcome(['remote.contract.negotiate', 'workspace.settings.revision.get']);
+ await f.router.route('workspace.settings.revision.get', {}, 20000, 'revision-id', 100);
+ expect(f.raw).toHaveBeenCalledWith('workspace.settings.revision.get', {}, 20000, 'revision-id');
+ expect(f.persistence.remember).not.toHaveBeenCalled();
+ expect(f.raw).toHaveBeenCalledTimes(1);
+});
+
+
 it('routes resource reads, durable commands and attachment transfer through independent endpoints', async () => {
  const f = fixture();
  await f.router.route('workspace.bootstrap.get', {}, 20000, 'read-id-fixture', 100);

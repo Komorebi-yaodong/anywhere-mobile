@@ -1,3 +1,5 @@
+import {useSettingsCatalog} from '../hooks/useSettingsCatalog';
+import {useProviderFolderCollapse} from '../services/providerFolderPreferences';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
@@ -110,29 +112,22 @@ export function ProviderSettings({
   refreshSignal: number;
 }) {
   const s = useThemedStyles(styles);
-  const [catalog, setCatalog] = useState<WorkspaceProviderCatalog | null>(null);
+  const {catalog, reload, setCatalog, refreshing} = useSettingsCatalog<WorkspaceProviderCatalog>(request, desktopId, 'workspace.provider.catalog');
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [editor, setEditor] = useState<ProviderEditorState | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
-  const [ungroupedCollapsed, setUngroupedCollapsed] = useState(false);
+  const folderCollapse = useProviderFolderCollapse(desktopId);
 
-  const load = useCallback(async () => {
-    setBusy(true);
+  const load = useCallback(async (force = true) => {
+    if (force) setBusy(true);
     setError('');
-    try {
-      setCatalog(await request<WorkspaceProviderCatalog>(desktopId, 'workspace.provider.catalog'));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '读取服务商失败，请刷新重试。');
-    } finally {
-      setBusy(false);
-    }
-  }, [desktopId, request]);
-
-  useEffect(() => {
-    load().catch(() => undefined);
-  }, [load, refreshSignal]);
+    try {await reload(force);}
+    catch (cause) {setError(cause instanceof Error ? cause.message : '读取服务商失败，请刷新重试。');}
+    finally {if (force) setBusy(false);}
+  }, [reload]);
+  useEffect(() => {load(false).catch(() => undefined);}, [load, refreshSignal]);
 
   const moveProvider = async (
     folderId: string,
@@ -163,7 +158,7 @@ export function ProviderSettings({
   };
 
   const mutateFolder = async (
-    operation: 'create' | 'rename' | 'toggle' | 'delete',
+    operation: 'create' | 'rename' | 'delete',
     input: Record<string, unknown>,
   ) => {
     setBusy(true);
@@ -225,6 +220,7 @@ export function ProviderSettings({
     const folderGroups = folders
       .map(folder => ({
         ...folder,
+        collapsed: folderCollapse.collapsed(folder.id),
         removable: true,
         providers: providers.filter(provider => provider.folderId === folder.id),
       }))
@@ -232,14 +228,14 @@ export function ProviderSettings({
     const ungrouped = {
       id: '',
       name: '未分类',
-      collapsed: ungroupedCollapsed,
+      collapsed: folderCollapse.collapsed(''),
       removable: false,
       providers: providers.filter(provider =>
         !provider.folderId || !folders.some(folder => folder.id === provider.folderId),
       ),
     };
     return [...folderGroups, ungrouped];
-  }, [catalog?.folders, catalog?.providers, query, ungroupedCollapsed]);
+  }, [catalog?.folders, catalog?.providers, query, folderCollapse]);
 
 
 
@@ -350,7 +346,7 @@ export function ProviderSettings({
         />
       </View>
       {error ? <Text style={s.error}>{error}</Text> : null}
-      {busy && !catalog ? <ActivityIndicator color={C.primary} /> : null}
+      {(busy || refreshing) && !catalog ? <ActivityIndicator color={C.primary} /> : null}
       <ScrollView
         style={s.scroll}
         contentContainerStyle={s.list}
@@ -363,9 +359,7 @@ export function ProviderSettings({
             busy={busy}
             controlsDisabled={busy}
             searching={Boolean(query.trim())}
-            onToggle={() => group.id
-              ? mutateFolder('toggle', {id: group.id, collapsed: !group.collapsed})
-              : setUngroupedCollapsed(current => !current)}
+            onToggle={() => {folderCollapse.toggle(group.id).catch(() => setError('目录状态已切换，但未能保存到手机，请重试。'));}}
             onRename={() => group.id && setFolderDialog({mode: 'rename', folder: group})}
             onDelete={() => group.id && removeFolder(group)}
             onMoveProvider={(providerId, direction) => moveProvider(
@@ -445,7 +439,7 @@ function ProviderGroup({
   return (
     <View style={s.groupCard}>
       <View style={s.groupHeader}>
-        <Pressable style={s.groupTitlePress} onPress={onToggle} disabled={controlsDisabled}>
+        <Pressable style={s.groupTitlePress} onPress={onToggle} accessibilityLabel={`切换目录 ${group.name}`} accessibilityState={{expanded}}>
           <AppIcon name={expanded ? '⌄' : '›'} size={17} color={C.muted} />
           <Text numberOfLines={1} style={s.groupName}>{group.name}</Text>
           <Text style={s.groupCount}>{group.providers.length}</Text>

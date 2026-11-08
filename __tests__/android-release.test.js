@@ -107,6 +107,17 @@ it('push builds artifacts only; only manual publication receives contents write'
   expect(JSON.stringify(workflow)).not.toContain('macos'); expect(JSON.stringify(workflow)).not.toContain('xcodebuild');
 });
 
+it('installs pnpm before setup-node can initialize package-manager caches in every job', () => {
+  for (const job of Object.values(workflow.jobs)) {
+    const setupNode = job.steps.findIndex(step => step.uses?.startsWith('actions/setup-node@'));
+    const setupPnpm = job.steps.findIndex(step => step.uses?.startsWith('pnpm/action-setup@'));
+    expect(setupPnpm).toBeGreaterThanOrEqual(0);
+    expect(setupPnpm).toBeLessThan(setupNode);
+    expect(job.steps[setupNode].with.cache).toBe('pnpm');
+  }
+});
+
+
 it('explicitly installs supported SDK packages instead of setup-android v3 retired tools default', () => {
   const setup = workflow.jobs.android.steps.find(step => step.uses === 'android-actions/setup-android@v3');
   expect(setup.with.packages.split(/\s+/)).toEqual([

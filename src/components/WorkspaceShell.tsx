@@ -1188,6 +1188,8 @@ export function WorkspaceShell({
         </ChatStartSwipe>
       ) : mode === 'settings' ? (
         <GlobalSettings
+          key={desktop.id}
+          active={visible && connected}
           profileName={bootstrap?.profile.displayName || desktop.profileName}
           profileAvatar={desktop.avatarCache && isAvatarCacheValid(desktop.avatarCache) ? desktop.avatarCache.uri : bootstrap?.profile.avatarUrl}
           desktopId={desktop.id}

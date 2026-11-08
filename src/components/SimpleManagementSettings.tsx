@@ -1,5 +1,6 @@
+import {useSettingsCatalog} from '../hooks/useSettingsCatalog';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -72,42 +73,30 @@ export function SimpleManagementSettings({
   const [saved, setSaved] = useState(false);
   const [avatarFailed, setAvatarFailed] = useState(false);
   useEffect(() => setAvatarFailed(false), [profileAvatar]);
-  const [items, setItems] = useState<ToggleItem[]>([]);
-  const [general, setGeneral] = useState<GeneralReply | null>(null);
+  const {catalog, reload, setCatalog, refreshing} = useSettingsCatalog<DetailsReply | GeneralReply>(request, desktopId, 'workspace.management.details.get', {section});
+  const items = catalog?.section !== 'general' ? (catalog as DetailsReply | null)?.items || [] : [];
+  const general = catalog?.section === 'general' ? catalog as GeneralReply : null;
+  const setItems = (action: (current: ToggleItem[]) => ToggleItem[]) => setCatalog(current => current && current.section !== 'general'
+    ? {...current, items: action((current as DetailsReply).items || [])} as DetailsReply : current);
   const [nickname, setNickname] = useState('');
+  const nicknameDirty = useRef(false);
+  useEffect(() => {nicknameDirty.current = false;}, [desktopId, section]);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const load = useCallback(async () => {
-    setBusy(true);
-    setError('');
-    setSaved(false);
+  const load = useCallback(async (force = true) => {
+    if (force) setBusy(true);
+    setError(''); setSaved(false);
     try {
-      const result = await request<DetailsReply | GeneralReply>(
-        desktopId,
-        'workspace.management.details.get',
-        {section},
-      );
-      if (section === 'general') {
-        const detail = result as GeneralReply;
-        setGeneral(detail);
-        setNickname(detail.value?.displayName || '');
-      } else {
-        setItems((result as DetailsReply).items || []);
-      }
+      const result = await reload(force);
+      if (force && result.section === 'general' && !nicknameDirty.current) setNickname((result as GeneralReply).value?.displayName || '');
       return true;
-    } catch (cause) {
-      setError(message(cause, '读取设置失败，请在顶部刷新后重试。'));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }, [desktopId, request, section]);
-
-  useEffect(() => {
-    load().catch(() => undefined);
-  }, [load, refreshSignal]);
+    } catch (cause) {setError(message(cause, '读取设置失败，请在顶部刷新后重试。')); return false;}
+    finally {if (force) setBusy(false);}
+  }, [reload]);
+  useEffect(() => {load(false).catch(() => undefined);}, [load, refreshSignal]);
+  useEffect(() => {if (!nicknameDirty.current) setNickname(general?.value.displayName || '');}, [desktopId, section, general?.value.displayName]);
 
   const toggle = async (item: ToggleItem) => {
     if (busy) return;
@@ -154,6 +143,7 @@ export function SimpleManagementSettings({
         },
         60_000,
       );
+      nicknameDirty.current = false;
       const refreshed = await load();
       await onChanged();
       setSaved(refreshed);
@@ -180,9 +170,9 @@ export function SimpleManagementSettings({
               <View style={s.profileCopy}><Text style={s.profileMeta}>个人资料</Text><Text numberOfLines={1} style={s.profileTitle}>{displayName}</Text></View>
             </View>
             {error ? <Text accessibilityRole="alert" style={s.generalError}>{error}</Text> : null}
-            {!general && busy ? <ActivityIndicator color={C.primary} /> : null}
+            {!general && (busy || refreshing) ? <ActivityIndicator color={C.primary} /> : null}
             {general ? <>
-              <View style={s.field}><Text style={s.fieldLabel}>昵称</Text><TextInput accessibilityLabel="昵称" value={nickname} onChangeText={value => {setNickname(value);setSaved(false);}} editable={!busy} maxLength={12} placeholder="输入昵称" placeholderTextColor={C.muted} style={s.input} /></View>
+              <View style={s.field}><Text style={s.fieldLabel}>昵称</Text><TextInput accessibilityLabel="昵称" value={nickname} onChangeText={value => {nicknameDirty.current = true;setNickname(value);setSaved(false);}} editable={!busy} maxLength={12} placeholder="输入昵称" placeholderTextColor={C.muted} style={s.input} /></View>
               <Pressable accessibilityRole="button" accessibilityLabel="保存昵称" disabled={saveDisabled} style={[s.save, saveDisabled && s.disabled]} onPress={saveNickname}>
                 <Text style={s.saveText}>{busy ? '正在保存…' : '保存昵称'}</Text>
               </Pressable>
@@ -207,7 +197,7 @@ export function SimpleManagementSettings({
     <View style={s.root}>
       {error ? <Text style={s.error}>{error}</Text> : null}
       <View style={s.search}><AppIcon name="search" size={17} color={C.muted} /><TextInput value={query} onChangeText={setQuery} placeholder={section === 'mcp' ? '搜索 MCP 名称、ID 或标签' : '搜索 Skill 名称'} placeholderTextColor={C.muted} style={s.searchInput} /></View>
-      {busy && !items.length ? <ActivityIndicator color={C.primary} /> : null}
+      {(busy || refreshing) && !catalog ? <ActivityIndicator color={C.primary} /> : null}
       <ScrollView style={s.scroll} contentContainerStyle={s.list} keyboardShouldPersistTaps="handled">
         {visibleItems.map(item => (
           <View key={item.id} style={s.itemCard}>

@@ -1,3 +1,4 @@
+import {SettingsActivityContext, useSettingsCatalog} from '../hooks/useSettingsCatalog';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
@@ -81,7 +82,9 @@ export function GlobalSettings({
   refreshSignal,
   profileName,
   profileAvatar,
+  active = true,
 }: {
+  active?: boolean;
   desktopId: string;
   request: RemoteRequest;
   onChanged: () => void;
@@ -96,7 +99,7 @@ export function GlobalSettings({
   useEffect(() => onSectionChange(section), [onSectionChange, section]);
 
   return (
-    <View style={s.root}>
+    <SettingsActivityContext.Provider value={active}><View style={s.root}>
       <ScrollView
         horizontal
         style={s.sectionScroll}
@@ -159,7 +162,7 @@ export function GlobalSettings({
           refreshSignal={refreshSignal}
         />
       ) : null}
-    </View>
+    </View></SettingsActivityContext.Provider>
   );
 }
 
@@ -226,7 +229,7 @@ function AgentSettings({
   refreshSignal: number;
 }) {
   const s = useThemedStyles(styles);
-  const [catalog, setCatalog] = useState<WorkspaceAgentCatalog | null>(null);
+  const {catalog, reload, setCatalog, refreshing} = useSettingsCatalog<WorkspaceAgentCatalog>(request, desktopId, 'workspace.agent.catalog');
   const [selectedTag, setSelectedTag] = useState('__all__');
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
@@ -239,45 +242,29 @@ function AgentSettings({
   const [routesEditor, setRoutesEditor] = useState<{routes: WorkspaceAgentRoutes; revision: string} | null>(null);
 
 
-  const load = useCallback(async () => {
-    setBusy(true);
+  const load = useCallback(async (force = true) => {
+    if (force) setBusy(true);
     setError('');
-    try {
-      const next = await request<WorkspaceAgentCatalog>(
-        desktopId,
-        'workspace.agent.catalog',
-      );
-      const entries = await Promise.all(next.agents.map(async agent => {
-        try {
-          if (agent.avatar) {
-            const cache = await ensureAvatarResource({
-              desktopId,
-              resource: agent.avatar,
-              request,
-              displayName: agent.name,
-            });
-            return [agent.code, cache?.uri || agent.icon] as const;
-          }
-          return [agent.code, await cacheRemoteImage(agent.icon || '')] as const;
-        } catch {
-          return [agent.code, agent.icon || ''] as const;
-        }
-      }));
-      setAvatarSources(Object.fromEntries(entries.filter(([, source]) => Boolean(source))));
-      setCatalog(next);
-      if (selectedTag !== '__all__' && !next.tags.includes(selectedTag)) {
-        setSelectedTag('__all__');
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '读取 Agent 失败，请刷新重试。');
-    } finally {
-      setBusy(false);
-    }
-  }, [desktopId, request, selectedTag]);
-
+    try {await reload(force);}
+    catch (cause) {if (String(cause) !== 'Error: settings_read_superseded') setError(cause instanceof Error ? cause.message : '读取 Agent 失败，请刷新重试。');}
+    finally {if (force) setBusy(false);}
+  }, [reload]);
+  useEffect(() => {load(false).catch(() => undefined);}, [load, refreshSignal]);
   useEffect(() => {
-    load().catch(() => undefined);
-  }, [load, refreshSignal]);
+    let active = true;
+    if (!catalog) return;
+    setSelectedTag(current => current !== '__all__' && !catalog.tags.includes(current) ? '__all__' : current);
+    // Metadata is displayed immediately; image IO never blocks the catalog or filters.
+    for (const agent of catalog.agents) {
+      const avatar = agent.avatar
+        ? ensureAvatarResource({desktopId, resource: agent.avatar, request, displayName: agent.name}).then(cache => cache?.uri || agent.icon)
+        : cacheRemoteImage(agent.icon || '');
+      avatar.then(uri => {
+        if (active && uri) setAvatarSources(current => ({...current, [agent.code]: uri}));
+      }).catch(() => undefined);
+    }
+    return () => {active = false;};
+  }, [catalog, desktopId, request]);
 
   const agents = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase('zh-CN');
@@ -418,7 +405,7 @@ function AgentSettings({
         </View>
       </View>
       {error ? <Text style={s.error}>{error}</Text> : null}
-      {busy && !catalog ? <ActivityIndicator color={C.primary} /> : null}
+      {(busy || refreshing) && !catalog ? <ActivityIndicator color={C.primary} /> : null}
       <ScrollView style={s.agentScroll} contentContainerStyle={s.agentList} keyboardShouldPersistTaps="handled">
         {agents.map(agent => (
           <Pressable

@@ -1,3 +1,5 @@
+import {clearSettings, invalidateSettings, settingsMutation} from '../services/settingsCache';
+
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, Platform} from 'react-native';
 
@@ -469,8 +471,28 @@ export function useDesktops() {
   );
 
 
+  const request = useCallback(
+    async <T,>(
+      desktopId: string,
+      method: string,
+      params: Record<string, unknown> = {},
+      timeoutMs?: number,
+    ): Promise<T> => {
+      const client = clients.current.get(desktopId);
+      if (!client) {
+        throw new Error('桌面未连接。');
+      }
+      const changesSettings = settingsMutation(method);
+      if (changesSettings) invalidateSettings(request, desktopId);
+      try {return await client.request<T>(method, params, timeoutMs);}
+      finally {if (changesSettings) invalidateSettings(request, desktopId);}
+    },
+    [],
+  );
+
   const remove = useCallback(
     async (desktop: PairedDesktop) => {
+      clearSettings(request, desktop.id);
       clearReconnect(desktop.id);
       retryCount.current.delete(desktop.id);
 
@@ -483,23 +505,7 @@ export function useDesktops() {
       await removeDesktopCredential(desktop.id);
       await mutateIndex(current => current.filter(item => item.id !== desktop.id));
     },
-    [clearReconnect, mutateIndex],
-  );
-
-  const request = useCallback(
-    async <T,>(
-      desktopId: string,
-      method: string,
-      params: Record<string, unknown> = {},
-      timeoutMs?: number,
-    ): Promise<T> => {
-      const client = clients.current.get(desktopId);
-      if (!client) {
-        throw new Error('桌面未连接。');
-      }
-      return client.request<T>(method, params, timeoutMs);
-    },
-    [],
+    [clearReconnect, mutateIndex, request],
   );
 
   const requestTracked = useCallback(

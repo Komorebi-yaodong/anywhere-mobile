@@ -42,6 +42,24 @@ const catalog = {
   ],
 };
 
+test('folder state defaults collapsed, toggles locally without remote writes and survives remount', async () => {
+  const request = jest.fn(async (_id: string, method: string) => method === 'workspace.settings.revision.get' ? {revision: 'stable'} : catalog);
+  let root!: TestRenderer.ReactTestRenderer;
+  const render = () => <ProviderSettings desktopId="local-folder-fixture" request={request as RemoteRequest} onChanged={() => undefined} refreshSignal={0} />;
+  await act(async () => {root = TestRenderer.create(render());});
+  const folder = () => root.root.findAll(node => node.props.accessibilityLabel === '切换目录 工具')[0];
+  expect(folder().props.accessibilityState.expanded).toBe(false);
+  await act(async () => folder().props.onPress());
+  expect(folder().props.accessibilityState.expanded).toBe(true);
+  expect(request.mock.calls.some(([, method]) => method.includes('mutate'))).toBe(false);
+  await act(async () => root.unmount());
+  await act(async () => {root = TestRenderer.create(render());});
+  expect(folder().props.accessibilityState.expanded).toBe(true);
+  expect(request.mock.calls.filter(([, method]) => method === 'workspace.provider.catalog')).toHaveLength(1);
+  await act(async () => root.unmount());
+});
+
+
 test('moves a provider down with an immediate scoped order mutation', async () => {
   const request = jest.fn(async (_desktopId: string, method: string) => {
     if (method === 'workspace.provider.catalog') return catalog;
@@ -58,6 +76,9 @@ test('moves a provider down with an immediate scoped order mutation', async () =
       />,
     );
   });
+  if (!root.root.findAll(node => node.props.accessibilityLabel === '切换目录 工具')[0].props.accessibilityState.expanded) {
+    await act(async () => press(root, '工具').props.onPress());
+  }
   const down = root.root.findAll(
     node => node.props.accessibilityLabel === '下移服务商 Fixture Provider',
   )[0];
@@ -87,6 +108,9 @@ test('disables out-of-range provider arrows and hides sorting controls while sea
       />,
     );
   });
+  if (!root.root.findAll(node => node.props.accessibilityLabel === '切换目录 工具')[0].props.accessibilityState.expanded) {
+    await act(async () => press(root, '工具').props.onPress());
+  }
   expect(root.root.findAll(node => node.props.accessibilityLabel === '上移服务商 Fixture Provider')[0].props.disabled).toBe(true);
   expect(root.root.findAll(node => node.props.accessibilityLabel === '下移服务商 Fixture Provider Two')[0].props.disabled).toBe(true);
   const input = root.root.findAllByType(TextInput).find(node => node.props.placeholder === '搜索服务商');
@@ -127,6 +151,8 @@ test('provider settings keeps secrets private and submits only changed provider 
   expect(request.mock.calls.filter(([, method]) => String(method).includes('.mutate')).length).toBe(writeCountBeforeCollapse);
 
 
+  const group = root.root.findAll(node => node.props.accessibilityLabel === '切换目录 工具')[0];
+  if (!group.props.accessibilityState.expanded) await act(async () => group.props.onPress());
   await act(async () => press(root, 'Fixture Provider').props.onPress());
   const inputs = root.root.findAllByType(TextInput);
   const keyInput = inputs.find(node => node.props.secureTextEntry === true && String(node.props.placeholder || '').includes('Key'));

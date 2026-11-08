@@ -1,3 +1,4 @@
+import {useSettingsCatalog} from '../hooks/useSettingsCatalog';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
 import React, {useCallback, useEffect, useState} from 'react';
 import {Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
@@ -29,19 +30,19 @@ function defaultTask(): Record<string, unknown> {
 
 export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {desktopId: string; request: RemoteRequest; onChanged: () => void; refreshSignal: number}) {
   const s = useThemedStyles(styles);
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const {catalog, reload, refreshing} = useSettingsCatalog<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks'});
   const [editor, setEditor] = useState<Editor>(null);
   const [picker, setPicker] = useState<Picker>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const load = useCallback(async () => {
-    setBusy(true); setError('');
-    try { setCatalog(await request<Catalog>(desktopId, 'management.catalog', {section: 'tasks'})); }
-    catch (cause) { setError(message(cause, '读取定时任务失败，请在顶部刷新后重试。')); }
-    finally { setBusy(false); }
-  }, [desktopId, request]);
-  useEffect(() => { load().catch(() => undefined); }, [load, refreshSignal]);
+  const load = useCallback(async (force = true) => {
+    if (force) setBusy(true); setError('');
+    try {await reload(force);}
+    catch (cause) {setError(message(cause, '读取定时任务失败，请在顶部刷新后重试。'));}
+    finally {if (force) setBusy(false);}
+  }, [reload]);
+  useEffect(() => {load(false).catch(() => undefined);}, [load, refreshSignal]);
 
   const open = async (id: string) => {
     setBusy(true); setError('');
@@ -94,7 +95,7 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
   const tasks = catalog?.items || [];
   return <View style={s.root}>
     {error ? <Text style={s.error}>{error}</Text> : null}
-    {busy && !catalog ? <ActivityIndicator color={C.primary} /> : null}
+    {(busy || refreshing) && !catalog ? <ActivityIndicator color={C.primary} /> : null}
     <ScrollView style={s.scroll} contentContainerStyle={s.list} keyboardShouldPersistTaps="handled">
       {tasks.map(task => <View key={task.id} style={s.taskCard}>
         <Pressable style={s.taskPress} onPress={() => open(task.id)} disabled={busy}>
@@ -137,7 +138,7 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
       {trigger === 'weekly' ? <>{multiNumbers('执行星期', 'weeklyDays', weeklyOptions)}<TimeField label="每周时间" value={string(draft.weeklyTime)} onChange={weeklyTime => onUpdate({weeklyTime})} /></> : null}
       {trigger === 'monthly' ? <>{multiNumbers('执行日期', 'monthlyDays', monthlyOptions)}<TimeField label="每月时间" value={string(draft.monthlyTime)} onChange={monthlyTime => onUpdate({monthlyTime})} /></> : null}
       {trigger === 'single' ? <><View style={s.field}><Text style={s.label}>执行日期</Text><TextInput value={string(draft.singleDate)} onChangeText={singleDate => onUpdate({singleDate})} placeholder="YYYY-MM-DD" placeholderTextColor={C.muted} style={s.input} /></View><TimeField label="执行时间" value={string(draft.singleTime)} onChange={singleTime => onUpdate({singleTime})} /></> : null}
-      <Pressable style={s.selectRow} onPress={() => choose('默认助手路线', 'modelRoute', [string(draft.modelRoute) || 'general'], Object.entries(routeLabels).map(([value, label]) => ({value, label})))}><Text style={s.label}>执行路线</Text><View style={s.selectRight}><Text style={s.selectText}>{routeLabels[string(draft.modelRoute)] || '通用'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
+      {!draft.conversationId && draft.promptKey === '__DEFAULT__' ? <Pressable style={s.selectRow} onPress={() => choose('默认智能体模型能力（可选）', 'modelRoute', [string(draft.modelRoute) || 'general'], Object.entries(routeLabels).map(([value, label]) => ({value, label})))}><Text style={s.label}>模型能力（可选）</Text><View style={s.selectRight}><Text style={s.selectText}>{routeLabels[string(draft.modelRoute)] || '通用'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable> : null}
       <Pressable style={s.selectRow} onPress={() => choose('额外 MCP', 'extraMcp', strings(draft.extraMcp), options.mcp || [], true)}><Text style={s.label}>额外 MCP</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{strings(draft.extraMcp).length ? `${strings(draft.extraMcp).length} 项` : '不添加'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
       <Pressable style={s.selectRow} onPress={() => choose('额外 Skill', 'extraSkills', strings(draft.extraSkills), options.skills || [], true)}><Text style={s.label}>额外 Skill</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{strings(draft.extraSkills).length ? `${strings(draft.extraSkills).length} 项` : '不添加'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
       <Pressable style={s.selectRow} onPress={() => choose('保存项目', 'autoSaveProjectId', [string(draft.autoSaveProjectId)], options.project || [])}><Text style={s.label}>保存项目</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{valueLabel(options.project || [], draft.autoSaveProjectId, '不分组')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>

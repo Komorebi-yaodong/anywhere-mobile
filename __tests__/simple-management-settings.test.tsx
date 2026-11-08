@@ -9,6 +9,21 @@ function hasText(root: TestRenderer.ReactTestRenderer, label: string) {
   return root.root.findAllByType(Text).some(node => node.props.children === label);
 }
 
+test('background metadata refresh does not overwrite an unsaved nickname', async () => {
+  let displayName = 'Saved';
+  const request = jest.fn(async (_id: string, method: string) => method === 'workspace.settings.revision.get' ? {revision: displayName} : {ok: true, section: 'general', revision: displayName, value: {displayName}});
+  let root!: TestRenderer.ReactTestRenderer;
+  const render = (refreshSignal: number) => <SimpleManagementSettings section="general" desktopId="draft-fixture" request={request as RemoteRequest} onChanged={() => undefined} refreshSignal={refreshSignal} />;
+  await act(async () => {root = TestRenderer.create(render(0));});
+  const input = () => root.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === '昵称')!;
+  await act(async () => input().props.onChangeText('Unsent draft'));
+  displayName = 'Desktop changed';
+  await act(async () => root.update(render(1)));
+  expect(input().props.value).toBe('Unsent draft');
+  await act(async () => root.unmount());
+});
+
+
 test('offline general settings retains local appearance and shared saved identity', async () => {
   let root!: TestRenderer.ReactTestRenderer;
   const request = jest.fn(async () => {throw Error('remote_client_closed');});
