@@ -70,6 +70,7 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
     if (!editor || busy) return;
     const name = string(editor.draft.name).trim();
     if (!name) { setError('请输入任务名称。'); return; }
+    if (editor.draft.promptKey === '' && !editor.draft.conversationId) {setError('请选择目标会话。'); return;}
     const id = editor.creating ? name : editor.id;
     setBusy(true); setError('');
     try {
@@ -115,7 +116,7 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
   const draft = editor.draft;
   const options = editor.detail.options || {};
   const trigger = string(draft.triggerType) || 'daily';
-  const choose = (title: string, key: string, values: string[], choices: Option[], multiple = false) => onPicker({title, options: choices, values, multiple, onChange: next => onUpdate({[key]: multiple ? next : next[0] || ''})});
+  const choose = (title: string, key: string, values: string[], choices: Option[], multiple = false) => onPicker({title, options: choices, values, multiple, onChange: next => onUpdate({[key]: multiple ? next : next[0] || '', ...(key === 'promptKey' ? {conversationId: ''} : key === 'conversationId' ? {promptKey: ''} : {})})});
   const multiNumbers = (label: string, key: 'weeklyDays' | 'monthlyDays', optionsFor: Option[]) => <Pressable style={s.selectRow} onPress={() => choose(label, key, strings((draft[key] as number[] | undefined)?.map(String)), optionsFor, true)}><Text style={s.label}>{label}</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{(draft[key] as number[] || []).map(value => optionsFor.find(item => item.value === String(value))?.label || value).join('、') || '请选择'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>;
   const weeklyOptions = weekdays.map((label, value) => ({value: String(value), label}));
   const monthlyOptions = Array.from({length: 31}, (_, index) => ({value: String(index + 1), label: `${index + 1} 日`}));
@@ -125,7 +126,11 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
       <View style={s.field}><Text style={s.label}>任务名称</Text><TextInput value={string(draft.name)} onChangeText={name => onUpdate({name})} placeholder="例如：每日整理" placeholderTextColor={C.muted} style={s.input} /></View>
       <View style={s.field}><Text style={s.label}>任务内容</Text><TextInput value={string(draft.description)} onChangeText={description => onUpdate({description})} placeholder="输入要执行的内容" placeholderTextColor={C.muted} style={[s.input, s.multiline]} multiline textAlignVertical="top" /></View>
       <Toggle label="启用任务" value={draft.enabled === true} onChange={enabled => onUpdate({enabled})} />
+      <Pressable style={s.selectRow} onPress={() => onUpdate(draft.conversationId || draft.promptKey === '' ? {conversationId: '', promptKey: '__DEFAULT__'} : {conversationId: '', promptKey: ''})}><Text style={s.label}>目标类型</Text><Text style={s.selectText}>{draft.conversationId || draft.promptKey === '' ? '本地会话' : '智能体'}</Text></Pressable>
+      {draft.conversationId || draft.promptKey === '' ? <Pressable style={s.selectRow} disabled={!options.conversation?.length} onPress={() => choose('选择目标会话', 'conversationId', [string(draft.conversationId)], options.conversation || [])}><Text style={s.label}>目标会话</Text><View style={s.selectRight}><Text style={s.selectText}>{valueLabel(options.conversation || [], draft.conversationId, '需开启本地存储并保存会话')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable> : (
       <Pressable style={s.selectRow} onPress={() => choose('选择助手', 'promptKey', [string(draft.promptKey)], options.assistant || [])}><Text style={s.label}>助手</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{valueLabel(options.assistant || [], draft.promptKey, '默认助手')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
+      )}
+
       <Pressable style={s.selectRow} onPress={() => choose('执行频率', 'triggerType', [trigger], Object.entries(triggerLabels).map(([value, label]) => ({value, label})))}><Text style={s.label}>频率</Text><View style={s.selectRight}><Text style={s.selectText}>{triggerLabels[trigger] || trigger}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
       {trigger === 'interval' ? <><NumberField label="间隔分钟" value={draft.intervalMinutes} onChange={intervalMinutes => onUpdate({intervalMinutes})} /><TimeField label="开始时间（可选）" value={string(draft.intervalStartTime)} onChange={intervalStartTime => onUpdate({intervalStartTime})} /></> : null}
       {trigger === 'daily' ? <TimeField label="每日时间" value={string(draft.dailyTime)} onChange={dailyTime => onUpdate({dailyTime})} /> : null}
