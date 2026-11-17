@@ -15,24 +15,27 @@ export function useSettingsCatalog<T>(request: RemoteRequest, desktopId: string,
   const mounted = useRef(true);
   const [state, setState] = useState<{scope: string; request: RemoteRequest; value: T | null}>(() => ({scope, request, value: peekSettings<T>(request, desktopId, method, params)}));
   const [loading, setLoading] = useState(false);
-  useEffect(() => {mounted.current = true; return () => {mounted.current = false;};}, []);
+  useEffect(() => {mounted.current = true; version.current++; return () => {mounted.current = false;};}, []);
   const value = state.scope === scope && state.request === request ? state.value : peekSettings<T>(request, desktopId, method, JSON.parse(serialized));
   const valueRef = useRef(value); valueRef.current = value;
   useEffect(() => {
+    let disposed = false;
     const publish = () => {
+      if (disposed || !mounted.current || latest.current !== scope || latestRequest.current !== request) return;
       const cached = peekSettings<T>(request, desktopId, method, JSON.parse(serialized));
       if (cached !== null && cached !== valueRef.current) {valueRef.current = cached; setState({scope, request, value: cached});}
     };
-    const unsubscribe = subscribeSettings(publish);
-    hydrateSettings(desktopId).then(publish).catch(() => undefined);
-    publish(); return unsubscribe;
+    const unsubscribe = subscribeSettings(publish, request);
+    hydrateSettings(desktopId, request).then(publish).catch(() => undefined);
+    publish(); return () => {disposed = true; unsubscribe();};
   }, [request, desktopId, method, serialized, scope]);
   const reload = useCallback(async (force = true) => {
+    if (!mounted.current || latest.current !== scope || latestRequest.current !== request) throw new Error('settings_read_superseded');
     const ticket = ++version.current;
     setLoading(true);
     try {
       const next = await readSettings<T>(request, desktopId, method, JSON.parse(serialized), force).catch(error => {
-        if (error?.message !== 'settings_read_superseded') throw error;
+        if (error?.message !== 'settings_read_superseded' || !mounted.current || latest.current !== scope || latestRequest.current !== request) throw error;
         return readSettings<T>(request, desktopId, method, JSON.parse(serialized), true);
       });
       if (mounted.current && latest.current === scope && latestRequest.current === request && version.current === ticket) setState({scope, request, value: next});
@@ -41,16 +44,23 @@ export function useSettingsCatalog<T>(request: RemoteRequest, desktopId: string,
   }, [request, desktopId, method, scope, serialized]);
   useEffect(() => {
     let active = AppState.currentState !== 'background' && AppState.currentState !== 'inactive';
+    let disposed = false;
     let checking = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clear = () => {if (timer !== undefined) clearTimeout(timer); timer = undefined;};
+    const schedule = () => {clear(); if (!disposed && screenActive && active) timer = setTimeout(check, 15000);};
     const check = () => {
-      if (!screenActive || !active || checking) return;
+      clear();
+      if (disposed || !screenActive || !active || checking) return;
       checking = true;
-      reload(false).catch(() => undefined).finally(() => {checking = false;});
+      reload(false).catch(() => undefined).finally(() => {checking = false; schedule();});
     };
-    const subscription = AppState.addEventListener('change', appState => {active = appState === 'active'; if (active) check();});
+    const subscription = AppState.addEventListener('change', appState => {
+      active = appState === 'active';
+      if (active) check(); else clear();
+    });
     if (screenActive && active) check();
-    const timer = screenActive ? setInterval(check, 15000) : null;
-    return () => {if (timer) clearInterval(timer); subscription.remove();};
+    return () => {disposed = true; clear(); subscription.remove();};
   }, [reload, screenActive]);
 
   const update = useCallback((action: T | null | ((current: T | null) => T | null)) => {

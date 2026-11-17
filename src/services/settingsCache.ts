@@ -9,12 +9,25 @@ import {ensureCacheDirectory} from './cacheDirectory';
 type Manifest = {revision?: string; resources?: Record<string, {hash: string; updatedAt: number}>};
 type Entry = {value: unknown; revision: string; hash: string; updatedAt: number; checkedAt: number; pending?: Promise<unknown>};
 const methods = new Set(['conversation.config.snapshot', 'conversation.list', 'workspace.bootstrap.get', 'workspace.assistants.list', 'conversation.assistants.list', 'workspace.agent.catalog', 'workspace.agent.get', 'workspace.provider.catalog', 'workspace.provider.get', 'workspace.management.details.get', 'workspace.management.catalog.get', 'management.catalog']);
-const cache = new Map<string, Entry>();
+type RuntimeCache = {
+  cache: Map<string, Entry>;
+  epochs: Map<string, number>;
+  mutations: Map<string, number>;
+  registrations: Map<string, string>;
+  listeners: Set<() => void>;
+};
+const runtimes = new WeakMap<RemoteRequest, RuntimeCache>();
+function runtime(request: RemoteRequest): RuntimeCache {
+  let state = runtimes.get(request);
+  if (!state) {
+    state = {cache: new Map(), epochs: new Map(), mutations: new Map(), registrations: new Map(), listeners: new Set()};
+    runtimes.set(request, state);
+  }
+  return state;
+}
+const snapshots = new Map<string, Entry>();
 const identities = new Map<string, string>();
 const hydrations = new Map<string, Promise<void>>();
-const epochs = new Map<string, number>();
-const mutations = new Map<string, number>();
-const listeners = new Set<() => void>();
 const writes = new Map<string, Promise<void>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const manifests = new WeakMap<RemoteRequest, Map<string, {pending?: Promise<Manifest>; value?: Manifest; at: number}>>();
@@ -23,9 +36,19 @@ const root = `${Dirs.DocumentDir}/anywhere-workspace-cache`;
 const hash = (value: string) => bytesToHex(sha256(utf8ToBytes(value)));
 const fileFor = (desktopId: string) => `${root}/${hash(desktopId)}.json`;
 const keyFor = (desktopId: string, method: string, params: Record<string, unknown>) => JSON.stringify([desktopId, method, Object.fromEntries(Object.entries(params).sort(([a], [b]) => a.localeCompare(b)))]);
-const epoch = (id: string) => epochs.get(id) || 0;
-const notify = () => {for (const listener of listeners) {try {listener();} catch { /* A detached UI must not fail persistence. */ }}};
-export function subscribeSettings(listener: () => void) {listeners.add(listener); return () => {listeners.delete(listener);};}
+const epoch = (request: RemoteRequest, id: string) => runtime(request).epochs.get(id) || 0;
+function notify(request: RemoteRequest) {
+  for (const listener of runtime(request).listeners) {try {listener();} catch { /* UI cannot fail a cache write. */ }}
+}
+export function subscribeSettings(listener: () => void, request: RemoteRequest) {
+  const listeners = runtime(request).listeners;
+  listeners.add(listener); return () => {listeners.delete(listener);};
+}
+function registered(request: RemoteRequest, id: string) {
+  const identity = runtime(request).registrations.get(id);
+  return identity !== undefined && identities.get(id) === identity;
+}
+const snapshotEntry = (entry: Entry): Entry => ({value: JSON.parse(JSON.stringify(entry.value)), revision: entry.revision, hash: entry.hash, updatedAt: entry.updatedAt, checkedAt: entry.checkedAt});
 export function settingsCacheMethod(method: string) {return methods.has(method);}
 function domains(method: string, params: Record<string, unknown>): string[] {
   if (method.startsWith('workspace.provider.')) return ['providers'];
@@ -42,11 +65,11 @@ function scheduleWrite(desktopId: string) {
   const previous = timers.get(desktopId); if (previous) clearTimeout(previous);
   timers.set(desktopId, setTimeout(() => {
     timers.delete(desktopId);
-    const generation = epoch(desktopId), identity = identities.get(desktopId);
+    const identity = identities.get(desktopId);
     const job = (writes.get(desktopId) || Promise.resolve()).catch(() => undefined).then(async () => {
-      if (generation !== epoch(desktopId) || identity !== identities.get(desktopId)) {scheduleWrite(desktopId); return;}
+      if (identity !== identities.get(desktopId)) return;
       await ensureCacheDirectory(root);
-      const entries = [...cache].filter(([key]) => JSON.parse(key)[0] === desktopId).map(([key, entry]) => [key, {value: entry.value, revision: entry.revision, hash: entry.hash, updatedAt: entry.updatedAt, checkedAt: entry.checkedAt}]);
+      const entries = [...snapshots].filter(([key]) => JSON.parse(key)[0] === desktopId).map(([key, entry]) => [key, {value: entry.value, revision: entry.revision, hash: entry.hash, updatedAt: entry.updatedAt, checkedAt: entry.checkedAt}]);
       const target = fileFor(desktopId), temp = `${target}.tmp`;
       await FileSystem.writeFile(temp, JSON.stringify({version: 1, identity, entries}), 'utf8');
       if (identity !== identities.get(desktopId)) return;
@@ -55,57 +78,76 @@ function scheduleWrite(desktopId: string) {
     writes.set(desktopId, job); job.catch(() => undefined);
   }, 100));
 }
-export async function hydrateSettings(desktopId: string) {
-  if (hydrations.has(desktopId)) return hydrations.get(desktopId)!;
-  const identity = identities.get(desktopId), generation = epoch(desktopId);
+async function hydrateSnapshots(desktopId: string) {
+  const previous = hydrations.get(desktopId);
+  if (previous) return previous;
+  const identity = identities.get(desktopId);
   if (!identity) return;
   const operation = (async () => {
     try {
       const file = fileFor(desktopId);
       if (!(await FileSystem.exists(file))) return;
       const saved = JSON.parse(await FileSystem.readFile(file, 'utf8'));
-      if (saved.version !== 1 || saved.identity !== identity || !Array.isArray(saved.entries) || identity !== identities.get(desktopId) || generation !== epoch(desktopId)) return;
+      if (saved.version !== 1 || saved.identity !== identity || !Array.isArray(saved.entries) || identity !== identities.get(desktopId)) return;
       for (const pair of saved.entries) {
         if (!Array.isArray(pair) || pair.length !== 2) continue;
         const [key, entry] = pair, parsed = JSON.parse(key);
-        if (parsed[0] !== desktopId || !methods.has(parsed[1]) || !entry || !entry.value || typeof entry.hash !== 'string' || hash(JSON.stringify(entry.value)) !== entry.hash || cache.has(key)) continue;
-        cache.set(key, {...entry, checkedAt: 0});
+        if (parsed[0] !== desktopId || !methods.has(parsed[1]) || !entry?.value || typeof entry.hash !== 'string' || hash(JSON.stringify(entry.value)) !== entry.hash || snapshots.has(key)) continue;
+        snapshots.set(key, {...snapshotEntry(entry), checkedAt: 0});
       }
-      notify();
     } catch { /* A disposable cache failure never blocks the workspace. */ }
   })();
   hydrations.set(desktopId, operation); return operation;
 }
-export function registerSettingsDesktop(desktop: PairedDesktop) {
-  const identity = hash(`${desktop.desktopIdentityPublicKey}:${desktop.pairedAt}`);
+export async function hydrateSettings(desktopId: string, request: RemoteRequest) {
+  if (!registered(request, desktopId)) return;
+  const state = runtime(request), generation = epoch(request, desktopId);
+  await hydrateSnapshots(desktopId);
+  if (!registered(request, desktopId) || epoch(request, desktopId) !== generation) return;
+  for (const [key, entry] of snapshots) {
+    if (JSON.parse(key)[0] === desktopId && !state.cache.has(key)) state.cache.set(key, {...snapshotEntry(entry), checkedAt: 0});
+  }
+  notify(request);
+}
+export function registerSettingsDesktop(desktop: PairedDesktop, request: RemoteRequest) {
+  const identity = hash(`${desktop.desktopIdentityPublicKey}:${desktop.pairedAt}`), state = runtime(request);
   if (identities.get(desktop.id) !== identity) {
-    for (const key of cache.keys()) if (JSON.parse(key)[0] === desktop.id) cache.delete(key);
-    epochs.set(desktop.id, epoch(desktop.id) + 1);
+    for (const key of snapshots.keys()) if (JSON.parse(key)[0] === desktop.id) snapshots.delete(key);
     identities.set(desktop.id, identity); hydrations.delete(desktop.id);
   }
-  return hydrateSettings(desktop.id);
+  if (state.registrations.get(desktop.id) !== identity) {
+    for (const key of state.cache.keys()) if (JSON.parse(key)[0] === desktop.id) state.cache.delete(key);
+    state.epochs.set(desktop.id, epoch(request, desktop.id) + 1);
+    state.registrations.set(desktop.id, identity);
+  }
+  return hydrateSettings(desktop.id, request);
 }
-export function peekSettings<T>(_request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown> = {}): T | null {
-  return (cache.get(keyFor(desktopId, method, params))?.value as T) ?? null;
+export function peekSettings<T>(request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown> = {}): T | null {
+  return (runtime(request).cache.get(keyFor(desktopId, method, params))?.value as T) ?? null;
 }
-export function storeSettings<T>(_request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown>, value: T | null) {
+export function storeSettings<T>(request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown>, value: T | null) {
   if (!methods.has(method) || value === null) return;
-  const key = keyFor(desktopId, method, params), previous = cache.get(key), digest = hash(JSON.stringify(value));
+  const cache = runtime(request).cache, key = keyFor(desktopId, method, params), previous = cache.get(key), digest = hash(JSON.stringify(value));
   cache.set(key, {...previous, pending: undefined, value: digest === previous?.hash ? previous.value : value, hash: digest, revision: previous?.revision || '', updatedAt: digest === previous?.hash ? previous.updatedAt : Date.now(), checkedAt: Date.now()});
-  scheduleWrite(desktopId); notify();
+  if (registered(request, desktopId)) {snapshots.set(key, snapshotEntry(cache.get(key)!)); scheduleWrite(desktopId);}
+  notify(request);
 }
 export async function clearSettings(request: RemoteRequest, desktopId: string) {
   invalidateSettings(request, desktopId);
-  identities.delete(desktopId); hydrations.delete(desktopId); mutations.delete(desktopId);
+  const state = runtime(request), cache = state.cache;
+  state.registrations.delete(desktopId); state.mutations.delete(desktopId);
+  identities.delete(desktopId); hydrations.delete(desktopId);
+  for (const key of snapshots.keys()) if (JSON.parse(key)[0] === desktopId) snapshots.delete(key);
   const timer = timers.get(desktopId); if (timer) clearTimeout(timer); timers.delete(desktopId);
   for (const key of cache.keys()) if (JSON.parse(key)[0] === desktopId) cache.delete(key);
-  unsupported.get(request)?.delete(desktopId); notify();
+  unsupported.get(request)?.delete(desktopId); notify(request);
   await writes.get(desktopId)?.catch(() => undefined); writes.delete(desktopId);
   await FileSystem.unlink(fileFor(desktopId)).catch(() => undefined);
   await FileSystem.unlink(`${fileFor(desktopId)}.tmp`).catch(() => undefined);
 }
 export function invalidateSettings(request: RemoteRequest, desktopId: string, method = '', params: Record<string, unknown> = {}) {
-  epochs.set(desktopId, epoch(desktopId) + 1);
+  const {cache, epochs} = runtime(request);
+  epochs.set(desktopId, epoch(request, desktopId) + 1);
   manifests.get(request)?.delete(desktopId);
   const changed = method.includes('.provider.') ? ['providers'] : method.includes('.agent.') || method.includes('.assistant.') ? ['agents'] : method.includes('.project.') ? ['projects'] : [String(params.section || '')];
   for (const [key, entry] of cache) {
@@ -113,14 +155,12 @@ export function invalidateSettings(request: RemoteRequest, desktopId: string, me
     if (id === desktopId && (!method || domains(readMethod, readParams).some(domain => changed.includes(domain)))) {entry.revision = ''; entry.checkedAt = 0; entry.pending = undefined;}
   }
 }
-async function revision(request: RemoteRequest, desktopId: string, fresh = false): Promise<Manifest> {
+async function revision(request: RemoteRequest, desktopId: string): Promise<Manifest> {
   if (unsupported.get(request)?.has(desktopId)) return {};
   let values = manifests.get(request); if (!values) {values = new Map(); manifests.set(request, values);}
-  let entry = values.get(desktopId);
-  if (entry?.pending) {if (!fresh) return entry.pending; await entry.pending.catch(() => undefined); entry = values.get(desktopId);}
-  if (!fresh && entry?.value && Date.now() - entry.at < 500) return entry.value;
-  entry = {at: 0}; values.set(desktopId, entry);
-  const current = entry;
+  const entry = values.get(desktopId);
+  if (entry?.pending) return entry.pending;
+  const current: {pending?: Promise<Manifest>; value?: Manifest; at: number} = {at: 0}; values.set(desktopId, current);
   const operation = request<Manifest>(desktopId, 'workspace.settings.revision.get').then(value => {current.value = value; current.at = Date.now(); return value;}).catch(error => {
     if (/remote_method_(?:unavailable|unsupported|unknown)|remote_method_not_found/.test(String(error?.message || error))) {
       let ids = unsupported.get(request); if (!ids) {ids = new Set(); unsupported.set(request, ids);} ids.add(desktopId); return {};
@@ -131,8 +171,9 @@ async function revision(request: RemoteRequest, desktopId: string, fresh = false
 }
 export async function readSettings<T>(request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown> = {}, force = false): Promise<T> {
   if (!methods.has(method)) return request<T>(desktopId, method, params);
-  await hydrateSettings(desktopId);
-  const key = keyFor(desktopId, method, params), generation = epoch(desktopId);
+  await hydrateSettings(desktopId, request);
+  const {cache, mutations} = runtime(request);
+  const key = keyFor(desktopId, method, params), generation = epoch(request, desktopId);
   let current = cache.get(key);
   if (current?.pending) return current.pending as Promise<T>;
   if (!current) {current = {value: null, revision: '', hash: '', updatedAt: 0, checkedAt: 0}; cache.set(key, current);}
@@ -142,18 +183,19 @@ export async function readSettings<T>(request: RemoteRequest, desktopId: string,
     // With cached UI already painted, one lightweight manifest is the only
     // blocking read. A data response is labelled with the BEFORE-read token:
     // changes racing the read can cause a harmless extra refresh, never stale reuse.
-    const manifest = await revision(request, desktopId).catch(() => ({} as Manifest));
+    const manifest = force ? {} : await revision(request, desktopId);
     const version = token(manifest, method, params);
-    if (!force && version && entry.value && entry.revision === version && epoch(desktopId) === generation && cache.get(key) === entry) {entry.checkedAt = Date.now(); return entry.value as T;}
-    if (epoch(desktopId) !== generation || cache.get(key) !== entry) throw new Error('settings_read_superseded');
+    if (!force && version && entry.value && entry.revision === version && epoch(request, desktopId) === generation && cache.get(key) === entry) {entry.checkedAt = Date.now(); return entry.value as T;}
+    if (epoch(request, desktopId) !== generation || cache.get(key) !== entry) throw new Error('settings_read_superseded');
     const value = await request<T>(desktopId, method, params);
-    if (epoch(desktopId) !== generation || cache.get(key) !== entry) throw new Error('settings_read_superseded');
+    if (epoch(request, desktopId) !== generation || cache.get(key) !== entry) throw new Error('settings_read_superseded');
     storeSettings(request, desktopId, method, params, value);
-    const stored = cache.get(key)!; stored.revision = version; scheduleWrite(desktopId);
+    const stored = cache.get(key)!; stored.revision = version;
+    if (registered(request, desktopId)) {snapshots.set(key, snapshotEntry(stored)); scheduleWrite(desktopId);}
     return value;
   })().catch(error => {
-    if (epoch(desktopId) !== generation || cache.get(key) !== entry) throw new Error('settings_read_superseded');
-    if (!force && entry.value && error?.message !== 'settings_read_superseded') return entry.value as T; throw error;
+    if (epoch(request, desktopId) !== generation || cache.get(key) !== entry) throw new Error('settings_read_superseded');
+    throw error;
   });
   entry.pending = job;
   try {return await job;} finally {if (cache.get(key)?.pending === job) cache.get(key)!.pending = undefined;}
@@ -164,6 +206,7 @@ export function settingsMutation(method: string): boolean {
 
 /** Only committed Desktop DTOs enter persisted config caches; never submitted keys/headers. */
 export function applySettingsMutation(request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown>, reply: unknown) {
+  const cache = runtime(request).cache;
   const result = reply as {agent?: Record<string, unknown>; provider?: Record<string, unknown>; detail?: Record<string, unknown>; item?: Record<string, unknown>};
   if (!result || typeof result !== 'object') return;
   const isAgent = method === 'workspace.agent.mutate', isProvider = method === 'workspace.provider.mutate';
@@ -202,12 +245,18 @@ export function applySettingsMutation(request: RemoteRequest, desktopId: string,
       if (list?.items) storeSettings(request, desktopId, 'management.catalog', {section}, {...list, items: list.items.filter(item => item.id !== target)});
     }
   }
-  scheduleWrite(desktopId); notify();
+  if (registered(request, desktopId)) {
+    for (const key of snapshots.keys()) if (JSON.parse(key)[0] === desktopId && !cache.has(key)) snapshots.delete(key);
+    scheduleWrite(desktopId);
+  }
+  notify(request);
 }
 
 export function beginSettingsMutation(request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown>) {
+  const mutations = runtime(request).mutations;
   mutations.set(desktopId, (mutations.get(desktopId) || 0) + 1); invalidateSettings(request, desktopId, method, params);
 }
 export function endSettingsMutation(request: RemoteRequest, desktopId: string, method: string, params: Record<string, unknown>) {
+  const mutations = runtime(request).mutations;
   mutations.set(desktopId, Math.max(0, (mutations.get(desktopId) || 0) - 1)); invalidateSettings(request, desktopId, method, params);
 }

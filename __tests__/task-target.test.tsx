@@ -12,8 +12,9 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
   return target;
 }
 test('model ability is optional and shown only for the default Agent, never a custom Agent or conversation', async () => {
-  const request = jest.fn(async () => ({ok: true, section: 'tasks', schema: [], options: {assistant: [{value: '__DEFAULT__', label: '默认助手'}, {value: 'Code', label: 'Code'}]}, items: []}));
+  const request = jest.fn(async () => ({ok: true, section: 'tasks', schema: [{key: 'name', type: 'text'}, {key: 'description', type: 'multiline'}, {key: 'enabled', type: 'boolean'}, {key: 'promptKey', type: 'assistant'}, {key: 'conversationId', type: 'conversation'}, {key: 'triggerType', type: 'select'}, {key: 'dailyTime', type: 'time'}], options: {assistant: [{value: '__DEFAULT__', label: '默认助手'}, {value: 'Code', label: 'Code'}]}, items: []}));
   let root!: TestRenderer.ReactTestRenderer;
+  try {
   await act(async () => {root = TestRenderer.create(<TaskSettings desktopId="route-fixture" request={request as RemoteRequest} onChanged={() => undefined} refreshSignal={0} />);});
   await act(async () => button(root, '新建定时任务').props.onPress());
   const visible = () => root.root.findAllByType(Text).some(node => node.props.children === '模型能力（可选）');
@@ -24,15 +25,16 @@ test('model ability is optional and shown only for the default Agent, never a cu
   expect(visible()).toBe(false);
   await act(async () => button(root, '目标类型').props.onPress());
   expect(visible()).toBe(false);
-  await act(async () => root.unmount());
+  } finally {if (root) await act(async () => root.unmount());}
 });
 
 
 test('selects an existing conversation mutually exclusively and saves its ID without local paths', async () => {
   const request = jest.fn(async (_id: string, method: string) => method === 'management.catalog' ? {
-    ok: true, section: 'tasks', schema: [], options: {assistant: [{value: '__DEFAULT__', label: '默认助手'}], conversation: [{value: 'conversation-target-fixture', label: 'Existing conversation'}]}, items: [],
+    ok: true, section: 'tasks', schema: [{key: 'name', type: 'text'}, {key: 'description', type: 'multiline'}, {key: 'enabled', type: 'boolean'}, {key: 'promptKey', type: 'assistant'}, {key: 'conversationId', type: 'conversation'}, {key: 'triggerType', type: 'select'}, {key: 'dailyTime', type: 'time'}], options: {assistant: [{value: '__DEFAULT__', label: '默认助手'}], conversation: [{value: 'conversation-target-fixture', label: 'Existing conversation'}]}, items: [],
   } : {ok: true});
   let root!: TestRenderer.ReactTestRenderer;
+  try {
   await act(async () => {root = TestRenderer.create(<TaskSettings desktopId="fixture" request={request as RemoteRequest} onChanged={() => undefined} refreshSignal={0} />);});
   await act(async () => button(root, '新建定时任务').props.onPress());
   await act(async () => root.root.findAllByType(TextInput).find(node => node.props.placeholder === '例如：每日整理')!.props.onChangeText('Target task'));
@@ -45,5 +47,5 @@ test('selects an existing conversation mutually exclusively and saves its ID wit
   expect(call[2].patch.promptKey).toBe('');
   expect(call[2].patch.conversationId).toBe('conversation-target-fixture');
   expect(call[2].patch).not.toHaveProperty('dirPath');
-  await act(async () => root.unmount());
+  } finally {if (root) await act(async () => root.unmount());}
 });

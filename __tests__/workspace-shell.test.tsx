@@ -175,19 +175,22 @@ function startTab(root: TestRenderer.ReactTestRenderer, label: string) {
   return root.root.findAll(node => node.props.accessibilityRole === 'tab' && node.props.accessibilityLabel === (label === '已打开会话' ? '已打开的会话' : label) && typeof node.props.onPress === 'function')[0];
 }
 
-test('coalesces concurrent manual refreshes and does not show first-load UI for an already populated workspace', async () => {
-  const props = workspaceProps();let root!: TestRenderer.ReactTestRenderer;
-  await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
-  const request = props.request as jest.Mock;request.mockClear();
-  const fixture = {ok: true, profile: {displayName: 'Fixture'}, projects: [], assistants: []};
-  let release!: () => void;const gate = new Promise<void>(resolve => {release = resolve;});
-  request.mockImplementation(async () => {await gate;return fixture;});
-  const refresh = root.root.findAll(node => node.props.accessibilityLabel === '刷新' && typeof node.props.onPress === 'function')[0];
-  await act(async () => {refresh.props.onPress();refresh.props.onPress();});
-  expect(request).toHaveBeenCalledTimes(3);
-  expect(root.root.findAllByType(ThemedActivityIndicator)).toHaveLength(0);
-  await act(async () => {release();await gate;});
-  await act(async () => root.unmount());
+test('coalesces manual refreshes into two metadata reads without hiding populated UI', async () => {
+  const props = workspaceProps(); let root: TestRenderer.ReactTestRenderer | undefined;
+  let release!: () => void; const gate = new Promise<void>(resolve => {release = resolve;});
+  try {
+    await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+    const request = props.request as jest.Mock; request.mockClear();
+    const fixture = {ok: true, profile: {displayName: 'Fixture'}, configured: true, projects: [], assistants: []};
+    request.mockImplementation(async () => {await gate; return fixture;});
+    const refresh = root!.root.findAll(node => node.props.accessibilityLabel === '刷新' && typeof node.props.onPress === 'function')[0];
+    await act(async () => {refresh.props.onPress(); refresh.props.onPress();});
+    expect(request.mock.calls.map(([, method]) => method).sort()).toEqual(['conversation.assistants.list', 'workspace.bootstrap.get']);
+    expect(root!.root.findAllByType(ThemedActivityIndicator)).toHaveLength(0);
+  } finally {
+    await act(async () => {release(); await gate;});
+    if (root) await act(async () => root!.unmount());
+  }
 });
 test('a late bootstrap failure from an old connection cannot overwrite the new connection notice', async () => {
   const props = workspaceProps();const rejectOld: Array<(error: Error) => void> = [];
@@ -1052,6 +1055,43 @@ test('session MCP settings search finds builtin services with the Chinese 内置
  await act(async () => root.unmount());
 });
 
+
+test('cached session options refresh without overwriting a prompt edited during validation', async () => {
+  openConfigSession(); const props = configFixture();
+  let root: TestRenderer.ReactTestRenderer | undefined;
+  let release: (() => void) | undefined;
+  try {
+    await act(async () => {root = TestRenderer.create(<WorkspaceShell {...props} />);});
+    await enterFixtureChat(root!);
+    const open = () => root!.root.findAll(node => node.props.accessibilityLabel === '会话设置' && node.props.onPress)[0].props.onPress();
+    await act(async () => open());
+    await act(async () => root!.root.findAll(node => node.props.accessibilityLabel === '会话设置完成' && node.props.onPress)[0].props.onPress());
+    const mocked = props.request as jest.Mock, base = mocked.getMockImplementation()!;
+    const gate = new Promise<void>(resolve => {release = resolve;});
+    mocked.mockImplementation(async (id: string, method: string, params?: Record<string, unknown>) => {
+      if (method === 'conversation.request.get') {
+        await gate;
+        const value = await base(id, method, params);
+        value.result.config = {...value.result.config, systemPrompt: 'Server changed'};
+        value.result.options.mcpServers = [{id: 'new-choice', name: '新增内置工具', transport: 'builtin', tags: [], preset: false}];
+        return value;
+      }
+      return base(id, method, params);
+    });
+    await act(async () => {open();});
+    const prompt = () => root!.root.findAllByType(TextInput).find(node => node.props.placeholder === '输入本次会话的系统提示词')!;
+    expect(prompt().props.value).toBe(''); // restored before background result
+    await act(async () => prompt().props.onChangeText('Local unsaved draft'));
+    await act(async () => {release!(); await gate;});
+    expect(prompt().props.value).toBe('Local unsaved draft');
+    await act(async () => button(root!, 'MCP').props.onPress());
+    expect(root!.root.findAll(node => node.props.accessibilityLabel === '选择会话 MCP 新增内置工具').length).toBeGreaterThan(0);
+    expect(props.tracked.mock.calls.filter(([, method]) => method === 'conversation.config.patch')).toHaveLength(0);
+  } finally {
+    if (release) await act(async () => {release!();});
+    if (root) await act(async () => root!.unmount());
+  }
+});
 
 test('context settings render the Desktop usage summary above the controls', async () => {
   openConfigSession();

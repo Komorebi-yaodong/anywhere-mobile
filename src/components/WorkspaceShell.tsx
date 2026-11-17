@@ -1,4 +1,4 @@
-import {peekSettings, readSettings, storeSettings, hydrateSettings, subscribeSettings} from '../services/settingsCache';
+import {peekSettings, readSettings, storeSettings, invalidateSettings, hydrateSettings, subscribeSettings} from '../services/settingsCache';
 import {TextInput, ActivityIndicator} from './ThemedNative';
 import React, {
   useCallback,
@@ -436,12 +436,12 @@ export function WorkspaceShell({
       if (cached) {workspaceReady.current = true; setBootstrap(cached); setLoadingWorkspace(false);}
       if (routes) setRouteAssistants(routes.assistants || []);
     };
-    const unsubscribe = subscribeSettings(restore);
-    hydrateSettings(desktop.id).then(restore).catch(() => undefined); restore();
+    const unsubscribe = subscribeSettings(restore, request);
+    hydrateSettings(desktop.id, request).then(restore).catch(() => undefined); restore();
     return () => {active = false; unsubscribe();};
   }, [desktop.id, request]);
 
-  const refreshWorkspace = useCallback((): Promise<void> => {
+  const refreshWorkspace = useCallback((force = false): Promise<void> => {
     if (desktop.status !== '在线') return Promise.resolve();
     const key = `${desktop.id}:${desktop.connectionGeneration || 0}`;
     if (workspaceFlight.current?.key === key) {
@@ -458,8 +458,8 @@ export function WorkspaceShell({
     const {agentAvatarCaches: cachedAgents, agentAvatarSources: cachedSources} = avatarState.current;
     try {
       const [value, routes] = await Promise.all([
-        readSettings<WorkspaceBootstrap>(request, desktop.id, 'workspace.bootstrap.get'),
-        readSettings<{ok: true; assistants: RemoteAssistant[]}>(request, desktop.id, 'conversation.assistants.list'),
+        readSettings<WorkspaceBootstrap>(request, desktop.id, 'workspace.bootstrap.get', {}, force),
+        readSettings<{ok: true; assistants: RemoteAssistant[]}>(request, desktop.id, 'conversation.assistants.list', {}, force),
       ]);
       if (!isCurrent()) {return;}
       workspaceReady.current = true;
@@ -592,9 +592,9 @@ export function WorkspaceShell({
   useEffect(() => {
     if (desktop.status !== '在线') setLoadingWorkspace(false);
     refreshWorkspace().catch(() => undefined);
-    const invalidate = () => {workspaceRead.current++;workspaceFlight.current = null;};
+    const invalidate = () => {workspaceRead.current++; workspaceFlight.current = null; invalidateSettings(request, desktop.id);};
     return invalidate;
-  }, [desktop.status, refreshWorkspace]);
+  }, [desktop.id, desktop.status, refreshWorkspace, request]);
 
 
   const conversationsByProject = useMemo(() => {
@@ -767,8 +767,11 @@ export function WorkspaceShell({
       const result = state.result as ConversationConfigResult | undefined;
       if (!result?.config || sessionReadVersion.current !== ticket || sessionScope.current !== conversationId || sessionSelection.current !== conversationId) return;
       storeSettings(request, desktop.id, 'conversation.config.snapshot', {conversationId}, {config: result.config, options: result.options, revision: result.revision});
-      // A background read may update choices, but never replace an edited draft.
-      if (!cached || (JSON.stringify(sessionDraft.current) === JSON.stringify(cached.config) && !sessionCompactDraft.current.contextLengthEdited && sessionCompactDraft.current.contextLengthDraft === String(cached.config.compact?.contextLength || '') && sessionCompactDraft.current.triggerRatioDraft === String(cached.config.compact?.triggerRatio ?? 0.9))) display(result);
+      // Choices are read-only metadata, not the user's editable configuration.
+      setSessionOptions(result.options);
+      const compactDraft = sessionCompactDraft.current;
+      const cleanDraft = !cached || (JSON.stringify(sessionDraft.current) === JSON.stringify(cached.config) && !compactDraft.contextLengthEdited && compactDraft.contextLengthDraft === String(cached.config.compact?.contextLength || '') && compactDraft.triggerRatioDraft === String(cached.config.compact?.triggerRatio ?? 0.9));
+      if (cleanDraft) display(result);
       setContextUsage(result.contextUsage || null); setConfigExecutionBusy(result.busy === true);
     } catch (error) {
       if (sessionReadVersion.current === ticket && sessionScope.current === conversationId) setSessionReadError(workspaceNotice(error, '无法读取会话设置，请稍后重试。'));
@@ -1132,7 +1135,7 @@ export function WorkspaceShell({
             if (mode === 'chat') workspace.refreshMessages();
             else if (mode === 'settings') setSettingsRefreshSignal(current => current + 1);
             else if (selectedStartTab === 'usage') setUsageRefreshSignal(current => current + 1);
-            else {refreshWorkspace(); workspace.refreshOpenedSessions().catch(() => undefined);}
+            else {refreshWorkspace(true); workspace.refreshOpenedSessions().catch(() => undefined);}
           }}
         />
         {mode === 'chat' ? (

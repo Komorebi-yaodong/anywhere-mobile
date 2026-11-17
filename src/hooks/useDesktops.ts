@@ -138,6 +138,31 @@ export function useDesktops() {
     [update],
   );
 
+  const request = useCallback(
+    async <T,>(
+      desktopId: string,
+      method: string,
+      params: Record<string, unknown> = {},
+      timeoutMs?: number,
+    ): Promise<T> => {
+      const client = clients.current.get(desktopId);
+      if (!client) {
+        throw new Error('桌面未连接。');
+      }
+      const changesSettings = settingsMutation(method);
+      let mutationEnded = false;
+      if (changesSettings) beginSettingsMutation(request, desktopId, method, params);
+      try {
+        const value = await client.request<T>(method, params, timeoutMs);
+        if (clients.current.get(desktopId) !== client) throw Object.assign(new Error('连接已更新，请核对原操作结果。'), {code: 'remote_client_closed'});
+        if (changesSettings) {mutationEnded = true; endSettingsMutation(request, desktopId, method, params); if (clients.current.get(desktopId) === client) applySettingsMutation(request, desktopId, method, params, value);}
+        return value;
+      } catch (error) {if (changesSettings && !mutationEnded) endSettingsMutation(request, desktopId, method, params); throw error;}
+
+    },
+    [],
+  );
+
   const connect = useCallback(
     async (desktop: PairedDesktop) => {
       if (appState.current !== 'active') return;
@@ -150,7 +175,7 @@ export function useDesktops() {
         const previous = clients.current.get(desktop.id);
         clients.current.delete(desktop.id);
         await previous?.close();
-        registerSettingsDesktop(desktop).catch(() => undefined);
+        registerSettingsDesktop(desktop, request).catch(() => undefined);
         const [credential, identity] = await Promise.all([
           loadDesktopCredential(desktop.id),
           loadOrCreateDeviceIdentity(),
@@ -250,7 +275,7 @@ export function useDesktops() {
         if (connecting.current.get(desktop.id) === run) connecting.current.delete(desktop.id);
       }
     },
-    [clearReconnect, mutateIndex, scheduleReconnect, update],
+    [clearReconnect, mutateIndex, scheduleReconnect, update, request],
   );
   connectRef.current = connect;
 
@@ -355,7 +380,7 @@ export function useDesktops() {
         if (fresh.some((desktop, index) => desktop.avatarCache !== restored[index].avatarCache)) {
           saveDesktopIndex(fresh).catch(() => undefined);
         }
-        for (const desktop of fresh) registerSettingsDesktop(desktop).catch(() => undefined);
+        for (const desktop of fresh) registerSettingsDesktop(desktop, request).catch(() => undefined);
         const runtime = fresh.map(desktop => ({
           ...desktop,
           status: '离线' as const,
@@ -377,7 +402,7 @@ export function useDesktops() {
     return () => {
       disposed = true;
     };
-  }, [replaceDesktops]);
+  }, [replaceDesktops, request]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -472,31 +497,6 @@ export function useDesktops() {
     [mutateIndex],
   );
 
-
-  const request = useCallback(
-    async <T,>(
-      desktopId: string,
-      method: string,
-      params: Record<string, unknown> = {},
-      timeoutMs?: number,
-    ): Promise<T> => {
-      const client = clients.current.get(desktopId);
-      if (!client) {
-        throw new Error('桌面未连接。');
-      }
-      const changesSettings = settingsMutation(method);
-      let mutationEnded = false;
-      if (changesSettings) beginSettingsMutation(request, desktopId, method, params);
-      try {
-        const value = await client.request<T>(method, params, timeoutMs);
-        if (clients.current.get(desktopId) !== client) throw Object.assign(new Error('连接已更新，请核对原操作结果。'), {code: 'remote_client_closed'});
-        if (changesSettings) {mutationEnded = true; endSettingsMutation(request, desktopId, method, params); if (clients.current.get(desktopId) === client) applySettingsMutation(request, desktopId, method, params, value);}
-        return value;
-      } catch (error) {if (changesSettings && !mutationEnded) endSettingsMutation(request, desktopId, method, params); throw error;}
-
-    },
-    [],
-  );
 
   const remove = useCallback(
     async (desktop: PairedDesktop) => {

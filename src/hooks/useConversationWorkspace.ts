@@ -82,7 +82,7 @@ export function useConversationWorkspace({
   const [catalog, setCatalog] = useState<ConversationSummary[]>(() => peekSettings<ConversationListResult>(request, desktopId, 'conversation.list', {limit: 100})?.conversations || []);
   useEffect(() => {
     let active = true;
-    hydrateSettings(desktopId).then(() => {const cached = peekSettings<ConversationListResult>(request, desktopId, 'conversation.list', {limit: 100}); if (active && cached) {setCatalog(cached.conversations); setConfigured(cached.configured); setCatalogPage(cached.page);}}).catch(() => undefined);
+    hydrateSettings(desktopId, request).then(() => {const cached = peekSettings<ConversationListResult>(request, desktopId, 'conversation.list', {limit: 100}); if (active && cached) {setCatalog(cached.conversations); setConfigured(cached.configured); setCatalogPage(cached.page);}}).catch(() => undefined);
     return () => {active = false;};
   }, [desktopId, request]);
   const [catalogPage, setCatalogPage] = useState<
