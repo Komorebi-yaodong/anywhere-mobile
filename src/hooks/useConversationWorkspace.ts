@@ -26,6 +26,7 @@ import {createBusinessSession} from '../remote/businessSession';
 import {trackCommand} from '../remote/commands';
 
 import {completeHistory, readSized} from '../remote/historyRead';
+import {mergeLiveToolCalls} from '../remote/toolCalls';
 import type {Runtime} from '../../packages/remote-contract';
 
 import {AppState} from 'react-native';
@@ -1476,29 +1477,6 @@ function isTerminalEvent(event: string): boolean {
     event === 'assistant.failed' ||
     event === 'conversation.operation.failed'
   );
-}
-
-
-function mergeLiveToolCalls(
-  current: RemoteMessage['payload']['toolCalls'] | undefined,
-  incoming: RemoteMessage['payload']['toolCalls'],
-): RemoteMessage['payload']['toolCalls'] {
-  const merged = new Map<string, RemoteMessage['payload']['toolCalls'][number]>();
-  for (const call of current || []) merged.set(call.id || call.name, call);
-  for (const call of incoming) {
-    const key = call.id || call.name;
-    if (!key) continue;
-    const previous = merged.get(key);
-    const terminal = new Set(['finished', 'completed', 'failed', 'error', 'rejected', 'cancelled']);
-    if (previous && terminal.has(previous.status) && !terminal.has(call.status)) continue;
-    merged.set(key, {
-      ...previous,
-      ...call,
-      arguments: call.arguments ?? previous?.arguments,
-      ...(call.result === undefined && previous?.result !== undefined ? {result: previous.result} : {}),
-    });
-  }
-  return [...merged.values()];
 }
 
 

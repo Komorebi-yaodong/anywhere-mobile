@@ -828,6 +828,24 @@ test('shows a fixed-height scrollable safe tool detail panel', async () => {
   await act(async () => root.unmount());
 });
 
+test.each(['[参数已隐藏]', undefined, null, ''])('does not label unavailable tool input as loading when its result is already present: %s', async argumentsValue => {
+  openConfigSession();
+  mockWorkspaceMessages = [{messageId: 'tool-unavailable', uiMessageId: 'tool-unavailable', role: 'assistant', order: 1,
+    payload: {content: '', reasoningContent: '', status: 'tool_call', toolCalls: [{id: 'tool-input', name: 'fixture_tool', status: 'finished', arguments: argumentsValue, result: 'synthetic output'}]}}];
+  let root: TestRenderer.ReactTestRenderer | undefined;
+  try {
+    await act(async () => {root = TestRenderer.create(<WorkspaceShell {...workspaceProps()} />);});
+    await enterFixtureChat(root!);
+    await act(async () => root!.root.findAll(node => node.props.accessibilityLabel === '查看工具 fixture_tool 详情' && node.props.onPress)[0].props.onPress());
+    const detail = root!.root.findAllByType(ScrollView).find(node => node.props.accessibilityLabel === '工具 fixture_tool 输入输出')!;
+    const displayed = detail.findAllByType(Text).map(node => node.props.children);
+    expect(displayed).toContain('当前消息未提供输入参数');
+    expect(displayed).toContain('synthetic output');
+    expect(displayed).not.toContain('加载中…');
+    expect(displayed).not.toContain('执行中…');
+  } finally {if (root) await act(async () => root!.unmount());}
+});
+
 test('about page lists only the GitHub repositories', async () => {
   let root!: TestRenderer.ReactTestRenderer;
   await act(async () => { root = TestRenderer.create(<ManagementSettings section="about" desktopId="desktop-about" request={jest.fn() as RemoteRequest} onChanged={jest.fn()} refreshSignal={0} />); });

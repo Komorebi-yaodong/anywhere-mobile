@@ -749,6 +749,68 @@ describe('conversation workspace state boundaries', () => {
 
 
 
+  it.each(['snapshot-first', 'stream-first'])('keeps complete arguments and results when same-terminal live placeholders arrive: %s', async order => {
+    const f = fixture(), base = f.rpc.getMockImplementation()!;
+    const input = {query: 'synthetic input', options: {limit: 3}}, output = {text: 'synthetic result'};
+    let complete = order === 'snapshot-first';
+    const toolRow = () => ({messageId: 'tool-canonical-fixture', uiMessageId: 'tool-ui-fixture', role: 'assistant', order: 1,
+      payload: {content: '', reasoningContent: '', status: 'tool_call', toolCalls: [{id: 'tool-args-fixture', name: 'fixture_tool',
+        status: complete ? 'finished' : 'executing', arguments: complete ? input : '[参数已隐藏]', ...(complete ? {result: output} : {})}]}});
+    f.rpc.mockImplementation((id, method, params) => method === 'conversation.messages.list' && params?.conversationId === A
+      ? Promise.resolve({...page(A), messages: [toolRow()]}) : base(id, method, params));
+    let root: TestRenderer.ReactTestRenderer | undefined;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => f.emit('assistant.delta', 1, {uiMessageId: 'tool-ui-fixture', toolCalls: [{id: 'tool-args-fixture', name: 'fixture_tool', status: 'finished', arguments: '[参数已隐藏]'}]}));
+      complete = true;
+      await act(async () => {await f.state.refreshMessages();});
+      expect(f.state.messages.map(row => row.uiMessageId)).toEqual(['tool-ui-fixture']);
+      expect(f.state.messages[0].payload.toolCalls[0]).toMatchObject({status: 'finished', arguments: input, result: output});
+      await act(async () => f.emit('assistant.delta', 2, {uiMessageId: 'tool-ui-fixture', toolCalls: [{id: 'tool-args-fixture', name: 'fixture_tool', status: 'finished', arguments: '[参数已隐藏]'}]}));
+      expect(f.state.messages[0].payload.toolCalls[0]).toMatchObject({status: 'finished', arguments: input, result: output});
+    } finally {if (root) await act(async () => root!.unmount());}
+  });
+
+  it('preserves verified long tool arguments when a finished live placeholder overlays the hydrated payload', async () => {
+    const {sha256} = require('@noble/hashes/sha2.js');
+    const {utf8ToBytes} = require('../src/remote/utf8');
+    const f = fixture(), base = f.rpc.getMockImplementation()!;
+    const argumentsValue = {content: '合成参数😀\n'.repeat(12000), mode: 'synthetic'}, result = {ok: true};
+    const payload = {content: '', reasoningContent: '', status: 'tool_call', toolCalls: [{id: 'long-tool-fixture', name: 'fixture_tool', status: 'finished', arguments: argumentsValue, result}]};
+    const text = JSON.stringify(payload);
+    const digest = Array.from(sha256(utf8ToBytes(text)) as Uint8Array, byte => byte.toString(16).padStart(2, '0')).join('');
+    const ref = {id: 'c'.repeat(64), totalChars: text.length, sha256: digest};
+    const gate = deferred<void>(); let loadFull = false;
+    const preview = {content: '', reasoningContent: '', status: 'tool_call', toolCalls: [{id: 'long-tool-fixture', name: 'fixture_tool', status: 'finished', arguments: '[参数已隐藏]', result}]};
+    f.rpc.mockImplementation(async (id, method, params) => {
+      if (method === 'conversation.messages.list' && params?.conversationId === A) return {...page(A), messages: [{messageId: 'long-canonical', uiMessageId: 'long-tool-ui', role: 'assistant', order: 1, payload: {...preview, ...(loadFull ? {fullPayload: ref} : {})}}]};
+      if (method === 'conversation.history.payload.get') {
+        await gate.promise;
+        const offset = Number(params?.offset), part = text.slice(offset, offset + 16384);
+        return {...ref, offset, text: part, nextOffset: offset + part.length};
+      }
+      return base(id, method, params);
+    });
+    let root: TestRenderer.ReactTestRenderer | undefined; let read: Promise<void> | undefined;
+    try {
+      await act(async () => {root = TestRenderer.create(<f.Harness status="在线" />);});
+      await act(async () => f.emit('assistant.delta', 1, {uiMessageId: 'long-tool-ui', toolCalls: [{id: 'long-tool-fixture', name: 'fixture_tool', status: 'finished', arguments: '[参数已隐藏]'}]}));
+      loadFull = true;
+      await act(async () => {read = f.state.refreshMessages();});
+      expect(f.state.messages[0].payload.toolCalls[0].result).toEqual(result);
+      await act(async () => {gate.resolve(); await read;});
+      const tool = f.state.messages[0].payload.toolCalls[0];
+      expect(tool.arguments).not.toBe('[参数已隐藏]');
+      expect((tool.arguments as typeof argumentsValue).content).toHaveLength(argumentsValue.content.length);
+      expect(tool.result).toEqual(result); expect(tool.status).toBe('finished');
+      expect(f.state.messages[0].uiMessageId).toBe('long-tool-ui');
+      expect(f.rpc.mock.calls.filter(([, method]) => method === 'conversation.history.payload.get').length).toBeGreaterThan(1);
+    } finally {
+      await act(async () => {gate.resolve(); await read;});
+      if (root) await act(async () => root!.unmount());
+    }
+  });
+
   it('never replaces Desktop message boundaries with stream tools, even at terminal', async () => {
     const f = fixture();
     const base = f.rpc.getMockImplementation()!;

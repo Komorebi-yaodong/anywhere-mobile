@@ -30,6 +30,7 @@ import type {AvatarCache} from '../domain/pairing';
 import {imageProgressText} from '../services/nativeImageUpload';
 
 import { useConversationWorkspace } from '../hooks/useConversationWorkspace';
+import {hasToolArguments} from '../remote/toolCalls';
 import { useAttachmentQueue } from '../hooks/useAttachmentQueue';
 import type {
   AvatarResourceMetadata,
@@ -2344,7 +2345,7 @@ function ToolCallCard({tool, pending, writable = true, onSubmit}: {tool: RemoteM
   return <View style={styles.toolCard}>
     <Pressable accessibilityLabel={`查看工具 ${tool.name || '工具'} 详情`} style={styles.toolHeader} onPress={() => { beforeLayoutChange(); setOpen(current => !current); }}><View style={styles.toolHeaderCopy}><AppIcon name="mcp" size={16} color={C.primary} /><Text numberOfLines={1} style={styles.toolName}>调用 {tool.name || '工具'}</Text></View><Text style={styles.toolState}>{tool.status === 'choosing' || pending ? '等待选择' : tool.status || (tool.result !== undefined ? '已完成' : '处理中')}</Text></Pressable>
     {open ? <View style={styles.toolBody}>
-      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView accessibilityLabel={`工具 ${tool.name || '工具'} 输入输出`} nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{tool.arguments === '[参数已隐藏]' ? '加载中…' : formatObject(tool.arguments)}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>执行中…</Text>}</ScrollView>}
+      {pending ? <LiveChoiceCard toolCallId={tool.id} pending={pending} writable={writable} onSubmit={onSubmit} /> : <ScrollView accessibilityLabel={`工具 ${tool.name || '工具'} 输入输出`} nestedScrollEnabled showsVerticalScrollIndicator style={styles.toolDetailScroll} contentContainerStyle={styles.toolDetailContent} keyboardShouldPersistTaps="handled"><Text style={styles.toolLabel}>输入参数</Text><Text selectable style={styles.toolCode}>{hasToolArguments(tool.arguments) ? formatObject(tool.arguments) : '当前消息未提供输入参数'}</Text>{tool.result !== undefined ? <><Text style={styles.toolLabel}>输出结果</Text><Text selectable style={styles.toolCode}>{formatObject(tool.result)}</Text></> : <Text style={styles.toolPending}>执行中…</Text>}</ScrollView>}
     </View> : null}
   </View>;
 }
