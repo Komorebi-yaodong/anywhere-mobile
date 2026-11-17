@@ -1,6 +1,8 @@
+import {dailyTimes, monthlySchedules} from '../domain/taskSchedule';
+import {readSettings, peekSettings, storeSettings} from '../services/settingsCache';
 import {useSettingsCatalog} from '../hooks/useSettingsCatalog';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 
 import type {RemoteRequest} from '../remote/api';
@@ -9,7 +11,7 @@ import {useThemedStyles} from './theme';
 
 type Option = {value: string; label: string};
 type Field = {key: string; label: string; type: string; options?: string[]};
-type Task = {id: string; name: string; enabled: boolean};
+type Task = {id: string; name: string; enabled: boolean; revision?: string; schedule?: string};
 type Catalog = {ok: true; section: 'tasks'; schema: Field[]; options: Record<string, Option[]>; items?: Task[]; id?: string; revision?: string; value?: Record<string, unknown>};
 type Editor = {creating: boolean; detail: Catalog; id: string; draft: Record<string, unknown>} | null;
 type Picker = {title: string; options: Option[]; values: string[]; multiple?: boolean; onChange: (values: string[]) => void} | null;
@@ -30,10 +32,12 @@ function defaultTask(): Record<string, unknown> {
 
 export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {desktopId: string; request: RemoteRequest; onChanged: () => void; refreshSignal: number}) {
   const s = useThemedStyles(styles);
-  const {catalog, reload, refreshing} = useSettingsCatalog<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks'});
+  const {catalog, reload, setCatalog, refreshing} = useSettingsCatalog<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks'});
   const [editor, setEditor] = useState<Editor>(null);
   const [picker, setPicker] = useState<Picker>(null);
   const [busy, setBusy] = useState(false);
+  const pendingIds = useRef(new Set<string>());
+  const [pending, setPending] = useState<string[]>([]);
   const [error, setError] = useState('');
 
   const load = useCallback(async (force = true) => {
@@ -47,7 +51,9 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
   const open = async (id: string) => {
     setBusy(true); setError('');
     try {
-      const detail = await request<Catalog>(desktopId, 'management.catalog', {section: 'tasks', id});
+      const cached = peekSettings<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks', id});
+      const listed = catalog?.items?.find(item => item.id === id);
+      const detail = cached && (!listed?.revision || cached.revision === listed.revision) ? cached : await readSettings<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks', id}, Boolean(cached));
       setEditor({creating: false, detail, id, draft: {...defaultTask(), ...(detail.value || {})}});
     } catch (cause) { setError(message(cause, '无法读取任务设置。')); }
     finally { setBusy(false); }
@@ -57,15 +63,25 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
     setEditor({creating: true, detail: catalog, id: '', draft: defaultTask()});
   };
   const update = (patch: Record<string, unknown>) => setEditor(current => current ? {...current, draft: {...current.draft, ...patch}} : current);
+  const applySaved = (reply: {item?: Task; detail?: Catalog}, id: string) => {
+    const detail = reply.detail;
+    if (detail) storeSettings(request, desktopId, 'management.catalog', {section: 'tasks', id}, {...detail, options: detail.options || catalog?.options || {}});
+    const item = reply.item || (detail ? {id, name: string(detail.value?.name) || id, enabled: detail.value?.enabled === true, revision: detail.revision} : null);
+    if (item) setCatalog(current => current ? {...current, items: [...(current.items || []).filter(value => value.id !== id), item]} : current);
+    else reload(true).catch(() => undefined);
+  };
   const toggle = async (task: Task) => {
-    if (busy) return;
-    setBusy(true); setError('');
+    if (pendingIds.current.has(task.id)) return;
+    pendingIds.current.add(task.id); setPending([...pendingIds.current]); setError('');
+    setCatalog(current => current ? {...current, items: current.items?.map(item => item.id === task.id ? {...item, enabled: !item.enabled} : item)} : current);
     try {
-      const detail = await request<Catalog>(desktopId, 'management.catalog', {section: 'tasks', id: task.id});
-      await request(desktopId, 'management.mutate', {section: 'tasks', id: task.id, operation: 'patch', expectedRevision: detail.revision, patch: {enabled: !task.enabled}}, 60_000);
-      await load(); onChanged();
-    } catch (cause) { setError(message(cause, '无法更新任务开关。')); }
-    finally { setBusy(false); }
+      const detail = task.revision ? null : await readSettings<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks', id: task.id});
+      const reply = await request<{item?: Task; detail?: Catalog}>(desktopId, 'management.mutate', {section: 'tasks', id: task.id, operation: 'patch', expectedRevision: task.revision || detail?.revision, patch: {enabled: !task.enabled}}, 60_000);
+      applySaved(reply, task.id); onChanged();
+    } catch (cause) {
+      setCatalog(current => current ? {...current, items: current.items?.map(item => item.id === task.id ? task : item)} : current);
+      setError(message(cause, '无法更新任务开关。')); reload(true).catch(() => undefined);
+    } finally {pendingIds.current.delete(task.id); setPending([...pendingIds.current]);}
   };
   const save = async () => {
     if (!editor || busy) return;
@@ -73,14 +89,21 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
     if (!name) { setError('请输入任务名称。'); return; }
     if (editor.draft.promptKey === '' && !editor.draft.conversationId) {setError('请选择目标会话。'); return;}
     const id = editor.creating ? name : editor.id;
+    const frequency = string(editor.draft.triggerType);
+    const activeKeys: Record<string, string[]> = {daily: ['dailyTime', 'dailyTimes'], weekly: ['weeklyDays', 'weeklyTime'], monthly: ['monthlyDays', 'monthlyTime', 'monthlySchedules'], interval: ['intervalMinutes', 'intervalStartTime'], single: ['singleDate', 'singleTime']};
+    const scheduleKeys = new Set(Object.values(activeKeys).flat());
+    const patch = Object.fromEntries(Object.entries(editor.draft).filter(([key, value]) => editor.detail.schema.some(field => field.key === key) && (!scheduleKeys.has(key) || activeKeys[frequency]?.includes(key)) && !(key === 'intervalStartTime' && value === '')));
+    if (Array.isArray(patch.dailyTimes)) delete patch.dailyTime;
+    if (Array.isArray(patch.monthlySchedules)) {delete patch.monthlyDays; delete patch.monthlyTime;}
+
     setBusy(true); setError('');
     try {
-      await request(desktopId, 'management.mutate', {
+      const reply = await request<{item?: Task; detail?: Catalog}>(desktopId, 'management.mutate', {
         section: 'tasks', id, operation: editor.creating ? 'create' : 'patch',
         ...(editor.creating ? {} : {expectedRevision: editor.detail.revision}),
-        patch: editor.draft,
+        patch,
       }, 60_000);
-      setEditor(null); await load(); onChanged();
+      setEditor(null); applySaved(reply, id); onChanged();
     } catch (cause) { setError(message(cause, '保存任务失败，请检查时间和频率。')); }
     finally { setBusy(false); }
   };
@@ -88,7 +111,7 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
     if (!editor || editor.creating) return;
     setBusy(true); setError('');
     request(desktopId, 'management.mutate', {section: 'tasks', id: editor.id, operation: 'delete', expectedRevision: editor.detail.revision, confirmed: true}, 60_000)
-      .then(async () => { setEditor(null); await load(); onChanged(); })
+      .then(() => { const id = editor.id; setEditor(null); setCatalog(current => current ? {...current, items: current.items?.filter(item => item.id !== id)} : current); onChanged(); })
       .catch(cause => setError(message(cause, '删除任务失败。')))
       .finally(() => setBusy(false));
   };
@@ -100,9 +123,9 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
       {tasks.map(task => <View key={task.id} style={s.taskCard}>
         <Pressable style={s.taskPress} onPress={() => open(task.id)} disabled={busy}>
           <View style={s.icon}><AppIcon name="tasks" size={20} color={C.primary} /></View>
-          <View style={s.taskCopy}><Text numberOfLines={1} style={s.taskName}>{task.name || task.id}</Text><Text numberOfLines={1} style={s.taskMeta}>{task.enabled ? '已启用' : '已停用'}</Text></View>
+          <View style={s.taskCopy}><Text numberOfLines={1} style={s.taskName}>{task.name || task.id}</Text><Text numberOfLines={1} style={s.taskMeta}>{task.schedule || (task.enabled ? '已启用' : '已停用')}</Text></View>
         </Pressable>
-        <Switch value={task.enabled} disabled={busy} trackColor={{false: C.line, true: '#B9D8C3'}} thumbColor={task.enabled ? C.success : C.surface} onValueChange={() => toggle(task)} />
+        <Switch value={task.enabled} disabled={busy || pending.includes(task.id)} trackColor={{false: C.line, true: '#B9D8C3'}} thumbColor={task.enabled ? C.success : C.surface} onValueChange={() => toggle(task)} />
       </View>)}
       {!busy && catalog && !tasks.length ? <View style={s.empty}><Text style={s.emptyTitle}>暂无定时任务</Text></View> : null}
     </ScrollView>
@@ -117,7 +140,7 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
   const draft = editor.draft;
   const options = editor.detail.options || {};
   const trigger = string(draft.triggerType) || 'daily';
-  const choose = (title: string, key: string, values: string[], choices: Option[], multiple = false) => onPicker({title, options: choices, values, multiple, onChange: next => onUpdate({[key]: multiple ? next : next[0] || '', ...(key === 'promptKey' ? {conversationId: ''} : key === 'conversationId' ? {promptKey: ''} : {})})});
+  const choose = (title: string, key: string, values: string[], choices: Option[], multiple = false) => onPicker({title, options: choices, values, multiple, onChange: next => onUpdate({[key]: multiple ? (key === 'weeklyDays' || key === 'monthlyDays' ? next.map(Number) : next) : next[0] || '', ...(key === 'promptKey' ? {conversationId: ''} : key === 'conversationId' ? {promptKey: ''} : {})})});
   const multiNumbers = (label: string, key: 'weeklyDays' | 'monthlyDays', optionsFor: Option[]) => <Pressable style={s.selectRow} onPress={() => choose(label, key, strings((draft[key] as number[] | undefined)?.map(String)), optionsFor, true)}><Text style={s.label}>{label}</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{(draft[key] as number[] || []).map(value => optionsFor.find(item => item.value === String(value))?.label || value).join('、') || '请选择'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>;
   const weeklyOptions = weekdays.map((label, value) => ({value: String(value), label}));
   const monthlyOptions = Array.from({length: 31}, (_, index) => ({value: String(index + 1), label: `${index + 1} 日`}));
@@ -134,9 +157,22 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
 
       <Pressable style={s.selectRow} onPress={() => choose('执行频率', 'triggerType', [trigger], Object.entries(triggerLabels).map(([value, label]) => ({value, label})))}><Text style={s.label}>频率</Text><View style={s.selectRight}><Text style={s.selectText}>{triggerLabels[trigger] || trigger}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
       {trigger === 'interval' ? <><NumberField label="间隔分钟" value={draft.intervalMinutes} onChange={intervalMinutes => onUpdate({intervalMinutes})} /><TimeField label="开始时间（可选）" value={string(draft.intervalStartTime)} onChange={intervalStartTime => onUpdate({intervalStartTime})} /></> : null}
-      {trigger === 'daily' ? <TimeField label="每日时间" value={string(draft.dailyTime)} onChange={dailyTime => onUpdate({dailyTime})} /> : null}
+      {trigger === 'daily' ? editor.detail.schema.some(field => field.key === 'dailyTimes') ? <View style={s.field}>
+        <Text style={s.label}>每日触发时间</Text>
+        {dailyTimes(draft).map((time, index) => <View key={index} style={s.selectRow}><TimeField label={`时间 ${index + 1}`} value={time} onChange={value => onUpdate({dailyTimes: dailyTimes(draft).map((item, idx) => idx === index ? value : item)})} /><Pressable onPress={() => onUpdate({dailyTimes: dailyTimes(draft).filter((_, idx) => idx !== index)})}><Text style={s.deleteText}>删除</Text></Pressable></View>)}
+        <Pressable onPress={() => onUpdate({dailyTimes: [...dailyTimes(draft), '09:00']})}><Text style={s.link}>＋ 添加时间</Text></Pressable>
+      </View> : <TimeField label="每日时间" value={string(draft.dailyTime)} onChange={dailyTime => onUpdate({dailyTime})} /> : null}
       {trigger === 'weekly' ? <>{multiNumbers('执行星期', 'weeklyDays', weeklyOptions)}<TimeField label="每周时间" value={string(draft.weeklyTime)} onChange={weeklyTime => onUpdate({weeklyTime})} /></> : null}
-      {trigger === 'monthly' ? <>{multiNumbers('执行日期', 'monthlyDays', monthlyOptions)}<TimeField label="每月时间" value={string(draft.monthlyTime)} onChange={monthlyTime => onUpdate({monthlyTime})} /></> : null}
+      {trigger === 'monthly' ? editor.detail.schema.some(field => field.key === 'monthlySchedules') ? <View style={s.field}>
+        <Text style={s.label}>每月日期与时间</Text>
+        {monthlySchedules(draft).map((slot, index) => <View key={index} style={s.field}>
+          <Pressable style={s.selectRow} onPress={() => onPicker({title: '执行日期', options: monthlyOptions, values: [String(slot.day)], onChange: values => onUpdate({monthlySchedules: monthlySchedules(draft).map((item, idx) => idx === index ? {...item, day: Number(values[0])} : item)})})}><Text style={s.label}>{slot.day} 日</Text><AppIcon name="›" size={17} color={C.muted} /></Pressable>
+          <TimeField label="触发时间" value={slot.time} onChange={time => onUpdate({monthlySchedules: monthlySchedules(draft).map((item, idx) => idx === index ? {...item, time} : item)})} />
+          <Pressable onPress={() => onUpdate({monthlySchedules: monthlySchedules(draft).filter((_, idx) => idx !== index)})}><Text style={s.deleteText}>删除时间项</Text></Pressable>
+        </View>)}
+        <Pressable onPress={() => onUpdate({monthlySchedules: [...monthlySchedules(draft), {day: 1, time: '09:00'}]})}><Text style={s.link}>＋ 添加日期与时间</Text></Pressable>
+        <Text style={s.taskMeta}>每项独立触发，当月不存在的日期自动跳过。</Text>
+      </View> : <>{multiNumbers('执行日期', 'monthlyDays', monthlyOptions)}<TimeField label="每月时间" value={string(draft.monthlyTime)} onChange={monthlyTime => onUpdate({monthlyTime})} /></> : null}
       {trigger === 'single' ? <><View style={s.field}><Text style={s.label}>执行日期</Text><TextInput value={string(draft.singleDate)} onChangeText={singleDate => onUpdate({singleDate})} placeholder="YYYY-MM-DD" placeholderTextColor={C.muted} style={s.input} /></View><TimeField label="执行时间" value={string(draft.singleTime)} onChange={singleTime => onUpdate({singleTime})} /></> : null}
       {!draft.conversationId && draft.promptKey === '__DEFAULT__' ? <Pressable style={s.selectRow} onPress={() => choose('默认智能体模型能力（可选）', 'modelRoute', [string(draft.modelRoute) || 'general'], Object.entries(routeLabels).map(([value, label]) => ({value, label})))}><Text style={s.label}>模型能力（可选）</Text><View style={s.selectRight}><Text style={s.selectText}>{routeLabels[string(draft.modelRoute)] || '通用'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable> : null}
       <Pressable style={s.selectRow} onPress={() => choose('额外 MCP', 'extraMcp', strings(draft.extraMcp), options.mcp || [], true)}><Text style={s.label}>额外 MCP</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{strings(draft.extraMcp).length ? `${strings(draft.extraMcp).length} 项` : '不添加'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>

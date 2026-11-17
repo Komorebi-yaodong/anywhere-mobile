@@ -1,3 +1,4 @@
+import {peekSettings, storeSettings, hydrateSettings} from '../services/settingsCache';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { DesktopStatus } from '../domain/pairing';
@@ -34,6 +35,7 @@ export type ActiveConversationTurn = {
   requestId: string;
   conversationId: string;
   submittedText: string;
+  submittedUiMessageId?: string;
   text: string;
   reasoning: string;
   toolCalls?: RemoteMessage['payload']['toolCalls'];
@@ -77,7 +79,12 @@ export function useConversationWorkspace({
     setAuthoritativeRuntime(null);
   }, [business, desktopStatus]);
 
-  const [catalog, setCatalog] = useState<ConversationSummary[]>([]);
+  const [catalog, setCatalog] = useState<ConversationSummary[]>(() => peekSettings<ConversationListResult>(request, desktopId, 'conversation.list', {limit: 100})?.conversations || []);
+  useEffect(() => {
+    let active = true;
+    hydrateSettings(desktopId).then(() => {const cached = peekSettings<ConversationListResult>(request, desktopId, 'conversation.list', {limit: 100}); if (active && cached) {setCatalog(cached.conversations); setConfigured(cached.configured); setCatalogPage(cached.page);}}).catch(() => undefined);
+    return () => {active = false;};
+  }, [desktopId, request]);
   const [catalogPage, setCatalogPage] = useState<
     ConversationListResult['page']
   >({
@@ -163,6 +170,25 @@ export function useConversationWorkspace({
     [],
   );
   const activeTurnRef = useRef<ActiveConversationTurn | null>(null);
+  const streamedRows = useRef(new Map<string, {sequence: number; text: string; reasoning: string; status: string; toolCalls?: RemoteMessage['payload']['toolCalls']}>());
+  const streamRevision = useRef(0);
+  const lastStreamAt = useRef(0);
+  const streamTerminalPending = useRef(false);
+  const missingStreamRows = useRef(new Map<string, number>());
+  const applyStreamRows = useCallback((rows: RemoteMessage[]) => rows.map(row => {
+    const stream = streamedRows.current.get(row.uiMessageId);
+    if (!stream || row.role !== 'assistant') return row;
+    const content = row.payload.content;
+    const plain = typeof content === 'string' ? content : Array.isArray(content) && content.every(part => part?.type === 'text') ? content.map(part => part.text || '').join('') : null;
+    const reasoning = row.payload.reasoningContent || '';
+    // A snapshot may already be ahead of the event queue; never roll it back.
+    const text = plain !== null && stream.text.startsWith(plain) ? stream.text : null;
+    const nextReasoning = stream.reasoning.startsWith(reasoning) ? stream.reasoning : reasoning;
+    if ((text === null || text === plain) && nextReasoning === reasoning && !stream.toolCalls) return row;
+    return {...row, payload: {...row.payload, ...(text !== null ? {content: text} : {}), reasoningContent: nextReasoning,
+      status: ['end', 'error', 'cancelled'].includes(row.payload.status) ? row.payload.status : stream.status || row.payload.status, toolCalls: stream.toolCalls ? mergeLiveToolCalls(row.payload.toolCalls, stream.toolCalls) : row.payload.toolCalls}};
+  }), []);
+
 
   const awaitingSendReceipts = useRef(new Set<string>());
   const settledSendReceipts = useRef(new Set<string>());
@@ -187,6 +213,7 @@ export function useConversationWorkspace({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [error, setError] = useState('');
+  useEffect(() => {streamedRows.current.clear(); missingStreamRows.current.clear(); streamRevision.current++; lastStreamAt.current = 0; streamTerminalPending.current = false;}, [desktopId, desktopStatus, selectedConversationId]);
   const scopeRef = useRef({ desktopId, desktopStatus, selectedConversationId });
   scopeRef.current = { desktopId, desktopStatus, selectedConversationId };
   const catalogEpoch = useRef(0);
@@ -263,6 +290,7 @@ export function useConversationWorkspace({
       if (!isCurrent()) return;
       setConfigured(result.configured);
       result.conversations = result.conversations.filter(item => !missingConversationIds.current.has(item.conversationId));
+      storeSettings(request, desktopId, 'conversation.list', {limit: 100}, {...result, conversations: result.conversations.map(item => ({...item, window: null})), windows: []});
       setCatalog(result.conversations);
       setCatalogPage(result.page);
       setSelectedConversationId(current => {
@@ -284,7 +312,7 @@ export function useConversationWorkspace({
     } finally {
       if (isCurrent()) setCatalogLoading(false);
     }
-  }, [api, desktopId, desktopStatus]);
+  }, [api, desktopId, desktopStatus, request]);
 
   const catalogRefresh = useMemo(() => createConversationMessageRefresh(readCatalog), [readCatalog]);
   const refreshCatalog = useCallback(() => catalogRefresh.request(desktopId), [catalogRefresh, desktopId]);
@@ -316,6 +344,7 @@ export function useConversationWorkspace({
       if (!conversationId || desktopStatus !== '在线' || !appActive.current) return;
       const epoch = ++messageEpoch.current;
       const requestedTurn = activeTurnRef.current;
+      const initialStreamRevision = streamRevision.current;
       const isCurrent = () =>
         epoch === messageEpoch.current &&
         scopeRef.current.desktopId === desktopId &&
@@ -329,7 +358,7 @@ export function useConversationWorkspace({
           const firstOrder = incoming[0]?.order;
           const older = result.page.hasMore && firstOrder !== undefined
             ? messagesRef.current.filter(message => message.order < firstOrder && message.order >= (result.page.visibleFromUiOrder || 0) && !deletedUiMessageIdsRef.current.has(message.uiMessageId)) : [];
-          const next = reconcileDesktopMessages(messagesRef.current, [...older, ...incoming]);
+          const next = reconcileDesktopMessages(messagesRef.current, applyStreamRows([...older, ...incoming]));
           messagesRef.current = next;
           setMessages(next);
           setTasks(Array.isArray(result.tasks) ? result.tasks : []);
@@ -359,11 +388,12 @@ export function useConversationWorkspace({
         const older = result.page.hasMore && firstOrder !== undefined
           ? messagesRef.current.filter(message => message.order < firstOrder && message.order >= (result.page.visibleFromUiOrder || 0) && !deletedUiMessageIdsRef.current.has(message.uiMessageId))
           : [];
-        const nextMessages = reconcileDesktopMessages(messagesRef.current, [...older, ...incoming]);
+        const nextMessages = reconcileDesktopMessages(messagesRef.current, applyStreamRows([...older, ...incoming]));
         messagesRef.current = nextMessages;
         setMessages(nextMessages);
 
         snapshots.put({...result, messages: nextMessages});
+        if ((requestedTurn?.terminal || streamTerminalPending.current) && initialStreamRevision === streamRevision.current) {streamedRows.current.clear(); missingStreamRows.current.clear(); streamTerminalPending.current = false;}
         setTasks(Array.isArray(result.tasks) ? result.tasks : []);
         setConversationModel(typeof result.conversation?.model === 'string' ? result.conversation.model : '');
         setConversationAssistant({
@@ -403,7 +433,7 @@ export function useConversationWorkspace({
         if (isCurrent()) setMessagesLoading(false);
       }
     },
-    [api, business, commitTurn, desktopId, desktopStatus, forgetMissingConversation, request, snapshots],
+    [api, applyStreamRows, business, commitTurn, desktopId, desktopStatus, forgetMissingConversation, request, snapshots],
   );
 
   const messageRefresh = useMemo(() => createConversationMessageRefresh(readMessages), [readMessages]);
@@ -417,7 +447,7 @@ export function useConversationWorkspace({
       if (running || !active || !appActive.current) return;
       running = true;
       try {
-        if (await business.dirty(selectedConversationId) && active) await loadMessages(selectedConversationId);
+        if (Date.now() - lastStreamAt.current > 2500 && await business.dirty(selectedConversationId) && active) await loadMessages(selectedConversationId);
       } catch (cause) {if (active) {
         if (errorCode(cause) === 'remote_conversation_not_found') {forgetMissingConversation(selectedConversationId); setError('会话已不存在'); return;}
         business.invalidate(selectedConversationId);
@@ -839,6 +869,7 @@ export function useConversationWorkspace({
           current.filter(item => item.requestId !== requestId),
         );
       }
+      if (isTerminalEvent(event.event) && conversationId === scopeRef.current.selectedConversationId) streamTerminalPending.current = true;
       let becameTerminal = false;
       let acceptedUpdate = false;
       commitTurn(current => {
@@ -864,6 +895,7 @@ export function useConversationWorkspace({
             : current.reasoning,
           segmentId: nextSegmentId,
           historyLoaded: terminal ? current.historyLoaded : false,
+          submittedUiMessageId: event.event === 'assistant.started' ? stringValue(payload.userUiMessageId) || current.submittedUiMessageId : current.submittedUiMessageId,
           toolCalls: event.event === 'assistant.delta' && Array.isArray(payload.toolCalls)
             ? mergeLiveToolCalls(segmentChanged ? undefined : current.toolCalls, payload.toolCalls as RemoteMessage['payload']['toolCalls'])
             : segmentChanged ? [] : current.toolCalls,
@@ -878,9 +910,39 @@ export function useConversationWorkspace({
               : current.errorCode,
         };
       }, event.event !== 'assistant.delta');
-      if (event.event === 'assistant.delta' && conversationId && conversationId === scopeRef.current.selectedConversationId &&
-        (acceptedUpdate || activeTurnRef.current?.requestId !== requestId)) {
-        messageRefresh.request(conversationId, false).catch(() => undefined);
+      if (event.event === 'assistant.delta' && conversationId === scopeRef.current.selectedConversationId && (acceptedUpdate || activeTurnRef.current?.requestId !== requestId)) {
+        lastStreamAt.current = Date.now(); streamTerminalPending.current = false;
+        const uiId = stringValue(payload.uiMessageId);
+        const existing = uiId ? streamedRows.current.get(uiId) : null;
+        if (uiId && (!existing || sequence > existing.sequence)) {
+          const stored = messagesRef.current.find(message => message.uiMessageId === uiId);
+          const baseText = typeof stored?.payload.content === 'string' ? stored.payload.content : Array.isArray(stored?.payload.content) && stored.payload.content.every(part => part?.type === 'text') ? stored.payload.content.map(part => part.text || '').join('') : '';
+          const mergeAt = (current: string, delta: string, offset: unknown, baseline: string): string | null => {
+            if (!delta) return current || baseline;
+            if (!Number.isSafeInteger(offset) || Number(offset) < 0) return current + delta;
+            const start = Number(offset);
+            const prefix = current.length >= start ? current : baseline.length >= start ? baseline : null;
+            if (prefix === null) return null;
+            const overlap = Math.min(prefix.length - start, delta.length);
+            if (overlap > 0 && prefix.slice(start, start + overlap) !== delta.slice(0, overlap)) return null;
+            return prefix.slice(0, start) + delta + prefix.slice(start + delta.length);
+          };
+          const nextText = mergeAt(existing?.text || '', stringValue(payload.textDelta), payload.textOffset, baseText);
+          const nextReasoning = mergeAt(existing?.reasoning || '', stringValue(payload.reasoningDelta), payload.reasoningOffset, stored?.payload.reasoningContent || '');
+          if (nextText === null || nextReasoning === null) {
+            lastStreamAt.current = 0;
+            if (Date.now() - (missingStreamRows.current.get(uiId) || 0) >= 800) {missingStreamRows.current.set(uiId, Date.now()); messageRefresh.request(conversationId, false).catch(() => undefined);}
+            return;
+          }
+          const row = {sequence, text: nextText, reasoning: nextReasoning, status: stringValue(payload.status),
+            toolCalls: Array.isArray(payload.toolCalls) ? mergeLiveToolCalls(existing?.toolCalls, payload.toolCalls as RemoteMessage['payload']['toolCalls']) : existing?.toolCalls};
+          streamedRows.current.set(uiId, row); streamRevision.current++;
+          if (messagesRef.current.some(message => message.uiMessageId === uiId)) {
+            const next = applyStreamRows(messagesRef.current); messagesRef.current = next; setMessages(next);
+          } else if (Date.now() - (missingStreamRows.current.get(uiId) || 0) >= 800) {
+            missingStreamRows.current.set(uiId, Date.now()); messageRefresh.request(conversationId, false).catch(() => undefined);
+          }
+        } else if (!uiId) messageRefresh.request(conversationId, false).catch(() => undefined);
       }
 
       if (
@@ -899,7 +961,7 @@ export function useConversationWorkspace({
         }
       }
     },
-    [commitQueue, commitTurn, loadMessages, messageRefresh, refreshCatalog, refreshOpenedSessions],
+    [applyStreamRows, commitQueue, commitTurn, loadMessages, messageRefresh, refreshCatalog, refreshOpenedSessions],
   );
 
   useEffect(() => {
@@ -934,8 +996,9 @@ export function useConversationWorkspace({
 
 
   useEffect(() => {
-    setCatalog([]);
+    setCatalog(peekSettings<ConversationListResult>(request, desktopId, 'conversation.list', {limit: 100})?.conversations || []);
 
+    streamedRows.current.clear(); missingStreamRows.current.clear(); streamRevision.current++; lastStreamAt.current = 0;
     selectedOpenedTitleRef.current = '';
     missingConversationIds.current.clear();
     navigationVersion.current += 1; preserveEmptySelection.current = false;
@@ -950,7 +1013,7 @@ export function useConversationWorkspace({
     setSelectedConversationId('');
     commitTurn(null);
     commitQueue([]);
-  }, [commitQueue, commitTurn, desktopId]);
+  }, [commitQueue, commitTurn, desktopId, request]);
 
   useEffect(() => {
     if (desktopStatus === '在线') {
@@ -1426,6 +1489,8 @@ function mergeLiveToolCalls(
     const key = call.id || call.name;
     if (!key) continue;
     const previous = merged.get(key);
+    const terminal = new Set(['finished', 'completed', 'failed', 'error', 'rejected', 'cancelled']);
+    if (previous && terminal.has(previous.status) && !terminal.has(call.status)) continue;
     merged.set(key, {
       ...previous,
       ...call,

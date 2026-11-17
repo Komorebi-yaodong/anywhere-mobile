@@ -1,4 +1,4 @@
-import {clearSettings, invalidateSettings, settingsMutation} from '../services/settingsCache';
+import {clearSettings, beginSettingsMutation, endSettingsMutation, settingsMutation, registerSettingsDesktop, applySettingsMutation} from '../services/settingsCache';
 
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, Platform} from 'react-native';
@@ -150,6 +150,7 @@ export function useDesktops() {
         const previous = clients.current.get(desktop.id);
         clients.current.delete(desktop.id);
         await previous?.close();
+        registerSettingsDesktop(desktop).catch(() => undefined);
         const [credential, identity] = await Promise.all([
           loadDesktopCredential(desktop.id),
           loadOrCreateDeviceIdentity(),
@@ -354,6 +355,7 @@ export function useDesktops() {
         if (fresh.some((desktop, index) => desktop.avatarCache !== restored[index].avatarCache)) {
           saveDesktopIndex(fresh).catch(() => undefined);
         }
+        for (const desktop of fresh) registerSettingsDesktop(desktop).catch(() => undefined);
         const runtime = fresh.map(desktop => ({
           ...desktop,
           status: '离线' as const,
@@ -483,16 +485,21 @@ export function useDesktops() {
         throw new Error('桌面未连接。');
       }
       const changesSettings = settingsMutation(method);
-      if (changesSettings) invalidateSettings(request, desktopId);
-      try {return await client.request<T>(method, params, timeoutMs);}
-      finally {if (changesSettings) invalidateSettings(request, desktopId);}
+      let mutationEnded = false;
+      if (changesSettings) beginSettingsMutation(request, desktopId, method, params);
+      try {
+        const value = await client.request<T>(method, params, timeoutMs);
+        if (clients.current.get(desktopId) !== client) throw Object.assign(new Error('连接已更新，请核对原操作结果。'), {code: 'remote_client_closed'});
+        if (changesSettings) {mutationEnded = true; endSettingsMutation(request, desktopId, method, params); if (clients.current.get(desktopId) === client) applySettingsMutation(request, desktopId, method, params, value);}
+        return value;
+      } catch (error) {if (changesSettings && !mutationEnded) endSettingsMutation(request, desktopId, method, params); throw error;}
+
     },
     [],
   );
 
   const remove = useCallback(
     async (desktop: PairedDesktop) => {
-      clearSettings(request, desktop.id);
       clearReconnect(desktop.id);
       retryCount.current.delete(desktop.id);
 
@@ -502,6 +509,7 @@ export function useDesktops() {
       const client = clients.current.get(desktop.id);
       clients.current.delete(desktop.id);
       await client?.close().catch(() => undefined);
+      await clearSettings(request, desktop.id);
       await removeDesktopCredential(desktop.id);
       await mutateIndex(current => current.filter(item => item.id !== desktop.id));
     },

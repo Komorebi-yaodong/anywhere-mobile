@@ -83,6 +83,8 @@ export function SimpleManagementSettings({
   useEffect(() => {nicknameDirty.current = false;}, [desktopId, section]);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
+  const pendingIds = useRef(new Set<string>());
+  const [pending, setPending] = useState<string[]>([]);
   const [error, setError] = useState('');
 
   const load = useCallback(async (force = true) => {
@@ -99,27 +101,19 @@ export function SimpleManagementSettings({
   useEffect(() => {if (!nicknameDirty.current) setNickname(general?.value.displayName || '');}, [desktopId, section, general?.value.displayName]);
 
   const toggle = async (item: ToggleItem) => {
-    if (busy) return;
-    const nextEnabled = !item.enabled;
-    setItems(current => current.map(value => value.id === item.id ? {...value, enabled: nextEnabled} : value));
-    setBusy(true);
-    setError('');
-    setSaved(false);
+    if (pendingIds.current.has(item.id)) return;
+    pendingIds.current.add(item.id); setPending([...pendingIds.current]);
+    setItems(current => current.map(value => value.id === item.id ? {...value, enabled: !item.enabled} : value));
+    setError(''); setSaved(false);
     try {
-      await request(
-        desktopId,
-        'workspace.management.patch',
-        {section, id: item.id, expectedRevision: item.revision, patch: {enabled: nextEnabled}},
-        60_000,
-      );
-      await load();
+      const reply = await request<{item?: ToggleItem}>(desktopId, 'workspace.management.patch', {section, id: item.id, expectedRevision: item.revision, patch: {enabled: !item.enabled}}, 60_000);
+      if (reply.item) setItems(current => current.map(value => value.id === item.id ? reply.item! : value));
+      else reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
-      setError(message(cause, '更新开关失败，请刷新后重试。'));
-      await load().catch(() => undefined);
-    } finally {
-      setBusy(false);
-    }
+      setItems(current => current.map(value => value.id === item.id ? item : value));
+      setError(message(cause, '更新开关失败，请刷新后重试。')); reload(true).catch(() => undefined);
+    } finally {pendingIds.current.delete(item.id); setPending([...pendingIds.current]);}
   };
 
   const saveNickname = async () => {
@@ -132,7 +126,7 @@ export function SimpleManagementSettings({
     setBusy(true);
     setError('');
     try {
-      await request(
+      const reply = await request<{revision?: string; value?: {displayName: string}}>(
         desktopId,
         'workspace.management.patch',
         {
@@ -144,9 +138,9 @@ export function SimpleManagementSettings({
         60_000,
       );
       nicknameDirty.current = false;
-      const refreshed = await load();
-      await onChanged();
-      setSaved(refreshed);
+      if (reply.revision && reply.value) setCatalog({ok: true, section: 'general', revision: reply.revision, value: reply.value});
+      else reload(true).catch(() => undefined);
+      onChanged(); setSaved(true);
     } catch (cause) {
       setError(message(cause, '保存昵称失败，请刷新后重试。'));
     } finally {
@@ -208,7 +202,7 @@ export function SimpleManagementSettings({
             </View>
             <Switch
               value={item.enabled}
-              disabled={busy}
+              disabled={busy || pending.includes(item.id)}
               trackColor={{false: C.line, true: '#B9D8C3'}}
               thumbColor={item.enabled ? C.success : C.surface}
               onValueChange={() => toggle(item)}

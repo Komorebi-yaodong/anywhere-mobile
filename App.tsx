@@ -1,3 +1,4 @@
+import {readSettings} from './src/services/settingsCache';
 import {TextInput} from './src/components/ThemedNative';
 import {useEffect, useRef, useState} from 'react';
 import {
@@ -77,7 +78,7 @@ function AppContent() {
     let cancelled = false;
     for (const desktop of desktopSnapshot.current) {
       if (desktop.status !== '在线') continue;
-      request<WorkspaceBootstrap>(desktop.id, 'workspace.bootstrap.get')
+      readSettings<WorkspaceBootstrap>(request, desktop.id, 'workspace.bootstrap.get')
         .then(async bootstrap => {
           if (cancelled) return;
           const currentCache = desktop.avatarCache;

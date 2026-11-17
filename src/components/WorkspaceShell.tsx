@@ -1,3 +1,4 @@
+import {peekSettings, readSettings, storeSettings, hydrateSettings, subscribeSettings} from '../services/settingsCache';
 import {TextInput, ActivityIndicator} from './ThemedNative';
 import React, {
   useCallback,
@@ -304,8 +305,8 @@ export function WorkspaceShell({
     });
     return () => sub.remove();
   }, [drawerOpen, mode, onHome, releaseSelectedConversation, visible]);
-  const [bootstrap, setBootstrap] = useState<WorkspaceBootstrap | null>(null);
-  const [routeAssistants, setRouteAssistants] = useState<RemoteAssistant[]>([]);
+  const [bootstrap, setBootstrap] = useState<WorkspaceBootstrap | null>(() => peekSettings(request, desktop.id, 'workspace.bootstrap.get'));
+  const [routeAssistants, setRouteAssistants] = useState<RemoteAssistant[]>(() => peekSettings<{assistants: RemoteAssistant[]}>(request, desktop.id, 'conversation.assistants.list')?.assistants || []);
 
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [notice, setNotice] = useState('');
@@ -400,6 +401,8 @@ export function WorkspaceShell({
   const sessionScope = useRef('');
   const sessionBaseline = useRef<ConversationConfigResult['config'] | null>(null);
   const sessionOperation = useRef(false);
+  const sessionReadVersion = useRef(0);
+  const sessionDraft = useRef(sessionConfig); sessionDraft.current = sessionConfig;
   const [sessionNotice, setSessionNotice] = useState('');
   const [sessionTab, setSessionTab] = useState<
     'prompt' | 'mcp' | 'skill' | 'compact'
@@ -412,6 +415,9 @@ export function WorkspaceShell({
   const [contextLengthDraft, setContextLengthDraft] = useState('');
   const [contextLengthEdited, setContextLengthEdited] = useState(false);
   const [triggerRatioDraft, setTriggerRatioDraft] = useState('');
+  const sessionCompactDraft = useRef({contextLengthDraft, contextLengthEdited, triggerRatioDraft});
+  sessionCompactDraft.current = {contextLengthDraft, contextLengthEdited, triggerRatioDraft};
+  const sessionSelection = useRef(workspace.selectedConversationId); sessionSelection.current = workspace.selectedConversationId;
   const [mcpQuery, setMcpQuery] = useState('');
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuickFilter, setMcpQuickFilter] = useState<'all' | 'selected' | 'preset'>('all');
@@ -420,7 +426,20 @@ export function WorkspaceShell({
   avatarState.current = {desktop, agentAvatarCaches, agentAvatarSources};
   const workspaceRead = useRef(0);
   const workspaceFlight = useRef<{key: string; promise: Promise<void>} | null>(null);
-  const workspaceReady = useRef(false);
+  const workspaceReady = useRef(Boolean(bootstrap));
+  useEffect(() => {
+    let active = true;
+    const restore = () => {
+      if (!active) return;
+      const cached = peekSettings<WorkspaceBootstrap>(request, desktop.id, 'workspace.bootstrap.get');
+      const routes = peekSettings<{assistants: RemoteAssistant[]}>(request, desktop.id, 'conversation.assistants.list');
+      if (cached) {workspaceReady.current = true; setBootstrap(cached); setLoadingWorkspace(false);}
+      if (routes) setRouteAssistants(routes.assistants || []);
+    };
+    const unsubscribe = subscribeSettings(restore);
+    hydrateSettings(desktop.id).then(restore).catch(() => undefined); restore();
+    return () => {active = false; unsubscribe();};
+  }, [desktop.id, request]);
 
   const refreshWorkspace = useCallback((): Promise<void> => {
     if (desktop.status !== '在线') return Promise.resolve();
@@ -438,10 +457,9 @@ export function WorkspaceShell({
 
     const {agentAvatarCaches: cachedAgents, agentAvatarSources: cachedSources} = avatarState.current;
     try {
-      const [value, routes, assistantMetadata] = await Promise.all([
-        request<WorkspaceBootstrap>(desktop.id, 'workspace.bootstrap.get'),
-        request<{ok: true; assistants: RemoteAssistant[]}>(desktop.id, 'conversation.assistants.list'),
-        request<{ok: true; assistants: WorkspaceBootstrap['assistants']}>(desktop.id, 'workspace.assistants.list'),
+      const [value, routes] = await Promise.all([
+        readSettings<WorkspaceBootstrap>(request, desktop.id, 'workspace.bootstrap.get'),
+        readSettings<{ok: true; assistants: RemoteAssistant[]}>(request, desktop.id, 'conversation.assistants.list'),
       ]);
       if (!isCurrent()) {return;}
       workspaceReady.current = true;
@@ -451,6 +469,7 @@ export function WorkspaceShell({
       setRouteAssistants(routes.assistants || []);
       setLoadingWorkspace(false);
 
+      (async () => {
       const cachedAvatar = avatarState.current.desktop.avatarCache;
       let nextAvatarCache: AvatarCache | undefined;
       if (value.profile.avatar) {
@@ -501,9 +520,6 @@ export function WorkspaceShell({
         };
       });
       const resources: Record<string, AvatarResourceMetadata> = {};
-      for (const item of assistantMetadata.assistants) {
-        if (item.avatar?.kind === 'agent' && item.avatar.code === item.code) resources[item.code] = item.avatar;
-      }
       for (const item of value.assistants) {
         if (item.avatar?.kind === 'agent' && item.avatar.code === item.code) resources[item.code] = item.avatar;
       }
@@ -553,6 +569,8 @@ export function WorkspaceShell({
       setAgentAvatarSources(current => sameStringRecords(current, nextAgentSources) ? current : nextAgentSources);
       setBootstrap(value);
       setRouteAssistants(mergedRoutes);
+
+      })().catch(() => undefined);
 
     } catch (error) {
       if (isCurrent()) {setNotice(workspaceNotice(error, '无法读取 Desktop 工作区。'));}
@@ -727,51 +745,34 @@ export function WorkspaceShell({
   const openSessionSettings = async (
     target: 'session' | 'model' | 'reasoning' | 'voice' = 'session',
   ) => {
-    if (!workspace.selectedConversationId || !connected) return;
-    const requestedConversation = workspace.selectedConversationId;
-    if (sessionOperation.current) return;
-    sessionScope.current = requestedConversation;
-    sessionBaseline.current = null;
-    setSessionNotice('');
-    setSessionReadError('');
-    setContextUsage(null);
-
-    setContextLengthEdited(false);
-    setSessionConfig(null);
-    setSessionOptions(null);
-    setMcpQuery('');
-    setSkillQuery('');
-    setMcpQuickFilter('all');
+    if (!workspace.selectedConversationId || !connected || sessionOperation.current) return;
+    const conversationId = workspace.selectedConversationId, ticket = ++sessionReadVersion.current;
+    sessionScope.current = conversationId;
+    const cached = peekSettings<Pick<ConversationConfigResult, 'config' | 'options' | 'revision'>>(request, desktop.id, 'conversation.config.snapshot', {conversationId});
+    const display = (result: Pick<ConversationConfigResult, 'config' | 'options'>) => {
+      sessionBaseline.current = result.config; sessionDraft.current = result.config;
+      setSessionConfig(result.config); setSessionOptions(result.options);
+      setContextLengthDraft(String(result.config.compact?.contextLength || ''));
+      setTriggerRatioDraft(String(result.config.compact?.triggerRatio ?? 0.9));
+    };
+    sessionBaseline.current = cached?.config || null;
+    setSessionNotice(''); setSessionReadError(''); setContextUsage(null); setContextLengthEdited(false);
+    if (cached) display(cached); else {setSessionConfig(null); setSessionOptions(null);}
+    setMcpQuery(''); setSkillQuery(''); setMcpQuickFilter('all');
     if (target === 'session') setSessionTab('prompt');
-    setSheet(target);
-    setSessionBusy(true);
+    setSheet(target); setSessionBusy(!cached);
     try {
-      const receipt = startCommand({
-        desktopId: desktop.id,
-        method: 'conversation.config.get',
-        params: { conversationId: workspace.selectedConversationId },
-        request,
-        requestTracked,
-        timeoutMs: 60_000,
-      });
+      const receipt = startCommand({desktopId: desktop.id, method: 'conversation.config.get', params: {conversationId}, request, requestTracked, timeoutMs: 60_000});
       const state = await receipt.completion;
       const result = state.result as ConversationConfigResult | undefined;
-      if (result?.config) {
-        if (sessionScope.current !== requestedConversation) return;
-        sessionBaseline.current = result.config;
-        setSessionConfig(result.config);
-        setSessionOptions(result.options);
-
-        setContextUsage(result.contextUsage || null);
-        setConfigExecutionBusy(result.busy === true);
-        setContextLengthDraft(String(result.config.compact?.contextLength || ''));
-        setTriggerRatioDraft(String(result.config.compact?.triggerRatio ?? 0.9));
-      }
+      if (!result?.config || sessionReadVersion.current !== ticket || sessionScope.current !== conversationId || sessionSelection.current !== conversationId) return;
+      storeSettings(request, desktop.id, 'conversation.config.snapshot', {conversationId}, {config: result.config, options: result.options, revision: result.revision});
+      // A background read may update choices, but never replace an edited draft.
+      if (!cached || (JSON.stringify(sessionDraft.current) === JSON.stringify(cached.config) && !sessionCompactDraft.current.contextLengthEdited && sessionCompactDraft.current.contextLengthDraft === String(cached.config.compact?.contextLength || '') && sessionCompactDraft.current.triggerRatioDraft === String(cached.config.compact?.triggerRatio ?? 0.9))) display(result);
+      setContextUsage(result.contextUsage || null); setConfigExecutionBusy(result.busy === true);
     } catch (error) {
-      setSessionReadError(workspaceNotice(error, '无法读取会话设置，请稍后重试。'));
-    } finally {
-      setSessionBusy(false);
-    }
+      if (sessionReadVersion.current === ticket && sessionScope.current === conversationId) setSessionReadError(workspaceNotice(error, '无法读取会话设置，请稍后重试。'));
+    } finally {if (sessionReadVersion.current === ticket && sessionScope.current === conversationId) setSessionBusy(false);}
   };
 
   const compactNow = async () => {
@@ -804,6 +805,7 @@ export function WorkspaceShell({
       sessionBusy || sessionOperation.current
     ) return;
     const conversationId = workspace.selectedConversationId;
+    sessionReadVersion.current++;
     sessionOperation.current = true;
     setSessionNotice('');
     setSessionBusy(true);
@@ -817,10 +819,11 @@ export function WorkspaceShell({
         timeoutMs: 60_000,
       });
       const state = await receipt.completion;
-      if (sessionScope.current !== conversationId) return;
+      if (sessionScope.current !== conversationId || sessionSelection.current !== conversationId) return;
       const result = state.result as ConversationConfigResult | undefined;
       if (!result?.config) throw new Error('Desktop 未返回保存后的会话设置，请刷新检查。');
       sessionBaseline.current = result.config;
+      storeSettings(request, desktop.id, 'conversation.config.snapshot', {conversationId}, {config: result.config, options: result.options, revision: result.revision});
       setSessionConfig(result.config);
       setSessionOptions(result.options);
       setContextUsage(result.contextUsage || null);
@@ -851,6 +854,7 @@ export function WorkspaceShell({
   const refreshContextLength = async () => {
     if (!canEditSession || executionBusy || !sessionConfig || !requireControl() || sessionOperation.current) return;
     const conversationId = workspace.selectedConversationId;
+    sessionReadVersion.current++;
     sessionOperation.current = true;
     setSessionNotice('');
     setSessionBusy(true);
@@ -860,7 +864,7 @@ export function WorkspaceShell({
         params: {conversationId}, request, requestTracked, timeoutMs: 60_000,
       });
       const state = await receipt.completion;
-      if (sessionScope.current !== conversationId) return;
+      if (sessionScope.current !== conversationId || sessionSelection.current !== conversationId) return;
       const result = state.result as ConversationConfigResult;
       const compact = result?.config?.compact;
       if (!compact || compact.contextLengthSource !== 'api' || !Number.isInteger(compact.contextLength) || compact.contextLength < 4096 || compact.contextLength > 10_000_000) {
@@ -1164,7 +1168,7 @@ export function WorkspaceShell({
           onClose={() => {setPhotoNotice('');setNotice('');}} />
       ) : null}
       {!connected ? <View accessibilityLabel="连接恢复状态" style={styles.connectionBanner}><Text style={styles.connectionBannerText}>{desktop.detail || '正在连接…'}</Text></View> : null}
-      <View style={styles.retainedWorkspace} pointerEvents={!connected && mode !== 'chat' && mode !== 'settings' ? 'none' : 'auto'}>
+      <View style={styles.retainedWorkspace} pointerEvents="auto">
       {!connected && !bootstrap && mode !== 'chat' && mode !== 'settings' ? (
         <Empty
           title="正在连接 Desktop"
@@ -1194,7 +1198,7 @@ export function WorkspaceShell({
           profileAvatar={desktop.avatarCache && isAvatarCacheValid(desktop.avatarCache) ? desktop.avatarCache.uri : bootstrap?.profile.avatarUrl}
           desktopId={desktop.id}
           request={request}
-          onChanged={refreshWorkspace}
+          onChanged={() => {refreshWorkspace().catch(() => undefined);}}
           onSectionChange={setSettingsSection}
           refreshSignal={settingsRefreshSignal}
         />
@@ -1747,7 +1751,10 @@ const ChatPage = React.forwardRef<
               </Pressable>
             ) : null
           }
-          footer={connected && activeTurn && !activeTurn.terminal ? <ConversationLoading /> : null}
+          footer={activeTurn ? <View>
+            {activeTurn.submittedText && !activeTurn.historyLoaded && (activeTurn.submittedUiMessageId || activeTurn.event === 'conversation.command.pending' || activeTurn.event === 'conversation.command.recovering') && !messages.some(message => message.uiMessageId === activeTurn.submittedUiMessageId) ? <View accessibilityLabel="待确认发送预览" style={styles.queueItem}><Text style={styles.queueText}>{activeTurn.submittedText}</Text></View> : null}
+            {connected && !activeTurn.terminal ? <ConversationLoading /> : null}
+          </View> : null}
           renderMessage={item => (
             <MessageCard
               message={item}

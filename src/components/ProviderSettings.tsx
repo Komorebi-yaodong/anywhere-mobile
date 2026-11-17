@@ -1,3 +1,4 @@
+import {readSettings, peekSettings} from '../services/settingsCache';
 import {useSettingsCatalog} from '../hooks/useSettingsCatalog';
 import {useProviderFolderCollapse} from '../services/providerFolderPreferences';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
@@ -115,6 +116,8 @@ export function ProviderSettings({
   const {catalog, reload, setCatalog, refreshing} = useSettingsCatalog<WorkspaceProviderCatalog>(request, desktopId, 'workspace.provider.catalog');
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
+  const pendingIds = useRef(new Set<string>());
+  const [pending, setPending] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [editor, setEditor] = useState<ProviderEditorState | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
@@ -148,7 +151,7 @@ export function ProviderSettings({
         folderId,
         providerIds: next,
       }, 60_000);
-      await load();
+      reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '服务商排序保存失败。');
@@ -171,7 +174,7 @@ export function ProviderSettings({
         60_000,
       );
       setFolderDialog(null);
-      await load();
+      reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '目录操作失败。');
@@ -183,29 +186,21 @@ export function ProviderSettings({
 
 
   const toggleProvider = async (provider: WorkspaceProvider) => {
-    setBusy(true);
-    setError('');
+    if (pendingIds.current.has(provider.id)) return;
+    pendingIds.current.add(provider.id); setPending([...pendingIds.current]); setError('');
+    const replace = (next: WorkspaceProvider) => setCatalog(current => current ? {...current, providers: current.providers.map(item => item.id === next.id ? next : item)} : current);
+    replace({...provider, enabled: !provider.enabled});
     try {
-      await request(
-        desktopId,
-        'workspace.provider.mutate',
-        {
-          operation: 'patch',
-          id: provider.id,
-          expectedRevision: provider.revision,
-          patch: {enabled: !provider.enabled},
-        },
-        60_000,
-      );
-      await load();
+      const result = await request<{provider?: WorkspaceProvider}>(desktopId, 'workspace.provider.mutate', {
+        operation: 'patch', id: provider.id, expectedRevision: provider.revision, patch: {enabled: !provider.enabled},
+      }, 60_000);
+      if (result.provider) replace(result.provider); else reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法更新服务商开关。');
-    } finally {
-      setBusy(false);
-    }
+      replace(provider); setError(cause instanceof Error ? cause.message : '无法更新服务商开关。');
+      reload(true).catch(() => undefined);
+    } finally {pendingIds.current.delete(provider.id); setPending([...pendingIds.current]);}
   };
-
 
 
   const groups = useMemo(() => {
@@ -240,21 +235,15 @@ export function ProviderSettings({
 
 
   const openProvider = async (id: string) => {
-    setBusy(true);
     setError('');
+    const existing = catalog?.providers.find(item => item.id === id);
+    if (existing) {setEditor({creating: false, original: existing, form: formForProvider(existing)}); return;}
+    setBusy(true);
     try {
-      const detail = await request<{
-        ok: true;
-        provider: WorkspaceProvider;
-        options: WorkspaceProviderOptions;
-      }>(desktopId, 'workspace.provider.get', {id});
-      setCatalog(current => current ? {...current, options: detail.options} : current);
+      const detail = peekSettings<{provider: WorkspaceProvider; options: WorkspaceProviderOptions}>(request, desktopId, 'workspace.provider.get', {id}) || await readSettings<{provider: WorkspaceProvider; options: WorkspaceProviderOptions}>(request, desktopId, 'workspace.provider.get', {id});
       setEditor({creating: false, original: detail.provider, form: formForProvider(detail.provider)});
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法读取服务商详情。');
-    } finally {
-      setBusy(false);
-    }
+    } catch (cause) {setError(cause instanceof Error ? cause.message : '无法读取服务商详情。');}
+    finally {setBusy(false);}
   };
 
   const saveProvider = async (form: ProviderForm) => {
@@ -271,7 +260,7 @@ export function ProviderSettings({
     setBusy(true);
     setError('');
     try {
-      await request(
+      const result = await request<{provider?: WorkspaceProvider}>(
         desktopId,
         'workspace.provider.mutate',
         {
@@ -282,7 +271,8 @@ export function ProviderSettings({
         60_000,
       );
       setEditor(null);
-      await load();
+      if (result.provider) setCatalog(current => current ? {...current, providers: [...current.providers.filter(item => item.id !== result.provider!.id), result.provider!]} : current);
+      else reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '保存服务商失败。');
@@ -310,7 +300,7 @@ export function ProviderSettings({
               60_000,
             );
             setEditor(null);
-            await load();
+            reload(true).catch(() => undefined);
             onChanged();
           } catch (cause) {
             setError(cause instanceof Error ? cause.message : '删除服务商失败。');
@@ -358,6 +348,7 @@ export function ProviderSettings({
             group={group}
             busy={busy}
             controlsDisabled={busy}
+            pending={pending}
             searching={Boolean(query.trim())}
             onToggle={() => {folderCollapse.toggle(group.id).catch(() => setError('目录状态已切换，但未能保存到手机，请重试。'));}}
             onRename={() => group.id && setFolderDialog({mode: 'rename', folder: group})}
@@ -415,6 +406,7 @@ function ProviderGroup({
   group,
   busy,
   controlsDisabled,
+  pending,
   searching,
   onToggle,
   onRename,
@@ -426,6 +418,7 @@ function ProviderGroup({
   group: WorkspaceProviderFolder & {removable: boolean; providers: WorkspaceProvider[]};
   busy: boolean;
   controlsDisabled: boolean;
+  pending: string[];
   searching: boolean;
   onToggle: () => void;
   onRename: () => void;
@@ -461,7 +454,7 @@ function ProviderGroup({
             <ProviderOrderRow
               key={provider.id}
               provider={provider}
-              busy={busy}
+              busy={busy || pending.includes(provider.id)}
               canMoveUp={!searching && index > 0}
               canMoveDown={!searching && index < group.providers.length - 1}
               onMove={direction => onMoveProvider(provider.id, direction)}

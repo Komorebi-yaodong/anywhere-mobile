@@ -1,6 +1,7 @@
+import {readSettings, peekSettings} from '../services/settingsCache';
 import {SettingsActivityContext, useSettingsCatalog} from '../hooks/useSettingsCatalog';
 import {TextInput, Switch, ActivityIndicator} from './ThemedNative';
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   Alert,
   Image,
@@ -233,6 +234,8 @@ function AgentSettings({
   const [selectedTag, setSelectedTag] = useState('__all__');
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
+  const pendingIds = useRef(new Set<string>());
+  const [pending, setPending] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [avatarSources, setAvatarSources] = useState<Record<string, string>>({});
   const [editor, setEditor] = useState<AgentEditorState | null>(null);
@@ -283,14 +286,17 @@ function AgentSettings({
   }, [catalog?.agents, query, selectedTag]);
 
   const openAgent = async (code: string) => {
+    const cached = peekSettings<{agent: WorkspaceAgentDetail; options: WorkspaceAgentOptions}>(request, desktopId, 'workspace.agent.get', {code});
+    const listed = catalog?.agents.find(agent => agent.code === code);
+    if (cached && (!listed || listed.revision === cached.agent.revision)) {setEditor({creating: false, original: cached.agent, form: formForAgent(cached.agent)}); return;}
     setBusy(true);
     setError('');
     try {
-      const detail = await request<{
+      const detail = await readSettings<{
         ok: true;
         agent: WorkspaceAgentDetail;
         options: WorkspaceAgentOptions;
-      }>(desktopId, 'workspace.agent.get', {code});
+      }>(request, desktopId, 'workspace.agent.get', {code}, Boolean(cached));
       setCatalog(current =>
         current ? {...current, options: detail.options} : current,
       );
@@ -323,7 +329,7 @@ function AgentSettings({
       setTagComposer(false);
       setTagName('');
       if (operation === 'delete') setSelectedTag('__all__');
-      await load();
+      reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '标签操作失败。');
@@ -345,27 +351,17 @@ function AgentSettings({
   };
 
   const toggleAgent = async (agent: WorkspaceAgent) => {
-    setBusy(true);
-    setError('');
+    if (pendingIds.current.has(agent.code)) return;
+    pendingIds.current.add(agent.code); setPending([...pendingIds.current]); setError('');
+    const replace = (next: WorkspaceAgent) => setCatalog(current => current ? {...current, agents: current.agents.map(item => item.code === next.code ? next : item)} : current);
+    replace({...agent, enabled: !agent.enabled});
     try {
-      await request(
-        desktopId,
-        'workspace.agent.mutate',
-        {
-          operation: 'patch',
-          code: agent.code,
-          expectedRevision: agent.revision,
-          patch: {enabled: !agent.enabled},
-        },
-        60_000,
-      );
-      await load();
+      const result = await request<{agent?: WorkspaceAgent}>(desktopId, 'workspace.agent.mutate', {operation: 'patch', code: agent.code, expectedRevision: agent.revision, patch: {enabled: !agent.enabled}}, 60_000);
+      if (result.agent) replace(result.agent); else reload(true).catch(() => undefined);
       onChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法更新 Agent 开关。');
-    } finally {
-      setBusy(false);
-    }
+      replace(agent); setError(cause instanceof Error ? cause.message : '无法更新 Agent 开关。'); reload(true).catch(() => undefined);
+    } finally {pendingIds.current.delete(agent.code); setPending([...pendingIds.current]);}
   };
 
   return (
@@ -422,7 +418,7 @@ function AgentSettings({
             </View>
             <Switch
               value={agent.enabled}
-              disabled={busy}
+              disabled={busy || pending.includes(agent.code)}
               trackColor={{false: C.line, true: '#B9D8C3'}}
               thumbColor={agent.enabled ? C.success : C.surface}
               onValueChange={() => toggleAgent(agent)}
@@ -492,7 +488,7 @@ function AgentSettings({
           setBusy(true);
           setError('');
           try {
-            await request(
+            const reply = await request<{agent?: WorkspaceAgent}>(
               desktopId,
               'workspace.agent.mutate',
               {
@@ -503,7 +499,8 @@ function AgentSettings({
               60_000,
             );
             setEditor(null);
-            await load();
+            if (reply.agent) setCatalog(current => current ? {...current, agents: [...current.agents.filter(item => item.code !== reply.agent!.code), reply.agent!]} : current);
+            else reload(true).catch(() => undefined);
             onChanged();
           } catch (cause) {
             setError(cause instanceof Error ? cause.message : '保存 Agent 失败。');
@@ -533,7 +530,7 @@ function AgentSettings({
                     60_000,
                   );
                   setEditor(null);
-                  await load();
+                  reload(true).catch(() => undefined);
                   onChanged();
                 } catch (cause) {
                   setError(cause instanceof Error ? cause.message : '删除 Agent 失败。');
@@ -562,7 +559,7 @@ function AgentSettings({
               60_000,
             );
             setRoutesEditor(null);
-            await load();
+            reload(true).catch(() => undefined);
             onChanged();
           } catch (cause) {
             setError(cause instanceof Error ? cause.message : '保存默认Agent路由失败。');
