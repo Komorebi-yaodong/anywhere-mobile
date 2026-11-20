@@ -26,8 +26,16 @@ function strings(value: unknown) { return Array.isArray(value) ? value.filter((i
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }
 function valueLabel(options: Option[], value: unknown, fallback = '请选择') { return options.find(item => item.value === value)?.label || string(value) || fallback; }
 
+function isConversationTask(draft: Record<string, unknown>) {
+  return Boolean(draft.conversationId) || draft.promptKey === '';
+}
+
+function supportsTaskWindowSetting(catalog: Catalog) {
+  return catalog.schema.some(field => field.key === 'showWindow' && field.type === 'boolean');
+}
+
 function defaultTask(): Record<string, unknown> {
-  return {name: '', description: '', enabled: true, promptKey: '__DEFAULT__', triggerType: 'daily', dailyTime: '09:00', intervalMinutes: 60, intervalStartTime: '', weeklyDays: [1], weeklyTime: '09:00', monthlyDays: [1], monthlyTime: '09:00', singleDate: '', singleTime: '09:00', modelRoute: 'general', extraMcp: [], extraSkills: [], autoSaveProjectId: '', autoSave: true, autoClose: false};
+  return {name: '', description: '', enabled: true, promptKey: '__DEFAULT__', triggerType: 'daily', dailyTime: '09:00', intervalMinutes: 60, intervalStartTime: '', weeklyDays: [1], weeklyTime: '09:00', monthlyDays: [1], monthlyTime: '09:00', singleDate: '', singleTime: '09:00', modelRoute: 'general', extraMcp: [], extraSkills: [], autoSaveProjectId: '', autoSave: true, showWindow: true, autoClose: false};
 }
 
 export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {desktopId: string; request: RemoteRequest; onChanged: () => void; refreshSignal: number}) {
@@ -53,8 +61,11 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
     try {
       const cached = peekSettings<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks', id});
       const listed = catalog?.items?.find(item => item.id === id);
-      const detail = cached && (!listed?.revision || cached.revision === listed.revision) ? cached : await readSettings<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks', id}, Boolean(cached));
-      setEditor({creating: false, detail, id, draft: {...defaultTask(), ...(detail.value || {})}});
+      const cachedSchemaMatches = cached && (!catalog || supportsTaskWindowSetting(cached) === supportsTaskWindowSetting(catalog));
+      const detail = cached && cachedSchemaMatches && (!listed?.revision || cached.revision === listed.revision)
+        ? cached
+        : await readSettings<Catalog>(request, desktopId, 'management.catalog', {section: 'tasks', id}, Boolean(cached));
+      setEditor({creating: false, detail, id, draft: {...defaultTask(), ...detail.value, autoSave: detail.value?.autoSave === true}});
     } catch (cause) { setError(message(cause, '无法读取任务设置。')); }
     finally { setBusy(false); }
   };
@@ -93,6 +104,10 @@ export function TaskSettings({desktopId, request, onChanged, refreshSignal}: {de
     const activeKeys: Record<string, string[]> = {daily: ['dailyTime', 'dailyTimes'], weekly: ['weeklyDays', 'weeklyTime'], monthly: ['monthlyDays', 'monthlyTime', 'monthlySchedules'], interval: ['intervalMinutes', 'intervalStartTime'], single: ['singleDate', 'singleTime']};
     const scheduleKeys = new Set(Object.values(activeKeys).flat());
     const patch = Object.fromEntries(Object.entries(editor.draft).filter(([key, value]) => editor.detail.schema.some(field => field.key === key) && (!scheduleKeys.has(key) || activeKeys[frequency]?.includes(key)) && !(key === 'intervalStartTime' && value === '')));
+    if (isConversationTask(editor.draft)) {
+      delete patch.autoSave;
+      delete patch.autoSaveProjectId;
+    }
     if (Array.isArray(patch.dailyTimes)) delete patch.dailyTime;
     if (Array.isArray(patch.monthlySchedules)) {delete patch.monthlyDays; delete patch.monthlyTime;}
 
@@ -139,6 +154,8 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
   if (!editor) return null;
   const draft = editor.draft;
   const options = editor.detail.options || {};
+  const conversationTask = isConversationTask(draft);
+  const supportsShowWindow = supportsTaskWindowSetting(editor.detail);
   const trigger = string(draft.triggerType) || 'daily';
   const choose = (title: string, key: string, values: string[], choices: Option[], multiple = false) => onPicker({title, options: choices, values, multiple, onChange: next => onUpdate({[key]: multiple ? (key === 'weeklyDays' || key === 'monthlyDays' ? next.map(Number) : next) : next[0] || '', ...(key === 'promptKey' ? {conversationId: ''} : key === 'conversationId' ? {promptKey: ''} : {})})});
   const multiNumbers = (label: string, key: 'weeklyDays' | 'monthlyDays', optionsFor: Option[]) => <Pressable style={s.selectRow} onPress={() => choose(label, key, strings((draft[key] as number[] | undefined)?.map(String)), optionsFor, true)}><Text style={s.label}>{label}</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{(draft[key] as number[] || []).map(value => optionsFor.find(item => item.value === String(value))?.label || value).join('、') || '请选择'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>;
@@ -150,8 +167,9 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
       <View style={s.field}><Text style={s.label}>任务名称</Text><TextInput value={string(draft.name)} onChangeText={name => onUpdate({name})} placeholder="例如：每日整理" placeholderTextColor={C.muted} style={s.input} /></View>
       <View style={s.field}><Text style={s.label}>任务内容</Text><TextInput value={string(draft.description)} onChangeText={description => onUpdate({description})} placeholder="输入要执行的内容" placeholderTextColor={C.muted} style={[s.input, s.multiline]} multiline textAlignVertical="top" /></View>
       <Toggle label="启用任务" value={draft.enabled === true} onChange={enabled => onUpdate({enabled})} />
-      <Pressable style={s.selectRow} onPress={() => onUpdate(draft.conversationId || draft.promptKey === '' ? {conversationId: '', promptKey: '__DEFAULT__'} : {conversationId: '', promptKey: ''})}><Text style={s.label}>目标类型</Text><Text style={s.selectText}>{draft.conversationId || draft.promptKey === '' ? '本地会话' : '智能体'}</Text></Pressable>
-      {draft.conversationId || draft.promptKey === '' ? <Pressable style={s.selectRow} disabled={!options.conversation?.length} onPress={() => choose('选择目标会话', 'conversationId', [string(draft.conversationId)], options.conversation || [])}><Text style={s.label}>目标会话</Text><View style={s.selectRight}><Text style={s.selectText}>{valueLabel(options.conversation || [], draft.conversationId, '需开启本地存储并保存会话')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable> : (
+      {supportsShowWindow ? <Toggle label="在 Desktop 显示新会话窗口" value={draft.showWindow !== false} onChange={showWindow => onUpdate({showWindow})} /> : null}
+      <Pressable style={s.selectRow} onPress={() => onUpdate(conversationTask ? {conversationId: '', promptKey: '__DEFAULT__'} : {conversationId: '', promptKey: ''})}><Text style={s.label}>目标类型</Text><Text style={s.selectText}>{conversationTask ? '本地会话' : '智能体'}</Text></Pressable>
+      {conversationTask ? <Pressable style={s.selectRow} disabled={!options.conversation?.length} onPress={() => choose('选择目标会话', 'conversationId', [string(draft.conversationId)], options.conversation || [])}><Text style={s.label}>目标会话</Text><View style={s.selectRight}><Text style={s.selectText}>{valueLabel(options.conversation || [], draft.conversationId, '需开启本地存储并保存会话')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable> : (
       <Pressable style={s.selectRow} onPress={() => choose('选择助手', 'promptKey', [string(draft.promptKey)], options.assistant || [])}><Text style={s.label}>助手</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{valueLabel(options.assistant || [], draft.promptKey, '默认助手')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
       )}
 
@@ -177,8 +195,12 @@ function TaskEditor({editor, busy, picker, onPicker, onClose, onUpdate, onSave, 
       {!draft.conversationId && draft.promptKey === '__DEFAULT__' ? <Pressable style={s.selectRow} onPress={() => choose('默认智能体模型能力（可选）', 'modelRoute', [string(draft.modelRoute) || 'general'], Object.entries(routeLabels).map(([value, label]) => ({value, label})))}><Text style={s.label}>模型能力（可选）</Text><View style={s.selectRight}><Text style={s.selectText}>{routeLabels[string(draft.modelRoute)] || '通用'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable> : null}
       <Pressable style={s.selectRow} onPress={() => choose('额外 MCP', 'extraMcp', strings(draft.extraMcp), options.mcp || [], true)}><Text style={s.label}>额外 MCP</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{strings(draft.extraMcp).length ? `${strings(draft.extraMcp).length} 项` : '不添加'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
       <Pressable style={s.selectRow} onPress={() => choose('额外 Skill', 'extraSkills', strings(draft.extraSkills), options.skills || [], true)}><Text style={s.label}>额外 Skill</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{strings(draft.extraSkills).length ? `${strings(draft.extraSkills).length} 项` : '不添加'}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
-      <Pressable style={s.selectRow} onPress={() => choose('保存项目', 'autoSaveProjectId', [string(draft.autoSaveProjectId)], options.project || [])}><Text style={s.label}>保存项目</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{valueLabel(options.project || [], draft.autoSaveProjectId, '不分组')}</Text><AppIcon name="›" size={17} color={C.muted} /></View></Pressable>
-      <Toggle label="自动保存" value={draft.autoSave !== false} onChange={autoSave => onUpdate({autoSave})} />
+      {!conversationTask ? <>
+        <Toggle label="自动保存对话记录" value={draft.autoSave === true} onChange={autoSave => onUpdate({autoSave})} />
+        {draft.autoSave === true ? <Pressable style={s.selectRow} onPress={() => choose('保存项目', 'autoSaveProjectId', [string(draft.autoSaveProjectId)], options.project || [])}>
+          <Text style={s.label}>保存项目</Text><View style={s.selectRight}><Text numberOfLines={1} style={s.selectText}>{valueLabel(options.project || [], draft.autoSaveProjectId, '不分组')}</Text><AppIcon name="›" size={17} color={C.muted} /></View>
+        </Pressable> : null}
+      </> : null}
       <Toggle label="完成后关闭" value={draft.autoClose === true} onChange={autoClose => onUpdate({autoClose})} />
     </ScrollView>
     <View style={s.editorBottom}>{!editor.creating ? <Pressable style={s.delete} onPress={onDelete} disabled={busy}><Text style={s.deleteText}>删除</Text></Pressable> : null}<Pressable style={[s.save, busy && s.disabled]} onPress={onSave} disabled={busy}><Text style={s.saveText}>{busy ? '正在保存…' : '保存任务'}</Text></Pressable></View>
@@ -200,7 +222,7 @@ function TaskPicker({picker, onClose}: {picker: Picker; onClose: () => void}) {
 
 function TimeField({label, value, onChange}: {label: string; value: string; onChange: (value: string) => void}) { const s = useThemedStyles(styles); return <View style={s.field}><Text style={s.label}>{label}</Text><TextInput value={value} onChangeText={onChange} placeholder="HH:mm" placeholderTextColor={C.muted} style={s.input} keyboardType="numbers-and-punctuation" /></View>; }
 function NumberField({label, value, onChange}: {label: string; value: unknown; onChange: (value: number) => void}) { const s = useThemedStyles(styles); return <View style={s.field}><Text style={s.label}>{label}</Text><TextInput value={String(value || '')} onChangeText={raw => onChange(Number(raw) || 0)} keyboardType="number-pad" style={s.input} /></View>; }
-function Toggle({label, value, onChange}: {label: string; value: boolean; onChange: (value: boolean) => void}) { const s = useThemedStyles(styles); return <Pressable style={s.toggle} onPress={() => onChange(!value)}><Text style={s.label}>{label}</Text><Switch value={value} onValueChange={onChange} trackColor={{false: C.line, true: '#B9D8C3'}} thumbColor={value ? C.success : C.surface} /></Pressable>; }
+function Toggle({label, value, onChange}: {label: string; value: boolean; onChange: (value: boolean) => void}) { const s = useThemedStyles(styles); return <Pressable style={s.toggle} onPress={() => onChange(!value)}><Text style={s.label}>{label}</Text><Switch accessibilityLabel={label} value={value} onValueChange={onChange} trackColor={{false: C.line, true: '#B9D8C3'}} thumbColor={value ? C.success : C.surface} /></Pressable>; }
 
 const styles = StyleSheet.create({
   root: {flex: 1, minHeight: 0, backgroundColor: C.background}, error: {paddingHorizontal: 18, paddingTop: 8, color: C.danger, fontSize: 13}, scroll: {flex: 1, minHeight: 0}, list: {padding: 16, paddingTop: 8, paddingBottom: 18, gap: 10},
