@@ -14,6 +14,8 @@ function button(root: TestRenderer.ReactTestRenderer, label: string) {
 const saveLabel = '自动保存对话记录';
 const showLabel = '在 Desktop 显示新会话窗口';
 const hasText = (root: TestRenderer.ReactTestRenderer, label: string) => root.root.findAllByType(Text).some(node => node.props.children === label);
+const projectLabel = '保存项目';
+const ungroupedLabel = '不分组';
 
 
 test('model ability is optional and shown only for the default Agent, never a custom Agent or conversation', async () => {
@@ -62,6 +64,90 @@ test('selects an existing conversation mutually exclusively and saves its ID wit
   expect(call[2].patch).not.toHaveProperty('dirPath');
   } finally {if (root) await act(async () => root.unmount());}
 });
+
+const storedTaskId = 'legacy-save-fixture';
+const storedTaskName = '旧任务';
+const storedTaskRevision = 'fixture-revision';
+const storedSchema = [
+  {key: 'name', type: 'text'}, {key: 'promptKey', type: 'assistant'},
+  {key: 'conversationId', type: 'conversation'}, {key: 'autoSave', type: 'boolean'},
+  {key: 'autoSaveProjectId', type: 'project'},
+];
+
+async function withStoredTask(value: Record<string, unknown>, schema: typeof storedSchema, run: (root: TestRenderer.ReactTestRenderer, mutations: Array<Record<string, unknown>>) => Promise<void>) {
+  const mutations: Array<Record<string, unknown>> = [];
+  const request = jest.fn(async (_id: string, method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'management.mutate') {
+      mutations.push(params);
+      return {ok: true};
+    }
+    if (method !== 'management.catalog') throw Error('remote_method_unavailable');
+    const catalog = {
+      ok: true, section: 'tasks', schema,
+      options: {project: [{value: '', label: ungroupedLabel}, {value: 'saved-project', label: '原项目'}]},
+      items: [{id: storedTaskId, name: storedTaskName, revision: storedTaskRevision, enabled: true}],
+    };
+    return params.id ? {...catalog, id: storedTaskId, revision: storedTaskRevision, value: {name: storedTaskName, ...value}} : catalog;
+  });
+  let root!: TestRenderer.ReactTestRenderer;
+  try {
+    await act(async () => {root = TestRenderer.create(<TaskSettings desktopId="stored-task-fixture" request={request as RemoteRequest} onChanged={() => undefined} refreshSignal={0} />);});
+    await act(async () => button(root, storedTaskName).props.onPress());
+    expect(hasText(root, '编辑定时任务')).toBe(true);
+    await run(root, mutations);
+  } finally {if (root) await act(async () => root.unmount());}
+}
+
+function expectNoProject(root: TestRenderer.ReactTestRenderer) {
+  expect(hasText(root, projectLabel)).toBe(false);
+  expect(hasText(root, ungroupedLabel)).toBe(false);
+}
+
+test('editing a legacy conversation task ignores retained Agent save flags, including an ungrouped project', async () => {
+  await withStoredTask({conversationId: 'existing-fixture', autoSave: true, autoSaveProjectId: ''}, storedSchema, async (root, mutations) => {
+    expect(hasText(root, '本地会话')).toBe(true);
+    expect(hasText(root, saveLabel)).toBe(false);
+    expectNoProject(root);
+    await act(async () => button(root, '目标类型').props.onPress());
+    expect(hasText(root, projectLabel)).toBe(true);
+    expect(hasText(root, ungroupedLabel)).toBe(true);
+    await act(async () => button(root, '目标类型').props.onPress());
+    expectNoProject(root);
+    await act(async () => button(root, '保存任务').props.onPress());
+    expect(mutations).toHaveLength(0);
+    expect(hasText(root, '请选择目标会话。')).toBe(true);
+  });
+});
+
+test('turning off Agent auto-save closes the project picker and submits only the save flag', async () => {
+  await withStoredTask({promptKey: '__DEFAULT__', autoSave: true, autoSaveProjectId: 'saved-project'}, storedSchema, async (root, mutations) => {
+    const turnOff = button(root, saveLabel).props.onPress;
+    await act(async () => button(root, projectLabel).props.onPress());
+    expect(hasText(root, ungroupedLabel)).toBe(true);
+    await act(async () => turnOff());
+    expectNoProject(root);
+    expect(hasText(root, '确定')).toBe(false);
+    await act(async () => button(root, saveLabel).props.onPress());
+    expect(hasText(root, '原项目')).toBe(true);
+    await act(async () => button(root, saveLabel).props.onPress());
+    await act(async () => button(root, '保存任务').props.onPress());
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0].patch).toMatchObject({autoSave: false});
+    expect(mutations[0].patch).not.toHaveProperty('autoSaveProjectId');
+  });
+});
+
+test('a server without the save control cannot expose or receive its dependent project field', async () => {
+  await withStoredTask({promptKey: '__DEFAULT__', autoSave: true, autoSaveProjectId: 'saved-project'}, storedSchema.filter(field => field.key !== 'autoSave'), async (root, mutations) => {
+    expect(hasText(root, saveLabel)).toBe(false);
+    expectNoProject(root);
+    await act(async () => button(root, '保存任务').props.onPress());
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0].patch).not.toHaveProperty('autoSave');
+    expect(mutations[0].patch).not.toHaveProperty('autoSaveProjectId');
+  });
+});
+
 
 test('Agent can enable saving and select a project even on an older Desktop without the window setting', async () => {
   const schema = [
