@@ -1,7 +1,7 @@
 {
   "name": "AnywhereMobile",
-  "version": "1.4.5",
-  "androidVersionCode": 35,
+  "version": "1.5.0",
+  "androidVersionCode": 36,
   "packageManager": "pnpm@10.28.0",
   "private": true,
   "scripts": {
